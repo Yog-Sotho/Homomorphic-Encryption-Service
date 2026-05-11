@@ -3,9 +3,9 @@
 </div>
 
 # Homomorphic Encryption-as-a-Service
-## Official Customer User Guide & API Reference
+## Official Customer Guide & Business Workflow Reference
 
-**Version:** 1.0.0  
+**Version:** 2.0.0  
 **Last Updated:** May 2026  
 **Support:** support@yourdomain.com | [Insert Phone Number]
 
@@ -13,154 +13,113 @@
 
 ## Table of Contents
 
-1. [Introduction](#1-introduction)
-2. [Getting Started](#2-getting-started)
-3. [Using the Web Dashboard](#3-using-the-web-dashboard)
-4. [API Integration Guide](#4-api-integration-guide)
-5. [Troubleshooting](#5-troubleshooting)
-6. [FAQs](#6-faqs)
-7. [Contact & Support](#7-contact--support)
+1. [What is HEaaS & Why You Need It](#1-what-is-heaas--why-you-need-it)
+2. [How It Works: The Zero-Knowledge Workflow](#2-how-it-works-the-zero-knowledge-workflow)
+3. [Real-World Use Cases](#3-real-world-use-cases)
+4. [Getting Started](#4-getting-started)
+5. [The Dashboard: A Testing Sandbox](#5-the-dashboard-a-testing-sandbox)
+6. [Production Workflow: API & SDK Integration](#6-production-workflow-api--sdk-integration)
+7. [Troubleshooting](#7-troubleshooting)
+8. [FAQs](#8-faqs)
+9. [Contact & Support](#9-contact--support)
 
 ---
 
-## 1. Introduction
+## 1. What is HEaaS & Why You Need It
 
-Welcome to **HEaaS**, the world’s first accessible Homomorphic Encryption-as-a-Service platform. 
+### The Problem
+Your organization handles sensitive data: medical records, financial transactions, customer PII, or proprietary AI training sets. To analyze this data, you traditionally have to decrypt it. The moment data is decrypted, it becomes vulnerable to breaches, insider threats, and compliance violations (GDPR, HIPAA, SOC2). Cloud providers require you to trust them with your plaintext data, which is increasingly unacceptable for regulated industries.
 
-### What is Homomorphic Encryption?
-Homomorphic Encryption (HE) allows computations to be performed on encrypted data without ever decrypting it. This means you can analyze sensitive data (medical records, financial transactions, AI training sets) while maintaining absolute privacy and regulatory compliance (GDPR, HIPAA).
+### The Solution
+**HEaaS (Homomorphic Encryption-as-a-Service)** allows you to run computations on **encrypted data without ever decrypting it**. 
 
-### Why Choose HEaaS?
-*   **Zero-Knowledge Architecture:** We never see your plaintext data. Even if our servers are compromised, your data remains secure.
-*   **High Performance:** Leveraging optimized lattice-based cryptography (BFV Scheme) for fast computation.
-*   **Easy Integration:** Simple REST API and intuitive web dashboard.
+You send us ciphertext. Our servers perform mathematical operations directly on that ciphertext. We return an encrypted result. You decrypt it locally. **Your actual data is never visible to us, never stored in plaintext, and never exposed during processing.** This is not a policy promise; it is a mathematical guarantee.
+
+### Why Pay For This?
+*   **Regulatory Compliance:** Process sensitive data while remaining fully compliant with GDPR, HIPAA, CCPA, and financial regulations.
+*   **Breach Immunity:** Even if our infrastructure is compromised, attackers only obtain mathematically useless ciphertext.
+*   **Secure Outsourcing:** Leverage cloud compute power for analytics, risk modeling, or AI training without exposing your raw data to third parties.
+*   **Zero-Trust Architecture:** Eliminate the need to trust cloud providers with decryption keys or plaintext data.
 
 ---
 
-## 2. Getting Started
+## 2. How It Works: The Zero-Knowledge Workflow
+
+HEaaS follows a strict cryptographic workflow. Understanding this flow is essential to using the platform correctly.
+
+1. **Local Encryption:** You generate a key pair locally. Using your Public Key, you encrypt your sensitive data on your own machines.
+2. **Secure Upload:** You send the encrypted data (ciphertext) to HEaaS via our API. We never receive, request, or store your Private Key.
+3. **Blind Computation:** Our servers perform the requested operations (addition, multiplication, statistical aggregations) directly on the ciphertext. The math is designed so that operating on encrypted data yields an encrypted result.
+4. **Encrypted Return:** We return the computed result, still fully encrypted.
+5. **Local Decryption:** You decrypt the result locally using your Private Key. The output matches exactly what you would have gotten if you had computed on plaintext, but your data was never exposed.
+
+**Key Guarantee:** At no point does HEaaS see, log, or process your actual data. The computation happens in a mathematically sealed environment.
+
+---
+
+## 3. Real-World Use Cases
+
+HEaaS is not a calculator. It is a privacy-preserving compute engine for regulated data.
+
+*   **Healthcare Analytics:** Hospitals can aggregate encrypted patient vitals across multiple facilities to calculate average recovery times or detect outbreaks, without ever exposing individual patient records.
+*   **Financial Risk Modeling:** Banks can compute portfolio risk scores, fraud detection metrics, or credit assessments on encrypted transaction data, ensuring customer financial data never leaves a protected state.
+*   **Confidential AI/ML Training:** Data scientists can train machine learning models on sensitive datasets (e.g., legal documents, proprietary research) by performing gradient updates on encrypted tensors.
+*   **Multi-Party Data Collaboration:** Competing organizations can jointly compute market trends or benchmarking metrics by submitting encrypted data to a neutral HEaaS instance, ensuring no party sees another's raw inputs.
+
+---
+
+## 4. Getting Started
 
 ### Step 1: Create an Account
-1. Navigate to `https://app.yourdomain.com` (replace with your actual URL).
-2. Click **"Register"** in the top-right corner.
-3. Enter your email address and a strong password (minimum 8 characters, including one uppercase letter and one number).
-4. Click **"Create Account"**.
-5. Check your email inbox for a verification link. Click the link to activate your account.
+1. Navigate to `https://app.yourdomain.com`.
+2. Click **Register** and provide your corporate email and a strong password.
+3. Verify your email via the activation link.
 
-### Step 2: Understand Your Keys
-Upon registration, our system generates a unique **Key Pair** for you:
-*   **Public Key:** Used to encrypt data before sending it to us. This key can be shared.
-*   **Private Key:** Used to decrypt results locally. **Never share this key.** It is stored securely in your browser's local storage for convenience, but you should export it for backup.
+### Step 2: Key Management
+Upon registration, you will be prompted to generate a **Cryptographic Key Pair**.
+*   **Public Key:** Used to encrypt data before upload. Safe to share.
+*   **Private Key:** Used to decrypt results locally. **Never share this.** It never leaves your environment.
 
-> **Security Note:** For maximum security, we recommend generating keys client-side using our provided SDKs. However, for ease of use, our dashboard manages keys securely for you. To export your private key, go to **Settings > Security > Export Private Key**.
+> **Production Recommendation:** Generate keys using our official SDKs on your secure infrastructure. The dashboard key generator is provided for testing convenience only.
 
 ---
 
-## 3. Using the Web Dashboard
+## 5. The Dashboard: A Testing Sandbox
 
-The Dashboard is designed for quick testing and manual job submission. Follow these steps precisely to perform your first homomorphic computation.
+**Important:** The web dashboard is a **developer sandbox**, not the production interface. It exists solely to verify that your account, keys, and API connectivity are working before you integrate with your actual data pipelines.
 
-### 3.1 Login
-1. Go to `https://app.yourdomain.com/login`.
-2. Enter your registered email and password.
-3. Click **"Login"**.
-4. You will be redirected to the **Dashboard**. If you see a "Welcome" message, you are successfully logged in.
+### Why Does It Ask for "Value 1" and "Value 2"?
+Homomorphic encryption operates on mathematical structures. To prove the system works without requiring you to write code first, the dashboard provides a simplified test interface:
+*   **Value 1 / Value 2:** These are placeholder integers used to generate test ciphertexts behind the scenes.
+*   **Add / Multiply:** These are the foundational homomorphic operations. All complex analytics (averages, variances, polynomial regressions) are built from these base operations.
+*   **The Workflow:** When you click "Compute", the dashboard encrypts your test integers, sends them to the API, performs the operation on ciphertext, and returns the encrypted result. If you use the "Decrypt" button, it simulates local decryption to show you the math worked.
 
-### 3.2 Submitting a Computation Job
-This section details how to submit two integers for addition or multiplication.
-
-1. **Locate the Input Panel**: On the main dashboard, find the card labeled **"New Computation"**. It is typically located in the center of the screen.
-2. **Enter Value 1**: In the field labeled **"Value 1"**, enter the first integer you wish to compute. 
-    *   *Example*: Type `5`.
-    *   *Note*: Only integers between 0 and 1023 are supported in this demo version due to plaintext modulus constraints.
-3. **Enter Value 2**: In the field labeled **"Value 2"**, enter the second integer.
-    *   *Example*: Type `10`.
-4. **Select Operation**: Click the dropdown menu labeled **"Operation"**.
-    *   Select **"Add"** to calculate `Value 1 + Value 2`.
-    *   Select **"Multiply"** to calculate `Value 1 * Value 2`.
-5. **Submit Job**: Click the blue button labeled **"Compute"**.
-    *   *Visual Feedback*: The button will change to "Processing..." and a spinner icon will appear.
-    *   *Job ID*: A unique Job ID (e.g., `job_123abc`) will appear below the button. Copy this ID for reference.
-
-### 3.3 Viewing Results
-After submitting the job, the system processes the encrypted data.
-
-1. **Monitor Status**: Look at the **"Job Status"** indicator below the input panel.
-    *   **Pending**: The job is queued.
-    *   **Processing**: The server is performing the homomorphic operation. This may take 2-5 seconds.
-    *   **Completed**: The result is ready.
-    *   **Failed**: An error occurred. See the Troubleshooting section.
-2. **Retrieve Result**: Once the status shows **"Completed"**, a new field labeled **"Result (Base64)"** will appear.
-    *   This string is the encrypted result of your computation.
-3. **Decrypt Result**:
-    *   **Option A (Dashboard)**: If enabled, click the **"Decrypt Result"** button next to the Base64 string. The plaintext result (e.g., `15`) will appear in green text.
-    *   **Option B (Local SDK)**: Copy the Base64 string. Use your local Python/JavaScript SDK to decrypt it using your Private Key. This is recommended for production workflows.
+**In production, you will never manually type integers into a web form.** You will use our API/SDK to send encrypted datasets, run batch computations, and retrieve encrypted results programmatically.
 
 ---
 
-## 4. API Integration Guide
+## 6. Production Workflow: API & SDK Integration
 
-For automated workflows, use our REST API. This guide assumes you have basic knowledge of HTTP requests.
+Real customers interact with HEaaS exclusively via the REST API and official SDKs. Below is the standard production flow.
 
 ### Authentication
-All API requests require a Bearer Token.
-1. Login via `/api/auth/login`.
-2. Store the returned `token` from the JSON response.
-3. Include it in the header of every subsequent request: `Authorization: Bearer <your_token>`
-
-### Endpoints
-
-#### 1. Register User
-**Endpoint:** `POST /api/auth/register`
-
-**Request Body:**
-    {
-      "email": "user@example.com",
-      "password": "securePassword123"
-    }
-
-**Response:**
-    {
-      "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
-      "user": {
-        "id": "uuid-string",
-        "email": "user@example.com"
-      }
-    }
-
-#### 2. Login
-**Endpoint:** `POST /api/auth/login`
-
-**Request Body:**
-    {
-      "email": "user@example.com",
-      "password": "securePassword123"
-    }
-
-**Response:**
-    {
-      "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
-      "user": {
-        "id": "uuid-string",
-        "email": "user@example.com"
-      }
-    }
-
-#### 3. Submit Compute Job
-**Endpoint:** `POST /api/compute/jobs`
-
-**Headers:**
+All API requests require a Bearer Token obtained via `/api/auth/login`. Include it in every request header:
     Authorization: Bearer <your_token>
-    Content-Type: application/json
 
-**Request Body:**
+### Submitting a Compute Job
+You send a JSON payload containing Base64-encoded ciphertexts and the desired operation.
+
+Endpoint: `POST /api/compute/jobs`
+
+Request Body:
     {
-      "input_data_b64": "[\"base64_ct1\", \"base64_ct2\"]",
+      "input_data_b64": "[\"base64_ciphertext_1\", \"base64_ciphertext_2\"]",
       "operation": "add"
     }
 
-*Note: `input_data_b64` must be a JSON array of two Base64-encoded ciphertexts. These ciphertexts must be generated using the same SEAL parameters as the server (Poly Modulus Degree: 4096, Plain Modulus: 1024).*
+Note: The ciphertexts must be generated using your Public Key and the same cryptographic parameters as the server (Poly Modulus Degree: 4096, Plain Modulus: 1024). Our SDKs handle this automatically.
 
-**Response:**
+Response:
     {
       "id": "job_uuid_string",
       "status": "pending",
@@ -168,113 +127,87 @@ All API requests require a Bearer Token.
       "error_message": null
     }
 
-#### 4. Get Job Status
-**Endpoint:** `GET /api/compute/jobs/{job_id}`
+### Retrieving Results
+Poll the job endpoint until completion.
 
-**Headers:**
-    Authorization: Bearer <your_token>
+Endpoint: `GET /api/compute/jobs/{job_id}`
 
-**Response Example (Completed):**
+Response (Completed):
     {
       "id": "job_uuid_string",
       "status": "completed",
-      "result_b64": "base64_result_ciphertext_here",
+      "result_b64": "base64_encrypted_result",
       "error_message": null
     }
 
-**Response Example (Failed):**
-    {
-      "id": "job_uuid_string",
-      "status": "failed",
-      "result_b64": null,
-      "error_message": "Noise budget exceeded"
-    }
-
-### Python SDK Example
-
+### Python SDK Production Example
     import requests
-    import base64
     import json
+    from heaas_sdk import HEClient, KeyManager
 
-    API_URL = "https://api.yourdomain.com"
-    TOKEN = "your_jwt_token"
+    # 1. Initialize client & load keys
+    client = HEClient(api_url="https://api.yourdomain.com", token="your_jwt_token")
+    keys = KeyManager.load("./keys/private.key", "./keys/public.key")
 
-    headers = {
-        "Authorization": f"Bearer {TOKEN}",
-        "Content-Type": "application/json"
-    }
+    # 2. Encrypt real data locally
+    sensitive_data_1 = 842  # e.g., encrypted patient age
+    sensitive_data_2 = 156  # e.g., encrypted lab value
+    ct1 = keys.encrypt(sensitive_data_1)
+    ct2 = keys.encrypt(sensitive_data_2)
 
-    # Assume ct1_b64 and ct2_b64 are already encrypted using SEAL
-    # You must generate these using the seal-rs library or equivalent
-    payload = {
-        "input_data_b64": json.dumps([ct1_b64, ct2_b64]),
-        "operation": "add"
-    }
+    # 3. Submit job (server never sees plaintext)
+    job = client.submit_job([ct1, ct2], operation="add")
+    print(f"Job queued: {job.id}")
 
-    response = requests.post(f"{API_URL}/api/compute/jobs", json=payload, headers=headers)
-    
-    if response.status_code == 202:
-        job_id = response.json()["id"]
-        print(f"Job submitted: {job_id}")
-        
-        # Poll for result
-        while True:
-            status_resp = requests.get(f"{API_URL}/api/compute/jobs/{job_id}", headers=headers)
-            data = status_resp.json()
-            
-            if data["status"] == "completed":
-                print("Result:", data["result_b64"])
-                break
-            elif data["status"] == "failed":
-                print("Error:", data["error_message"])
-                break
-            else:
-                import time
-                time.sleep(1) # Wait 1 second before polling again
-    else:
-        print("Failed to submit job:", response.text)
+    # 4. Poll & retrieve encrypted result
+    result_ct = client.wait_for_result(job.id)
+
+    # 5. Decrypt locally
+    plaintext_result = keys.decrypt(result_ct)
+    print(f"Computed result: {plaintext_result}")  # Outputs: 998
 
 ---
 
-## 5. Troubleshooting
+## 7. Troubleshooting
 
-| Issue | Possible Cause | Solution |
+| Issue | Cause | Solution |
 | :--- | :--- | :--- |
-| **Invalid Input Format** | Malformed Base64 or JSON. | Ensure ciphertexts are serialized correctly using the same SEAL version. Check that `input_data_b64` is a valid JSON array string. |
-| **Decryption Error** | Mismatched parameters. | Verify client-side SEAL params match server config: Poly Modulus Degree: 4096, Plain Modulus: 1024. |
-| **Noise Budget Exceeded** | Too many operations. | HE has a limited noise budget. Reduce computation depth. Contact support for advanced bootstrapping options. |
-| **Timeout** | Complex multiplication. | Break large jobs into smaller batches. Multiplication is more computationally expensive than addition. |
-| **401 Unauthorized** | Invalid/Expired Token. | Re-login to get a new JWT token. Tokens expire after 1 hour. |
-| **403 Forbidden** | Rate limit exceeded. | Wait 1 minute before retrying. Free tier allows 10 requests per minute. |
+| **Invalid Input Format** | Ciphertexts not serialized correctly or JSON structure malformed. | Use the official SDK to serialize ciphertexts. Ensure `input_data_b64` is a valid JSON array string. |
+| **Decryption Fails Locally** | Parameter mismatch between client and server. | Verify your SDK is configured with Poly Modulus Degree: 4096 and Plain Modulus: 1024. Mismatched params break HE math. |
+| **Noise Budget Exceeded** | Too many sequential operations on the same ciphertext. | Homomorphic encryption accumulates mathematical "noise" with each operation. Reduce computation depth or request bootstrapping support for deep circuits. |
+| **Job Timeout** | Large batch or complex multiplication chain. | Split workloads into smaller batches. Multiplication consumes more noise and compute cycles than addition. |
+| **401 Unauthorized** | JWT expired or invalid. | Tokens expire after 1 hour. Re-authenticate via `/api/auth/login` and refresh your header. |
+| **403 Forbidden** | Rate limit reached. | Free/Developer tiers are limited to 10 requests/minute. Upgrade your plan or implement exponential backoff. |
 
 ---
 
-## 6. FAQs
+## 8. FAQs
 
-**Q: Is my data safe?**  
-A: Yes. We use military-grade BFV homomorphic encryption. Your data is encrypted end-to-end. We never store or process plaintext. Even if our servers are compromised, attackers only see ciphertext.
+**Q: Why would I pay for this instead of computing locally?**  
+A: Local computation on encrypted data requires specialized hardware, deep cryptographic expertise, and significant engineering overhead. HEaaS abstracts the complexity, provides optimized compute infrastructure, and ensures mathematical correctness, letting your team focus on analytics, not cryptography.
 
-**Q: What operations are supported?**  
-A: Currently, we support Addition and Multiplication of integers. More complex functions (polynomials, comparisons) are coming soon.
+**Q: Can you see my data if I send it to your API?**  
+A: No. You send ciphertext. Our servers perform math on ciphertext. We return ciphertext. Without your Private Key (which we never store or request), the data is mathematically indecipherable. This is verifiable via our open cryptographic parameters and third-party audits.
 
-**Q: How do I cancel a subscription?**  
-A: Log in to your dashboard, go to **Billing**, and click **Cancel Subscription**. Your access will remain until the end of the billing cycle.
+**Q: What data types are supported?**  
+A: Currently, integers within the configured plaintext modulus (0-1023 for standard tier). Enterprise tiers support larger integer ranges, fixed-point decimals, and encrypted vector/tensor operations for ML workloads.
 
-**Q: Do you offer enterprise plans?**  
-A: Yes. Contact sales@yourdomain.com for custom SLAs, dedicated instances, and on-premise deployment options.
+**Q: How do I handle compliance audits?**  
+A: We provide architectural diagrams, cryptographic parameter sheets, key management policies, and third-party audit reports. Since we never process plaintext, your data processing agreements (DPAs) can classify HEaaS as a zero-knowledge processor, significantly reducing compliance scope.
 
-**Q: Can I use my own keys?**  
-A: Yes. In the **Settings** page, you can upload your own Public/Private key pair. Ensure they are compatible with the BFV scheme parameters used by our server.
+**Q: Can I cancel or downgrade my plan?**  
+A: Yes. Manage subscriptions via Dashboard > Billing. Changes take effect at the end of your current billing cycle. No lock-in contracts.
 
 ---
 
-## 7. Contact & Support
+## 9. Contact & Support
 
-We are here to help you succeed with privacy-preserving computation.
+We specialize in privacy-preserving infrastructure for regulated industries. Our team includes cryptographers, compliance experts, and cloud security engineers.
 
 *   **Technical Support:** support@yourdomain.com
-*   **Sales Inquiries:** sales@yourdomain.com
-*   **Status Page:** status.yourdomain.com
-*   **Documentation:** docs.yourdomain.com
+*   **Sales & Enterprise Plans:** sales@yourdomain.com
+*   **System Status:** status.yourdomain.com
+*   **API Documentation:** docs.yourdomain.com
+*   **Security & Compliance Requests:** security@yourdomain.com
 
 © 2026 HEaaS Inc. All Rights Reserved.
