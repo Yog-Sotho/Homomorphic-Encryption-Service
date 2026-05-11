@@ -1,5 +1,5 @@
 <div align="center">
-<img src="./he-saas-logo.svg" alt="HEaaS Logo" width="200"/>
+<img src="./he-saas-logo.svg" alt="HEaaS Logo" width="400"/>
 </div>
 
 # Homomorphic Encryption-as-a-Service
