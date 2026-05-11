@@ -1,0 +1,40 @@
+he-saas/
+├── Cargo.toml
+├── src/
+│   ├── main.rs
+│   ├── lib.rs
+│   ├── config.rs
+│   ├── error.rs
+│   ├── crypto/
+│   │   ├── mod.rs
+│   │   └── engine.rs      # Real Microsoft SEAL integration
+│   ├── api/
+│   │   ├── mod.rs
+│   │   ├── auth.rs        # JWT Auth
+│   │   └── compute.rs     # HE Job Queue
+│   ├── db/
+│   │   ├── mod.rs
+│   │   └── models.rs
+│   └── middleware/
+│       ├── mod.rs
+│       └── jwt.rs
+├── migrations/
+│   └── 20231027000000_init.sql
+├── frontend/
+│   ├── package.json
+│   ├── svelte.config.js
+│   ├── src/
+│   │   ├── app.html
+│   │   ├── routes/
+│   │   │   ├── +layout.svelte
+│   │   │   ├── +page.svelte
+│   │   │   ├── login/
+│   │   │   │   └── +page.svelte
+│   │   │   └── dashboard/
+│   │   │       └── +page.svelte
+│   │   └── lib/
+│   │       ├── api.ts
+│   │       └── stores.ts
+├── Dockerfile
+├── docker-compose.yml
+└── .env
