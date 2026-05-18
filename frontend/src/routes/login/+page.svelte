@@ -40,9 +40,6 @@
 
 <style>
   .container { max-width: 400px; margin: 0 auto; padding: 2rem; }
-  label { display: block; margin-bottom: 0.25rem; font-size: 0.875rem; font-weight: 500; }
-  .btn-primary { width: 100%; padding: 0.5rem; margin-top: 0.5rem; background: var(--accent); color: white; }
-  .btn-primary:hover { background: var(--accent-hover); }
   .toggle-text { margin-top: 1.5rem; text-align: center; font-size: 0.875rem; color: var(--text-secondary); }
   .btn-link { background: none; border: none; color: var(--accent); cursor: pointer; text-decoration: underline; padding: 0; font-size: inherit; }
 </style>

@@ -53,15 +53,23 @@
   <h1>Homomorphic Compute Dashboard</h1>
   <div class="card">
     <h2>New Computation</h2>
-    <input type="number" bind:value={val1} placeholder="Value 1" />
-    <input type="number" bind:value={val2} placeholder="Value 2" />
-    <select bind:value={operation}>
-      <option value="add">Add</option>
-      <option value="multiply">Multiply</option>
-    </select>
-    <button on:click={submitJob} disabled={loading}>
-      {loading ? 'Processing...' : 'Compute'}
-    </button>
+    <form on:submit|preventDefault={submitJob}>
+      <label for="val1">Value 1</label>
+      <input id="val1" type="number" bind:value={val1} placeholder="Value 1" required />
+
+      <label for="val2">Value 2</label>
+      <input id="val2" type="number" bind:value={val2} placeholder="Value 2" required />
+
+      <label for="operation">Operation</label>
+      <select id="operation" bind:value={operation}>
+        <option value="add">Add</option>
+        <option value="multiply">Multiply</option>
+      </select>
+
+      <button type="submit" class="btn-primary" disabled={loading}>
+        {loading ? 'Processing...' : 'Compute'}
+      </button>
+    </form>
   </div>
 
   {#if jobId}
@@ -78,8 +86,4 @@
 
 <style>
   .dashboard { padding: 2rem; }
-  .card { border: 1px solid #ccc; padding: 1rem; margin-bottom: 1rem; border-radius: 8px; }
-  input, select { display: block; margin-bottom: 0.5rem; width: 100%; padding: 0.5rem; }
-  button { padding: 0.5rem 1rem; background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; }
-  button:disabled { background: #ccc; }
 </style>
