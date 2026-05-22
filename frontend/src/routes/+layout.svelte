@@ -43,10 +43,5 @@
   .nav-links { display: flex; gap: 1rem; align-items: center; }
   .nav-links a { color: var(--text-secondary); text-decoration: none; font-weight: 500; }
   .nav-links a:hover { color: var(--text-primary); }
-  .btn-secondary {
-    background: transparent; border: 1px solid var(--border); color: var(--text-primary);
-    padding: 0.5rem 1rem; border-radius: var(--radius);
-  }
-  .btn-secondary:hover { background: var(--border); }
   .container { flex: 1; padding: 2rem; max-width: 1200px; margin: 0 auto; width: 100%; }
 </style>

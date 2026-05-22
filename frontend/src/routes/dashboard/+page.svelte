@@ -10,6 +10,17 @@
   let result = '';
   let status = '';
   let loading = false;
+  let copied = false;
+
+  async function copyToClipboard(text: string) {
+    try {
+      await navigator.clipboard.writeText(text);
+      copied = true;
+      setTimeout(() => copied = false, 2000);
+    } catch (err) {
+      console.error('Failed to copy: ', err);
+    }
+  }
 
   async function submitJob() {
     loading = true;
@@ -54,11 +65,11 @@
   <div class="card">
     <h2>New Computation</h2>
     <form on:submit|preventDefault={submitJob}>
-      <label for="val1">Value 1</label>
-      <input id="val1" type="number" bind:value={val1} placeholder="Value 1" required />
+      <label for="val1">Value 1 (0-1023)</label>
+      <input id="val1" type="number" bind:value={val1} min="0" max="1023" placeholder="Value 1" required />
 
-      <label for="val2">Value 2</label>
-      <input id="val2" type="number" bind:value={val2} placeholder="Value 2" required />
+      <label for="val2">Value 2 (0-1023)</label>
+      <input id="val2" type="number" bind:value={val2} min="0" max="1023" placeholder="Value 2" required />
 
       <label for="operation">Operation</label>
       <select id="operation" bind:value={operation}>
@@ -76,9 +87,16 @@
     <div class="card">
       <h2>Job Status</h2>
       <p>ID: {jobId}</p>
-      <p>Status: {status}</p>
+      <p class:success={status === 'completed'} class:error={status.startsWith('Failed')}>
+        Status: {status}
+      </p>
       {#if result}
-        <p>Result (Base64): {result}</p>
+        <div class="result-container">
+          <p>Result (Base64): <code class="result-text">{result}</code></p>
+          <button class="btn-secondary btn-sm" on:click={() => copyToClipboard(result)}>
+            {copied ? 'Copied!' : 'Copy'}
+          </button>
+        </div>
       {/if}
     </div>
   {/if}
@@ -86,4 +104,6 @@
 
 <style>
   .dashboard { padding: 2rem; }
+  .result-container { margin-top: 1rem; display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+  .result-text { background: var(--bg-primary); padding: 0.2rem 0.4rem; border-radius: 4px; word-break: break-all; }
 </style>
