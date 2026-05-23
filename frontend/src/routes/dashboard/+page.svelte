@@ -10,6 +10,17 @@
   let result = '';
   let status = '';
   let loading = false;
+  let copied = false;
+
+  async function copyResult() {
+    try {
+      await navigator.clipboard.writeText(result);
+      copied = true;
+      setTimeout(() => copied = false, 2000);
+    } catch (err) {
+      console.error('Failed to copy: ', err);
+    }
+  }
 
   async function submitJob() {
     loading = true;
@@ -73,12 +84,23 @@
   </div>
 
   {#if jobId}
-    <div class="card">
+    <div class="card" aria-live="polite">
       <h2>Job Status</h2>
       <p>ID: {jobId}</p>
       <p>Status: {status}</p>
       {#if result}
-        <p>Result (Base64): {result}</p>
+        <div class="result-container">
+          <p>Result (Base64):</p>
+          <code class="result-block">{result}</code>
+          <div class="result-actions">
+            <button type="button" class="btn-secondary btn-sm" on:click={copyResult}>
+              {copied ? 'Copied!' : 'Copy to Clipboard'}
+            </button>
+            {#if copied}
+              <span class="success" role="status">Text copied!</span>
+            {/if}
+          </div>
+        </div>
       {/if}
     </div>
   {/if}
@@ -86,4 +108,19 @@
 
 <style>
   .dashboard { padding: 2rem; }
+  .result-container { margin-top: 1rem; }
+  .result-block {
+    display: block;
+    background: var(--bg-primary);
+    padding: 1rem;
+    border-radius: var(--radius);
+    border: 1px solid var(--border);
+    margin: 0.5rem 0;
+    word-break: break-all;
+    font-family: monospace;
+    max-height: 200px;
+    overflow-y: auto;
+  }
+  .result-actions { display: flex; align-items: center; gap: 1rem; margin-top: 0.5rem; }
+  :global(.btn-sm) { padding: 0.4rem 0.8rem; font-size: 0.875rem; width: auto; }
 </style>
