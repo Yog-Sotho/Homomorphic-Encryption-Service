@@ -95,3 +95,21 @@ input:focus, select:focus {
 
 .error { color: var(--error); font-size: 0.875rem; margin-top: 0.5rem; }
 .success { color: var(--success); font-size: 0.875rem; margin-top: 0.5rem; }
+
+.btn-secondary {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-primary);
+  padding: 0.5rem 1rem;
+  border-radius: var(--radius);
+}
+
+.btn-secondary:hover {
+  background: var(--border);
+}
+
+.btn-sm {
+  padding: 0.25rem 0.5rem;
+  font-size: 0.75rem;
+  margin-top: 0;
+}
