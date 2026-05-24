@@ -22,6 +22,12 @@
     }
   }
 
+  function clearDashboard() {
+    jobId = '';
+    status = '';
+    result = '';
+  }
+
   async function submitJob() {
     loading = true;
     status = '';
@@ -33,6 +39,7 @@
     try {
       const res = await compute.submitJob(b64, operation);
       jobId = res.data.id;
+      status = 'pending';
       pollStatus(jobId);
     } catch (e: any) {
       status = 'Error submitting job';
@@ -85,15 +92,31 @@
 
   {#if jobId}
     <div class="card">
-      <h2>Job Status</h2>
+      <div class="card-header">
+        <h2>Job Status</h2>
+        <button class="btn-secondary btn-sm" on:click={clearDashboard} type="button">Clear</button>
+      </div>
       <p>ID: {jobId}</p>
-      <p class:success={status === 'completed'} class:error={status.startsWith('Failed')}>
-        Status: {status}
+      <p>
+        Status:
+        <output
+          aria-live="polite"
+          class="status-text"
+          class:success={status === 'completed'}
+          class:error={status.startsWith('Failed') || status.startsWith('Error')}
+        >
+          {status}
+        </output>
       </p>
       {#if result}
         <div class="result-container">
           <p>Result (Base64): <code class="result-text">{result}</code></p>
-          <button class="btn-secondary btn-sm" on:click={() => copyToClipboard(result)}>
+          <button
+            class="btn-secondary btn-sm"
+            on:click={() => copyToClipboard(result)}
+            aria-label="Copy result to clipboard"
+            type="button"
+          >
             {copied ? 'Copied!' : 'Copy'}
           </button>
         </div>
@@ -104,6 +127,9 @@
 
 <style>
   .dashboard { padding: 2rem; }
+  .card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; }
+  .card-header h2 { margin-bottom: 0; }
+  .status-text { font-weight: 500; text-transform: capitalize; }
   .result-container { margin-top: 1rem; display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
   .result-text { background: var(--bg-primary); padding: 0.2rem 0.4rem; border-radius: 4px; word-break: break-all; }
 </style>
