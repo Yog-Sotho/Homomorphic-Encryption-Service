@@ -28,6 +28,11 @@
     result = '';
   }
 
+  function randomizeValues() {
+    val1 = Math.floor(Math.random() * 1024);
+    val2 = Math.floor(Math.random() * 1024);
+  }
+
   async function submitJob() {
     loading = true;
     status = '';
@@ -70,7 +75,17 @@
 <div class="dashboard">
   <h1>Homomorphic Compute Dashboard</h1>
   <div class="card">
-    <h2>New Computation</h2>
+    <div class="card-header">
+      <h2>New Computation</h2>
+      <button
+        class="btn-secondary btn-sm"
+        on:click={randomizeValues}
+        aria-label="Randomize computation values"
+        type="button"
+      >
+        Randomize
+      </button>
+    </div>
     <form on:submit|preventDefault={submitJob}>
       <label for="val1">Value 1 (0-1023)</label>
       <input id="val1" type="number" bind:value={val1} min="0" max="1023" placeholder="Value 1" required />
