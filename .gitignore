@@ -12,3 +12,6 @@ frontend/dist/
 backend/target/
 backend/he_saas.db
 *.db
+
+# Claude Code internal
+.claude/
