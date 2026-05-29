@@ -38,9 +38,7 @@
   <div class="app">
     <header class="topbar">
       <a class="brand" href="{base}/dashboard">
-        <span class="brand-mark">⟨HE⟩</span>
-        <span class="brand-text">HEaaS</span>
-        <span class="badge badge-indigo">Beta</span>
+        <img src="{base}/logo.svg" alt="HEaaS" class="brand-logo" />
       </a>
       <nav class="topbar-right">
         {#if $userStore}
@@ -63,36 +61,20 @@
   .topbar {
     position: sticky; top: 0; z-index: 100;
     display: flex; align-items: center; justify-content: space-between;
-    padding: 0 1.5rem; height: 54px;
-    background: rgba(8, 11, 20, 0.80);
-    backdrop-filter: blur(16px);
-    -webkit-backdrop-filter: blur(16px);
+    padding: 0 1.75rem; height: 52px;
+    background: rgba(8, 11, 20, 0.92);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
     border-bottom: 1px solid var(--border);
   }
 
-  .brand {
-    display: flex; align-items: center; gap: 0.6rem;
-    text-decoration: none;
-  }
-  .brand-mark {
-    font-family: var(--font-mono);
-    font-size: 0.9375rem; font-weight: 500;
-    color: var(--accent);
-    background: var(--accent-glow);
-    padding: 0.2rem 0.45rem;
-    border-radius: 5px;
-    border: 1px solid rgba(99,102,241,0.35);
-    letter-spacing: -0.04em;
-  }
-  .brand-text {
-    font-weight: 700; font-size: 0.9375rem;
-    color: var(--text-primary); letter-spacing: -0.02em;
-  }
+  .brand { display: flex; align-items: center; text-decoration: none; }
+  .brand-logo { height: 28px; width: auto; display: block; }
 
   .topbar-right { display: flex; align-items: center; gap: 0.5rem; }
   .user-chip {
-    font-size: 0.8125rem; color: var(--text-secondary);
-    padding: 0.25rem 0.625rem;
+    font-size: 0.8rem; color: var(--text-secondary);
+    padding: 0.2rem 0.6rem;
     background: var(--border);
     border-radius: 999px;
     max-width: 200px;
@@ -101,14 +83,15 @@
 
   .page-content {
     flex: 1;
-    padding: 2.5rem 1.5rem;
-    max-width: 820px;
+    padding: 2rem 1.5rem;
+    max-width: 860px;
     margin: 0 auto;
     width: 100%;
   }
 
   @media (max-width: 600px) {
-    .page-content { padding: 1.5rem 1rem; }
+    .topbar { padding: 0 1rem; }
+    .page-content { padding: 1.25rem 1rem; }
     .user-chip { display: none; }
   }
 </style>

@@ -48,6 +48,7 @@
 </script>
 
 <div class="container">
+  <img src="{base}/logo.svg" alt="HEaaS" class="page-logo" />
   <h1>{isLogin ? 'Sign In' : 'Create Account'}</h1>
   {#if error}<p class="error" role="alert">{error}</p>{/if}
 
@@ -102,7 +103,8 @@
 
 <style>
   .container { max-width: 420px; margin: 3rem auto; padding: 2rem; }
-  h1 { margin-bottom: 1.5rem; font-size: 1.5rem; }
+  .page-logo { width: 130px; height: auto; display: block; margin: 0 auto 1.75rem; }
+  h1 { margin-bottom: 1.25rem; font-size: 1.375rem; text-align: center; }
   .toggle-text { margin-top: 1.5rem; text-align: center; font-size: 0.875rem; color: var(--text-secondary); }
   .btn-link { background: none; border: none; color: var(--accent); cursor: pointer; text-decoration: underline; padding: 0; font-size: inherit; }
   .hint {

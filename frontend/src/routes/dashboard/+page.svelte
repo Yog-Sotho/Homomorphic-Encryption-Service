@@ -54,39 +54,38 @@
 </script>
 
 <div class="page">
-  <!-- Page header -->
   <div class="page-header">
-    <div>
-      <h1>Homomorphic Compute</h1>
-      <p class="text-muted" style="margin-top:0.4rem">
-        Arithmetic on encrypted data — the server never sees your plaintext values.
-      </p>
+    <div class="page-title-row">
+      <h1>Compute</h1>
+      <span class="live-dot" aria-label="Live"></span>
     </div>
-    <span class="badge badge-green">Live</span>
-  </div>
-
-  <!-- Info banner -->
-  <div class="info-banner">
-    <div class="info-icon">🔐</div>
-    <div>
-      <strong>Sandbox mode — server-managed keys</strong>
-      <p>
-        Inputs are encrypted server-side using BFV (TFHE-rs), the homomorphic operation
-        is performed on the ciphertexts, and the plaintext is recovered only at the final
-        decryption step. Arithmetic is modular — results wrap around 65 536.
-      </p>
+    <div class="spec-row" aria-label="Engine specifications">
+      <span class="spec">BFV</span>
+      <span class="spec-sep">·</span>
+      <span class="spec">TFHE-rs 1.3</span>
+      <span class="spec-sep">·</span>
+      <span class="spec">128-bit</span>
+      <span class="spec-sep">·</span>
+      <span class="spec">mod 65536</span>
+      <span class="spec-sep">·</span>
+      <span class="spec">Sandbox</span>
     </div>
   </div>
 
-  <!-- Compute form -->
   <div class="card compute-card">
-    <h2>New Computation</h2>
+    <div class="card-header">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="card-icon" aria-hidden="true">
+        <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
+        <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+      </svg>
+      <span class="card-title">New Computation</span>
+      <span class="card-subtitle">Inputs are encrypted before leaving the browser — the server never sees plaintext values</span>
+    </div>
 
-    <form on:submit|preventDefault={runSandbox} style="margin-top:1.25rem">
-      <!-- Operation selector -->
-      <div class="field-group">
-        <label for="operation">Operation</label>
-        <div class="op-tabs" id="operation">
+    <form on:submit|preventDefault={runSandbox} class="compute-form">
+      <div class="field-block">
+        <label id="op-label">Operation</label>
+        <div class="op-tabs" role="group" aria-labelledby="op-label">
           <button
             type="button"
             class="op-tab"
@@ -105,39 +104,22 @@
           </button>
         </div>
         {#if operation === 'multiply'}
-          <p class="field-hint">Values capped at 255 to prevent modular wrap-around.</p>
+          <p class="field-hint">Values capped at 255 — multiplying larger integers wraps around mod 65536.</p>
         {/if}
       </div>
 
-      <!-- Value inputs -->
       <div class="inputs-row">
-        <div class="field-group">
+        <div class="field-block">
           <label for="val1">Value A</label>
-          <input
-            id="val1"
-            type="number"
-            bind:value={val1}
-            min="0"
-            max={maxVal}
-            required
-          />
+          <input id="val1" type="number" bind:value={val1} min="0" max={maxVal} required />
         </div>
-        <div class="op-divider" aria-hidden="true">
-          {operation === 'add' ? '+' : '×'}
-        </div>
-        <div class="field-group">
+        <div class="op-glyph" aria-hidden="true">{operation === 'add' ? '+' : '×'}</div>
+        <div class="field-block">
           <label for="val2">Value B</label>
-          <input
-            id="val2"
-            type="number"
-            bind:value={val2}
-            min="0"
-            max={maxVal}
-            required
-          />
+          <input id="val2" type="number" bind:value={val2} min="0" max={maxVal} required />
         </div>
-        <div class="op-divider" aria-hidden="true">=</div>
-        <div class="field-group expected">
+        <div class="op-glyph" aria-hidden="true">=</div>
+        <div class="field-block expected-block">
           <label>Expected</label>
           <div class="expected-val">{expectedResult}</div>
         </div>
@@ -147,33 +129,33 @@
         {#if loading}
           <span class="spinner"></span> Computing…
         {:else}
-          Run Computation
+          Run
         {/if}
       </button>
     </form>
   </div>
 
-  <!-- Error state -->
   {#if errorMessage}
     <div class="card result-card error-card">
       <div class="result-header">
         <span class="badge badge-red">Error</span>
-        <button class="btn-ghost" on:click={clearResults} type="button">Dismiss</button>
+        <button class="btn-ghost dismiss-btn" on:click={clearResults} type="button">Dismiss</button>
       </div>
       <p class="error-text">{errorMessage}</p>
     </div>
   {/if}
 
-  <!-- Result state -->
   {#if plaintextResult !== null}
     <div class="card result-card success-card">
       <div class="result-header">
         <span class="badge badge-green">Result</span>
-        <button class="btn-ghost" on:click={clearResults} type="button">Clear</button>
+        <button class="btn-ghost dismiss-btn" on:click={clearResults} type="button">Clear</button>
       </div>
 
       <div class="result-plaintext">
-        <span class="result-label">Plaintext</span>
+        <div class="result-label-row">
+          <span class="result-label">Plaintext</span>
+        </div>
         <span class="result-number">{plaintextResult}</span>
       </div>
 
@@ -181,7 +163,8 @@
 
       <div class="ciphertext-section">
         <div class="ciphertext-header">
-          <span class="result-label">Ciphertext (Base64)</span>
+          <span class="result-label">Ciphertext</span>
+          <span class="ct-meta">{resultB64.length} chars · TFHE-rs BFV</span>
           <div class="ciphertext-actions">
             <button class="btn-secondary" type="button" on:click={() => showFullCiphertext = !showFullCiphertext}>
               {showFullCiphertext ? 'Collapse' : 'Expand'}
@@ -191,14 +174,7 @@
             </button>
           </div>
         </div>
-        <code class="ciphertext-value" class:collapsed={!showFullCiphertext}>
-          {resultB64}
-        </code>
-        {#if !showFullCiphertext}
-          <p class="ciphertext-note">
-            {resultB64.length} chars — this is the actual encrypted ciphertext produced by TFHE-rs.
-          </p>
-        {/if}
+        <code class="ciphertext-value" class:collapsed={!showFullCiphertext}>{resultB64}</code>
       </div>
     </div>
   {/if}
@@ -207,145 +183,174 @@
 <style>
   .page { display: flex; flex-direction: column; gap: 1rem; }
 
-  .page-header {
-    display: flex; align-items: flex-start; justify-content: space-between;
+  /* ── Page header ─────────────────────────────────── */
+  .page-header { margin-bottom: 0.25rem; }
+
+  .page-title-row {
+    display: flex; align-items: center; gap: 0.625rem;
     margin-bottom: 0.5rem;
   }
 
-  .info-banner {
-    display: flex; gap: 1rem; align-items: flex-start;
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-left: 3px solid var(--accent);
-    border-radius: var(--radius);
-    padding: 1rem 1.25rem;
-    font-size: 0.875rem;
+  .live-dot {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--success);
+    box-shadow: 0 0 6px var(--success);
+    flex-shrink: 0;
   }
-  .info-icon { font-size: 1.25rem; flex-shrink: 0; margin-top: 0.1rem; }
-  .info-banner strong { display: block; margin-bottom: 0.25rem; color: var(--text-primary); font-size: 0.875rem; }
-  .info-banner p { color: var(--text-secondary); line-height: 1.5; }
 
-  .compute-card h2 { margin-bottom: 0; }
+  .spec-row {
+    display: flex; align-items: center; flex-wrap: wrap; gap: 0.25rem;
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    color: var(--text-muted);
+  }
+  .spec { color: var(--text-secondary); }
+  .spec-sep { color: var(--text-muted); }
 
-  /* Op tabs */
+  /* ── Compute card ────────────────────────────────── */
+  .compute-card {
+    background-image: radial-gradient(circle, rgba(255,255,255,0.025) 1px, transparent 1px);
+    background-size: 22px 22px;
+  }
+
+  .card-header {
+    display: flex; align-items: baseline; flex-wrap: wrap; gap: 0.5rem;
+    margin-bottom: 1.5rem;
+  }
+  .card-icon {
+    color: var(--accent); align-self: center;
+    flex-shrink: 0; margin-top: 1px;
+  }
+  .card-title { font-weight: 600; font-size: 0.9375rem; }
+  .card-subtitle {
+    font-size: 0.775rem; color: var(--text-muted); flex-basis: 100%;
+    margin-left: 1.375rem; /* align with title, past icon */
+    line-height: 1.4;
+  }
+
+  .compute-form { display: flex; flex-direction: column; gap: 0; }
+
+  /* ── Op tabs ─────────────────────────────────────── */
+  .field-block { display: flex; flex-direction: column; }
+
   .op-tabs {
-    display: inline-flex; gap: 0.375rem;
+    display: inline-flex; gap: 0.25rem;
     background: var(--bg-secondary);
-    padding: 0.25rem;
+    padding: 0.2rem;
     border-radius: var(--radius-sm);
     border: 1px solid var(--border-strong);
-    margin-bottom: 1.125rem;
+    margin-bottom: 1rem;
   }
   .op-tab {
-    display: flex; align-items: center; gap: 0.375rem;
-    padding: 0.4rem 1rem;
+    display: flex; align-items: center; gap: 0.35rem;
+    padding: 0.375rem 0.875rem;
     border-radius: 4px;
-    font-size: 0.875rem; font-weight: 500;
+    font-size: 0.8375rem; font-weight: 500;
     color: var(--text-secondary);
     background: transparent; border: none;
     transition: background 0.15s, color 0.15s;
   }
   .op-tab:hover { color: var(--text-primary); }
-  .op-tab.active { background: var(--surface-elevated); color: var(--text-primary); box-shadow: 0 1px 4px rgba(0,0,0,0.3); }
-  .op-sym { font-family: var(--font-mono); font-size: 1rem; color: var(--accent); }
+  .op-tab.active {
+    background: var(--surface-elevated);
+    color: var(--text-primary);
+    box-shadow: 0 1px 3px rgba(0,0,0,0.35);
+  }
+  .op-sym { font-family: var(--font-mono); font-size: 0.95rem; color: var(--accent); }
 
-  .field-hint { font-size: 0.75rem; color: var(--text-secondary); margin-top: -0.75rem; margin-bottom: 1rem; }
+  .field-hint { font-size: 0.7375rem; color: var(--text-muted); margin-top: -0.625rem; margin-bottom: 1rem; }
 
-  /* Inputs row */
+  /* ── Inputs row ──────────────────────────────────── */
   .inputs-row {
     display: grid;
-    grid-template-columns: 1fr auto 1fr auto 0.8fr;
+    grid-template-columns: 1fr auto 1fr auto 0.75fr;
     align-items: end;
-    gap: 0.75rem;
+    gap: 0.625rem;
     margin-bottom: 1.25rem;
   }
-  .field-group { display: flex; flex-direction: column; }
-  .field-group label { margin-bottom: 0.375rem; }
-  .field-group input { margin-bottom: 0; }
+  .field-block label { margin-bottom: 0.3rem; }
+  .field-block input { margin-bottom: 0; }
 
-  .op-divider {
+  .op-glyph {
     font-family: var(--font-mono);
-    font-size: 1.25rem; font-weight: 500;
-    color: var(--text-secondary);
-    padding-bottom: 0.65rem;
+    font-size: 1.125rem; font-weight: 400;
+    color: var(--text-muted);
+    padding-bottom: 0.625rem;
     user-select: none;
   }
 
-  .expected { opacity: 0.75; }
+  .expected-block { opacity: 0.8; }
   .expected-val {
-    padding: 0.6rem 0.875rem;
+    padding: 0.575rem 0.75rem;
     background: var(--bg-secondary);
-    border: 1px dashed var(--border-strong);
+    border: 1px dashed rgba(255,255,255,0.08);
     border-radius: var(--radius-sm);
     font-family: var(--font-mono);
     font-size: 0.9375rem;
     color: var(--text-secondary);
   }
 
-  /* Results */
+  /* ── Result card ─────────────────────────────────── */
   .result-card { margin-top: 0; }
   .result-header {
     display: flex; justify-content: space-between; align-items: center;
-    margin-bottom: 1.125rem;
+    margin-bottom: 1rem;
   }
+  .dismiss-btn { font-size: 0.775rem; padding: 0.2rem 0.5rem; }
 
-  .success-card { border-color: rgba(16,185,129,0.2); }
-  .error-card   { border-color: rgba(239,68,68,0.2); }
+  .success-card { border-color: rgba(16,185,129,0.18); }
+  .error-card   { border-color: rgba(239,68,68,0.18); }
   .error-text { color: var(--error); font-size: 0.9375rem; }
 
-  .result-plaintext {
-    display: flex; align-items: baseline; gap: 1rem;
-    margin-bottom: 0;
-  }
+  .result-plaintext { margin-bottom: 0; }
+  .result-label-row { margin-bottom: 0.25rem; }
   .result-label {
-    font-size: 0.75rem; font-weight: 600;
-    color: var(--text-secondary);
-    letter-spacing: 0.06em; text-transform: uppercase;
-    flex-shrink: 0;
+    font-size: 0.6875rem; font-weight: 600;
+    color: var(--text-muted);
+    letter-spacing: 0.08em; text-transform: uppercase;
   }
   .result-number {
     font-family: var(--font-mono);
-    font-size: 2.25rem; font-weight: 700;
+    font-size: 3rem; font-weight: 700;
     color: var(--success);
-    letter-spacing: -0.02em;
+    letter-spacing: -0.03em;
     line-height: 1;
   }
 
-  .ciphertext-section { display: flex; flex-direction: column; gap: 0.625rem; }
+  .ciphertext-section { display: flex; flex-direction: column; gap: 0.5rem; }
   .ciphertext-header {
-    display: flex; justify-content: space-between; align-items: center;
+    display: flex; align-items: center; gap: 0.625rem; flex-wrap: wrap;
   }
-  .ciphertext-actions { display: flex; gap: 0.375rem; }
+  .ct-meta {
+    font-family: var(--font-mono);
+    font-size: 0.7rem; color: var(--text-muted);
+    margin-right: auto;
+  }
+  .ciphertext-actions { display: flex; gap: 0.3rem; }
   .ciphertext-value {
     font-family: var(--font-mono);
-    font-size: 0.75rem;
-    color: var(--text-secondary);
+    font-size: 0.7rem;
+    color: var(--text-muted);
     background: var(--bg-secondary);
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);
-    padding: 0.75rem;
+    padding: 0.625rem 0.75rem;
     word-break: break-all;
-    line-height: 1.6;
-    transition: max-height 0.2s;
+    line-height: 1.7;
   }
   .ciphertext-value.collapsed {
-    max-height: 3.6rem;
+    max-height: 3.4rem;
     overflow: hidden;
     display: -webkit-box;
     -webkit-line-clamp: 2;
     -webkit-box-orient: vertical;
   }
-  .ciphertext-note {
-    font-size: 0.75rem;
-    color: var(--text-muted);
-  }
 
   @media (max-width: 600px) {
     .inputs-row {
       grid-template-columns: 1fr 1fr;
-      grid-template-rows: auto auto auto;
     }
-    .op-divider { display: none; }
-    .expected { grid-column: span 2; }
+    .op-glyph { display: none; }
+    .expected-block { grid-column: span 2; }
   }
 </style>
