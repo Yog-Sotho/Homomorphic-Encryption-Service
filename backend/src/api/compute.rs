@@ -3,13 +3,9 @@ use sqlx::SqlitePool;
 use uuid::Uuid;
 use serde::{Deserialize, Serialize};
 use crate::db::models::{CreateJobRequest, Job, JobResponse};
-use crate::crypto::engine::AppState;
+use crate::crypto::engine::{AppState, PLAIN_MODULUS};
 use base64::{Engine as _, engine::general_purpose};
 use crate::errors::AppError;
-
-// ---------------------------------------------------------------------------
-// Sandbox endpoint (C9)
-// ---------------------------------------------------------------------------
 
 #[derive(Deserialize)]
 pub struct SandboxRequest {
@@ -24,11 +20,6 @@ pub struct SandboxResponse {
     pub result_b64: String,
 }
 
-/// POST /api/compute/sandbox
-///
-/// Accepts plaintext u64 values, encrypts them with the HE engine, performs
-/// the requested operation on the ciphertexts, decrypts, and returns both the
-/// plaintext result and the Base64-encoded raw ciphertext bytes.
 pub async fn sandbox_compute(
     state: web::Data<AppState>,
     req: web::Json<SandboxRequest>,
@@ -36,13 +27,18 @@ pub async fn sandbox_compute(
     if req.operation != "add" && req.operation != "multiply" {
         return Err(AppError::bad_request("Unsupported operation. Use 'add' or 'multiply'."));
     }
+    if req.value1 >= PLAIN_MODULUS || req.value2 >= PLAIN_MODULUS {
+        return Err(AppError::bad_request(
+            format!("Values must be in the range 0–{}.", PLAIN_MODULUS - 1)
+        ));
+    }
 
     let ctx_arc = state.he_pool.acquire();
     let ctx = ctx_arc.lock().await;
 
-    let ct1 = ctx.encrypt_batch(&[req.value1])
+    let ct1 = ctx.encrypt(req.value1)
         .map_err(|e| AppError::internal(format!("Encrypt value1: {}", e)))?;
-    let ct2 = ctx.encrypt_batch(&[req.value2])
+    let ct2 = ctx.encrypt(req.value2)
         .map_err(|e| AppError::internal(format!("Encrypt value2: {}", e)))?;
 
     let result_ct = if req.operation == "add" {
@@ -52,10 +48,9 @@ pub async fn sandbox_compute(
     }
     .map_err(|e| AppError::internal(format!("HE operation failed: {}", e)))?;
 
-    let decrypted = ctx.decrypt_batch(&result_ct)
+    let plaintext_result = ctx.decrypt(&result_ct)
         .map_err(|e| AppError::internal(format!("Decrypt failed: {}", e)))?;
 
-    let plaintext_result = decrypted.into_iter().next().unwrap_or(0);
     let result_b64 = general_purpose::STANDARD.encode(&result_ct);
 
     Ok(HttpResponse::Ok().json(SandboxResponse {
@@ -63,10 +58,6 @@ pub async fn sandbox_compute(
         result_b64,
     }))
 }
-
-// ---------------------------------------------------------------------------
-// Async job queue endpoints
-// ---------------------------------------------------------------------------
 
 pub async fn submit_job(
     pool: web::Data<SqlitePool>,
@@ -97,21 +88,13 @@ pub async fn submit_job(
     let input_b64 = req.input_data_b64.clone();
     let op = req.operation.clone();
 
-    // B5 — wrap the spawn in a panic-safe handler that logs errors and updates
-    // the job status to 'failed' if the inner work returns Err.
     tokio::spawn(async move {
         match try_process_job(pool_clone.clone(), state_clone, job_id_clone.clone(), input_b64, op).await {
             Ok(()) => {}
             Err(e) => {
                 log::error!("Job {} failed: {}", job_id_clone, e);
-                update_job_status(
-                    &pool_clone,
-                    &job_id_clone,
-                    "failed",
-                    None,
-                    Some(format!("Internal error: {}", e)),
-                )
-                .await;
+                update_job_status(&pool_clone, &job_id_clone, "failed", None,
+                    Some(format!("Internal error: {}", e))).await;
             }
         }
     });
@@ -124,7 +107,6 @@ pub async fn submit_job(
     }))
 }
 
-/// Inner function that returns a Result so errors can be caught by the spawn wrapper.
 async fn try_process_job(
     pool: web::Data<SqlitePool>,
     state: web::Data<AppState>,
@@ -226,7 +208,6 @@ pub async fn get_job_status(
     }
 }
 
-/// GET /api/compute/jobs — list the most recent 50 jobs for the authenticated user.
 pub async fn list_jobs(
     pool: web::Data<SqlitePool>,
     user_id: web::ReqData<String>,

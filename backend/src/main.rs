@@ -5,12 +5,19 @@ mod db;
 mod errors;
 mod middleware;
 
-use actix_web::{web, App, HttpServer};
+use actix_web::{web, App, HttpResponse, HttpServer};
 use actix_web::middleware::from_fn;
 use actix_cors::Cors;
 use crate::crypto::engine::{AppState, HeContextPool};
 use crate::middleware::rate_limit::RateLimiter;
 use std::sync::Arc;
+
+async fn health() -> HttpResponse {
+    HttpResponse::Ok().json(serde_json::json!({
+        "status": "ok",
+        "version": env!("CARGO_PKG_VERSION")
+    }))
+}
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
@@ -20,8 +27,8 @@ async fn main() -> std::io::Result<()> {
 
     let pool = db::connect(&config.database_url).await.expect("Failed to connect to DB");
 
-    let pool_size = num_cpus::get().max(2);
-    let he_pool = HeContextPool::new(pool_size).expect("Failed to initialize HE Context pool");
+    let he_pool = HeContextPool::new(config.he_pool_size)
+        .expect("Failed to initialize HE Context pool");
     let app_state = web::Data::new(AppState {
         he_pool: Arc::new(he_pool),
     });
@@ -32,7 +39,6 @@ async fn main() -> std::io::Result<()> {
     let rate_limiter = web::Data::new(RateLimiter::new());
 
     HttpServer::new(move || {
-        // S2 — read ALLOWED_ORIGINS from env, fall back to localhost in debug
         let cors = build_cors();
 
         App::new()
@@ -41,6 +47,7 @@ async fn main() -> std::io::Result<()> {
             .app_data(app_state.clone())
             .app_data(config_data.clone())
             .app_data(rate_limiter.clone())
+            .route("/api/health", web::get().to(health))
             .service(
                 web::scope("/api")
                     .service(
@@ -67,9 +74,8 @@ async fn main() -> std::io::Result<()> {
 fn build_cors() -> Cors {
     #[cfg(debug_assertions)]
     {
-        // Development: fall back to allowing localhost origins
         let allowed_origins = std::env::var("ALLOWED_ORIGINS")
-            .unwrap_or_else(|_| "http://localhost:3000,http://localhost:5173,http://localhost:8080".to_string());
+            .unwrap_or_else(|_| "http://localhost:3000,http://localhost:5173".to_string());
         let origins: Vec<String> = allowed_origins
             .split(',')
             .map(|s| s.trim().to_string())

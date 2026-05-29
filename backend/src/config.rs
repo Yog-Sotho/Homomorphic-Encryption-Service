@@ -5,6 +5,7 @@ pub struct Config {
     pub database_url: String,
     pub jwt_secret: String,
     pub server_addr: String,
+    pub he_pool_size: usize,
 }
 
 impl Config {
@@ -25,12 +26,17 @@ impl Config {
                 #[cfg(not(debug_assertions))]
                 {
                     panic!(
-                        "FATAL: JWT_SECRET environment variable must be set in release builds. \
-                        Generate a strong random secret and set it before running."
+                        "FATAL: JWT_SECRET environment variable must be set in release builds."
                     );
                 }
             }
         };
+
+        let he_pool_size = env::var("HE_POOL_SIZE")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(2)
+            .max(1);
 
         Config {
             database_url: env::var("DATABASE_URL")
@@ -38,6 +44,7 @@ impl Config {
             jwt_secret,
             server_addr: env::var("SERVER_ADDR")
                 .unwrap_or_else(|_| "127.0.0.1:8080".to_string()),
+            he_pool_size,
         }
     }
 }

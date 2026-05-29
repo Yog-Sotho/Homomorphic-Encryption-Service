@@ -1,20 +1,19 @@
-version: '3.8'
 services:
   backend:
     build:
       context: .
       dockerfile: Dockerfile
     ports:
-      - "8080:8080"
+      - "18080:8080"
     environment:
       - DATABASE_URL=sqlite:///usr/src/he-backend/data/he_saas.db
-      # S6: JWT_SECRET must be provided via .env — the :? syntax causes compose
-      # to fail immediately with a clear error if the variable is not set.
       - JWT_SECRET=${JWT_SECRET:?JWT_SECRET must be set in .env}
       - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:3000}
+      - SERVER_ADDR=0.0.0.0:8080
+      - RUST_LOG=info
+      - HE_POOL_SIZE=${HE_POOL_SIZE:-2}
     volumes:
       - ./data:/usr/src/he-backend/data
-
   frontend:
     image: node:20-alpine
     working_dir: /app

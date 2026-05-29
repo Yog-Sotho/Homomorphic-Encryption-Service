@@ -20,7 +20,7 @@ log = "0.4"
 dotenvy = "0.15"
 thiserror = "1"
 base64 = "0.22"
-lazy_static = "1.5"
 dashmap = "6"
 bincode = "1"
 num_cpus = "1"
+tfhe = { version = "~1.3", features = ["integer"] }
