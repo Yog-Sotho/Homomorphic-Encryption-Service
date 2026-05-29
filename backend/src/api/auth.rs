@@ -4,8 +4,40 @@ use jsonwebtoken::{encode, Header, EncodingKey};
 use bcrypt::{hash, verify, DEFAULT_COST};
 use uuid::Uuid;
 use sqlx::SqlitePool;
+use std::sync::Arc;
+use crate::config::Config;
 use crate::db::models::User;
-use crate::error::AppError;
+use crate::errors::AppError;
+
+/// A bcrypt-hashed dummy password used to equalise timing when a user is not
+/// found, preventing a user-enumeration timing oracle.
+const DUMMY_HASH: &str = "$2b$12$WXQEq5YBFxVkx2j5bVBNNOLIGgWS0DVOvt0gp8b2ioY6O3S9XEi/6";
+
+/// Validates that an email address has the minimal structure:
+///   - non-empty local part
+///   - an '@' separator
+///   - a domain that contains at least one '.'
+fn is_valid_email(email: &str) -> bool {
+    if let Some(at_pos) = email.find('@') {
+        let local = &email[..at_pos];
+        let domain = &email[at_pos + 1..];
+        !local.is_empty() && domain.contains('.')
+    } else {
+        false
+    }
+}
+
+/// Validates that a password meets the minimum policy:
+///   - at least 8 characters long
+///   - contains at least one uppercase letter
+///   - contains at least one lowercase letter
+///   - contains at least one digit
+fn is_valid_password(password: &str) -> bool {
+    password.len() >= 8
+        && password.chars().any(|c| c.is_uppercase())
+        && password.chars().any(|c| c.is_lowercase())
+        && password.chars().any(|c| c.is_ascii_digit())
+}
 
 #[derive(Deserialize)]
 pub struct RegisterRequest {
@@ -19,24 +51,65 @@ pub struct LoginRequest {
     pub password: String,
 }
 
+/// Public representation of a user — never includes the password hash.
+#[derive(Serialize)]
+struct UserPublic {
+    pub id: String,
+    pub email: String,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl From<User> for UserPublic {
+    fn from(u: User) -> Self {
+        UserPublic {
+            id: u.id,
+            email: u.email,
+            created_at: u.created_at,
+        }
+    }
+}
+
 #[derive(Serialize)]
 pub struct AuthResponse {
     pub token: String,
-    pub user: User,
+    pub user: UserPublic,
+}
+
+fn make_jwt(user_id: &str, config: &Config) -> Result<String, AppError> {
+    let claims = crate::middleware::jwt::Claims {
+        sub: user_id.to_string(),
+        exp: (chrono::Utc::now() + chrono::Duration::hours(1)).timestamp() as usize,
+    };
+    let token = encode(
+        &Header::default(),
+        &claims,
+        &EncodingKey::from_secret(config.jwt_secret.as_ref()),
+    )?;
+    Ok(token)
 }
 
 pub async fn register(
     pool: web::Data<SqlitePool>,
+    config: web::Data<Arc<Config>>,
     req: web::Json<RegisterRequest>,
 ) -> Result<impl Responder, AppError> {
     let email = req.email.trim().to_lowercase();
     let password = &req.password;
 
-    if email.is_empty() || password.len() < 8 {
-        return Err(AppError { message: "Invalid input".to_string() });
+    if !is_valid_email(&email) {
+        return Err(AppError::bad_request(
+            "Invalid email address. Provide a valid email (e.g. user@example.com).",
+        ));
     }
 
-    let hashed_password = hash(password, DEFAULT_COST).map_err(|e| AppError { message: e.to_string() })?;
+    if !is_valid_password(password) {
+        return Err(AppError::bad_request(
+            "Password must be at least 8 characters and include uppercase, lowercase, and a digit.",
+        ));
+    }
+
+    let hashed_password = hash(password, DEFAULT_COST)
+        .map_err(|e| AppError::internal(e.to_string()))?;
     let user_id = Uuid::new_v4().to_string();
 
     sqlx::query!(
@@ -51,31 +124,25 @@ pub async fn register(
     let user = User {
         id: user_id.clone(),
         email: email.clone(),
-        password_hash: "".to_string(),
+        password_hash: String::new(),
         created_at: chrono::Utc::now(),
     };
 
-    let claims = crate::middleware::jwt::Claims {
-        sub: user_id,
-        exp: (chrono::Utc::now() + chrono::Duration::hours(1)).timestamp() as usize,
-    };
+    let token = make_jwt(&user_id, &config)?;
 
-    let secret = std::env::var("JWT_SECRET").unwrap_or_else(|_| "super-secret-key-2026-change-in-prod".to_string());
-    let token = encode(
-        &Header::default(),
-        &claims,
-        &EncodingKey::from_secret(secret.as_ref()),
-    ).map_err(|e| AppError { message: e.to_string() })?;
-
-    Ok(HttpResponse::Created().json(AuthResponse { token, user }))
+    Ok(HttpResponse::Created().json(AuthResponse {
+        token,
+        user: UserPublic::from(user),
+    }))
 }
 
 pub async fn login(
     pool: web::Data<SqlitePool>,
+    config: web::Data<Arc<Config>>,
     req: web::Json<LoginRequest>,
 ) -> Result<impl Responder, AppError> {
     let email = req.email.trim().to_lowercase();
-    
+
     let user = sqlx::query_as!(
         User,
         "SELECT id, email, password_hash, created_at FROM users WHERE email = ?",
@@ -86,24 +153,24 @@ pub async fn login(
 
     match user {
         Some(u) => {
-            if verify(&req.password, &u.password_hash).unwrap_or(false) {
-                let claims = crate::middleware::jwt::Claims {
-                    sub: u.id.clone(),
-                    exp: (chrono::Utc::now() + chrono::Duration::hours(1)).timestamp() as usize,
-                };
-                
-                let secret = std::env::var("JWT_SECRET").unwrap_or_else(|_| "super-secret-key-2026-change-in-prod".to_string());
-                let token = encode(
-                    &Header::default(),
-                    &claims,
-                    &EncodingKey::from_secret(secret.as_ref()),
-                ).map_err(|e| AppError { message: e.to_string() })?;
+            // B4 — bubble up real bcrypt errors instead of swallowing them
+            let valid = verify(&req.password, &u.password_hash)
+                .map_err(|e| AppError::internal(e.to_string()))?;
 
-                Ok(HttpResponse::Ok().json(AuthResponse { token, user: u }))
+            if valid {
+                let token = make_jwt(&u.id, &config)?;
+                Ok(HttpResponse::Ok().json(AuthResponse {
+                    token,
+                    user: UserPublic::from(u),
+                }))
             } else {
-                Err(AppError { message: "Invalid credentials".to_string() })
+                Err(AppError::unauthorized("Invalid credentials"))
             }
         }
-        None => Err(AppError { message: "Invalid credentials".to_string() }),
+        None => {
+            // S3 — constant-time path: always run bcrypt even when user not found
+            let _ = verify(&req.password, DUMMY_HASH);
+            Err(AppError::unauthorized("Invalid credentials"))
+        }
     }
 }

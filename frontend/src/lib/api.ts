@@ -32,5 +32,9 @@ export const auth = {
 
 export const compute = {
   submitJob: (inputDataB64: string, operation: string) => api.post('/compute/jobs', { input_data_b64: inputDataB64, operation }),
-  getJobStatus: (jobId: string) => api.get(`/compute/jobs/${jobId}`)
+  getJobStatus: (jobId: string) => api.get(`/compute/jobs/${jobId}`),
+  sandboxCompute: (value1: number, value2: number, operation: string) =>
+    api.post('/compute/sandbox', { value1, value2, operation }),
+  listJobs: () =>
+    api.get('/compute/jobs'),
 };

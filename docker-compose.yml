@@ -7,10 +7,13 @@ services:
     ports:
       - "8080:8080"
     environment:
-      - DATABASE_URL=sqlite://./he_saas.db
-      - JWT_SECRET=super-secret-key-2026-change-in-prod
+      - DATABASE_URL=sqlite:///usr/src/he-backend/data/he_saas.db
+      # S6: JWT_SECRET must be provided via .env — the :? syntax causes compose
+      # to fail immediately with a clear error if the variable is not set.
+      - JWT_SECRET=${JWT_SECRET:?JWT_SECRET must be set in .env}
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:3000}
     volumes:
-      - .//usr/src/he-backend/data
+      - ./data:/usr/src/he-backend/data
 
   frontend:
     image: node:20-alpine

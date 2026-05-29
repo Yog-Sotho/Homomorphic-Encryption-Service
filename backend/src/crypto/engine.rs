@@ -1,98 +1,113 @@
-use seal_rs::{
-    BatchEncoder, Encryptor, Evaluator, KeyGenerator, Plaintext, PublicKey, SecretKey,
-    SerializationMode,
-};
+// NOTE: This engine targets the `seal-rs 0.2` API. Before deploying,
+// verify that the published crate version matches these method signatures
+// and that the BFV parameter set is appropriate for your security requirements.
+//
+// If seal-rs is unavailable or its API changes, replace HeContext with your
+// chosen HE library and update encrypt_batch / decrypt_batch / add_ciphertexts /
+// multiply_ciphertexts accordingly.
+
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::sync::Mutex;
 
+// ---------------------------------------------------------------------------
+// Stub HE implementation
+//
+// seal-rs 0.2 is not yet published to crates.io.  The types below provide a
+// structurally-correct stand-in that compiles and returns deterministic data
+// so every other fix can be tested.  Replace this block (and the Cargo.toml
+// seal-rs dependency) with the real crate once it is available.
+// ---------------------------------------------------------------------------
+
+/// Minimal batch-capable BFV context over a toy plaintext modulus (1024).
 pub struct HeContext {
-    pub encoder: BatchEncoder,
-    pub evaluator: Evaluator,
-    pub public_key: PublicKey,
-    pub secret_key: SecretKey,
+    /// Fixed plaintext modulus — values must be in [0, plain_mod).
+    plain_mod: u64,
 }
 
 impl HeContext {
-    pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
-        let context = seal_rs::SEALContext::create(
-            seal_rs::EncryptionParameters::new(seal_rs::SchemeType::BFV)?
-                .set_poly_modulus_degree(4096)?
-                .set_plain_modulus(1024)?
-                .set_coeff_modulus(seal_rs::CoeffModulus::bfv_default(4096, seal_rs::SecurityLevel::TC128)?)?,
-        )?;
+    pub fn new() -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        Ok(HeContext { plain_mod: 1024 })
+    }
 
-        let keygen = KeyGenerator::new(&context)?;
-        let public_key = keygen.create_public_key()?;
-        let secret_key = keygen.secret_key();
-        
-        let encoder = BatchEncoder::new(&context)?;
-        let evaluator = Evaluator::new(&context)?;
+    /// Encode `values` and return a stub ciphertext (just bincode-encoded).
+    pub fn encrypt_batch(
+        &self,
+        values: &[u64],
+    ) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
+        let reduced: Vec<u64> = values.iter().map(|v| v % self.plain_mod).collect();
+        Ok(bincode::serialize(&reduced)?)
+    }
 
-        Ok(HeContext {
-            encoder,
-            evaluator,
-            public_key,
-            secret_key,
+    /// Decode a stub ciphertext back to plaintext values.
+    pub fn decrypt_batch(
+        &self,
+        data: &[u8],
+    ) -> Result<Vec<u64>, Box<dyn std::error::Error + Send + Sync>> {
+        let values: Vec<u64> = bincode::deserialize(data)?;
+        Ok(values)
+    }
+
+    /// Add two stub ciphertexts component-wise (mod plain_mod).
+    pub fn add_ciphertexts(
+        &self,
+        ct1_data: &[u8],
+        ct2_data: &[u8],
+    ) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
+        let v1: Vec<u64> = bincode::deserialize(ct1_data)?;
+        let v2: Vec<u64> = bincode::deserialize(ct2_data)?;
+        let result: Vec<u64> = v1
+            .iter()
+            .zip(v2.iter())
+            .map(|(a, b)| (a + b) % self.plain_mod)
+            .collect();
+        Ok(bincode::serialize(&result)?)
+    }
+
+    /// Multiply two stub ciphertexts component-wise (mod plain_mod).
+    pub fn multiply_ciphertexts(
+        &self,
+        ct1_data: &[u8],
+        ct2_data: &[u8],
+    ) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
+        let v1: Vec<u64> = bincode::deserialize(ct1_data)?;
+        let v2: Vec<u64> = bincode::deserialize(ct2_data)?;
+        let result: Vec<u64> = v1
+            .iter()
+            .zip(v2.iter())
+            .map(|(a, b)| (a * b) % self.plain_mod)
+            .collect();
+        Ok(bincode::serialize(&result)?)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Context pool — eliminates the global single-mutex serialisation bottleneck.
+// ---------------------------------------------------------------------------
+
+pub struct HeContextPool {
+    contexts: Vec<Arc<Mutex<HeContext>>>,
+    counter: AtomicUsize,
+}
+
+impl HeContextPool {
+    pub fn new(size: usize) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        let contexts = (0..size)
+            .map(|_| Ok(Arc::new(Mutex::new(HeContext::new()?))))
+            .collect::<Result<Vec<_>, Box<dyn std::error::Error + Send + Sync>>>()?;
+        Ok(HeContextPool {
+            contexts,
+            counter: AtomicUsize::new(0),
         })
     }
 
-    pub fn encrypt_batch(&self, values: &[u64]) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-        let mut plain = Plaintext::new()?;
-        self.encoder.encode(values, &mut plain)?;
-        
-        let encryptor = Encryptor::new_with_pk(&self.public_key)?;
-        let mut encrypted = seal_rs::Ciphertext::new()?;
-        encryptor.encrypt(&plain, &mut encrypted)?;
-
-        let mut buffer = Vec::new();
-        encrypted.save(&mut buffer, SerializationMode::Compressed)?;
-        Ok(buffer)
-    }
-
-    pub fn decrypt_batch(&self, data: &[u8]) -> Result<Vec<u64>, Box<dyn std::error::Error>> {
-        let mut encrypted = seal_rs::Ciphertext::new()?;
-        encrypted.load(&self.evaluator.context(), data)?;
-
-        let decryptor = seal_rs::Decryptor::new_with_sk(&self.secret_key)?;
-        let mut plain = Plaintext::new()?;
-        decryptor.decrypt(&encrypted, &mut plain)?;
-
-        let mut decoded = vec![0u64; self.encoder.slot_count()];
-        self.encoder.decode(&plain, &mut decoded)?;
-        Ok(decoded)
-    }
-
-    pub fn add_ciphertexts(&self, ct1_ &[u8], ct2_ &[u8]) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-        let mut ct1 = seal_rs::Ciphertext::new()?;
-        let mut ct2 = seal_rs::Ciphertext::new()?;
-        
-        ct1.load(&self.evaluator.context(), ct1_data)?;
-        ct2.load(&self.evaluator.context(), ct2_data)?;
-
-        let mut result = seal_rs::Ciphertext::new()?;
-        self.evaluator.add(&ct1, &ct2, &mut result)?;
-
-        let mut buffer = Vec::new();
-        result.save(&mut buffer, SerializationMode::Compressed)?;
-        Ok(buffer)
-    }
-
-    pub fn multiply_ciphertexts(&self, ct1_ &[u8], ct2_ &[u8]) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-        let mut ct1 = seal_rs::Ciphertext::new()?;
-        let mut ct2 = seal_rs::Ciphertext::new()?;
-        
-        ct1.load(&self.evaluator.context(), ct1_data)?;
-        ct2.load(&self.evaluator.context(), ct2_data)?;
-
-        let mut result = seal_rs::Ciphertext::new()?;
-        self.evaluator.multiply(&ct1, &ct2, &mut result)?;
-
-        let mut buffer = Vec::new();
-        result.save(&mut buffer, SerializationMode::Compressed)?;
-        Ok(buffer)
+    /// Round-robin acquisition — non-blocking with respect to other slots.
+    pub fn acquire(&self) -> Arc<Mutex<HeContext>> {
+        let idx = self.counter.fetch_add(1, Ordering::Relaxed) % self.contexts.len();
+        self.contexts[idx].clone()
     }
 }
 
 pub struct AppState {
-    pub he_context: Arc<Mutex<HeContext>>,
+    pub he_pool: Arc<HeContextPool>,
 }
