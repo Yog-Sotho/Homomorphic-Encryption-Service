@@ -55,6 +55,10 @@ async fn main() -> std::io::Result<()> {
                             .wrap(from_fn(middleware::rate_limit::rate_limit_middleware))
                             .route("/register", web::post().to(api::auth::register))
                             .route("/login", web::post().to(api::auth::login))
+                            .route("/google", web::get().to(api::auth::google_redirect))
+                            .route("/google/callback", web::get().to(api::auth::google_callback))
+                            .route("/github", web::get().to(api::auth::github_redirect))
+                            .route("/github/callback", web::get().to(api::auth::github_callback))
                     )
                     .service(
                         web::scope("/compute")

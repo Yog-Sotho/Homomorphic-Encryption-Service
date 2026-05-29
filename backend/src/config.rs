@@ -6,6 +6,11 @@ pub struct Config {
     pub jwt_secret: String,
     pub server_addr: String,
     pub he_pool_size: usize,
+    pub app_base_url: String,
+    pub google_client_id: Option<String>,
+    pub google_client_secret: Option<String>,
+    pub github_client_id: Option<String>,
+    pub github_client_secret: Option<String>,
 }
 
 impl Config {
@@ -45,6 +50,12 @@ impl Config {
             server_addr: env::var("SERVER_ADDR")
                 .unwrap_or_else(|_| "127.0.0.1:8080".to_string()),
             he_pool_size,
+            app_base_url: env::var("APP_BASE_URL")
+                .unwrap_or_else(|_| "http://localhost:3000".to_string()),
+            google_client_id: env::var("GOOGLE_CLIENT_ID").ok(),
+            google_client_secret: env::var("GOOGLE_CLIENT_SECRET").ok(),
+            github_client_id: env::var("GITHUB_CLIENT_ID").ok(),
+            github_client_secret: env::var("GITHUB_CLIENT_SECRET").ok(),
         }
     }
 }

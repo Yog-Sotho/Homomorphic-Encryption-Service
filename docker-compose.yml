@@ -12,6 +12,11 @@ services:
       - SERVER_ADDR=0.0.0.0:8080
       - RUST_LOG=info
       - HE_POOL_SIZE=${HE_POOL_SIZE:-2}
+      - APP_BASE_URL=${APP_BASE_URL:-https://gibliz.taile5d4a8.ts.net}
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET:-}
+      - GITHUB_CLIENT_ID=${GITHUB_CLIENT_ID:-}
+      - GITHUB_CLIENT_SECRET=${GITHUB_CLIENT_SECRET:-}
     volumes:
       - ./data:/usr/src/he-backend/data
   frontend:

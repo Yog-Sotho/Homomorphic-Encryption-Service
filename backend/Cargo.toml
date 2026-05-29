@@ -24,3 +24,5 @@ dashmap = "6"
 bincode = "1"
 num_cpus = "1"
 tfhe = { version = "~1.3", features = ["integer"] }
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+url = "2"
