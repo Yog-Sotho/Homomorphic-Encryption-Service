@@ -61,7 +61,7 @@
   .topbar {
     position: sticky; top: 0; z-index: 100;
     display: flex; align-items: center; justify-content: space-between;
-    padding: 0 1.75rem; height: 52px;
+    padding: 0 1.75rem; height: 58px;
     background: rgba(8, 11, 20, 0.92);
     backdrop-filter: blur(20px);
     -webkit-backdrop-filter: blur(20px);
@@ -69,7 +69,7 @@
   }
 
   .brand { display: flex; align-items: center; text-decoration: none; }
-  .brand-logo { height: 28px; width: auto; display: block; }
+  .brand-logo { height: 38px; width: auto; display: block; }
 
   .topbar-right { display: flex; align-items: center; gap: 0.5rem; }
   .user-chip {
