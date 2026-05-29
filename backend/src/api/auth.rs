@@ -53,10 +53,10 @@ pub struct LoginRequest {
 
 /// Public representation of a user — never includes the password hash.
 #[derive(Serialize)]
-struct UserPublic {
+pub struct UserPublic {
     pub id: String,
     pub email: String,
-    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub created_at: chrono::NaiveDateTime,
 }
 
 impl From<User> for UserPublic {
@@ -112,12 +112,12 @@ pub async fn register(
         .map_err(|e| AppError::internal(e.to_string()))?;
     let user_id = Uuid::new_v4().to_string();
 
-    sqlx::query!(
+    sqlx::query(
         "INSERT INTO users (id, email, password_hash) VALUES (?, ?, ?)",
-        user_id,
-        email,
-        hashed_password
     )
+    .bind(&user_id)
+    .bind(&email)
+    .bind(&hashed_password)
     .execute(pool.get_ref())
     .await?;
 
@@ -125,7 +125,7 @@ pub async fn register(
         id: user_id.clone(),
         email: email.clone(),
         password_hash: String::new(),
-        created_at: chrono::Utc::now(),
+        created_at: chrono::Utc::now().naive_utc(),
     };
 
     let token = make_jwt(&user_id, &config)?;
@@ -143,11 +143,10 @@ pub async fn login(
 ) -> Result<impl Responder, AppError> {
     let email = req.email.trim().to_lowercase();
 
-    let user = sqlx::query_as!(
-        User,
+    let user: Option<User> = sqlx::query_as(
         "SELECT id, email, password_hash, created_at FROM users WHERE email = ?",
-        email
     )
+    .bind(&email)
     .fetch_optional(pool.get_ref())
     .await?;
 

@@ -81,13 +81,13 @@ pub async fn submit_job(
         return Err(AppError::bad_request("Unsupported operation. Use 'add' or 'multiply'."));
     }
 
-    sqlx::query!(
+    sqlx::query(
         "INSERT INTO jobs (id, user_id, status, input_data_b64, operation) VALUES (?, ?, 'pending', ?, ?)",
-        job_id,
-        user_id_str,
-        req.input_data_b64,
-        req.operation
     )
+    .bind(&job_id)
+    .bind(&user_id_str)
+    .bind(&req.input_data_b64)
+    .bind(&req.operation)
     .execute(pool.get_ref())
     .await?;
 
@@ -132,10 +132,10 @@ async fn try_process_job(
     input_b64: String,
     operation: String,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    sqlx::query!(
+    sqlx::query(
         "UPDATE jobs SET status = 'processing', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-        job_id
     )
+    .bind(&job_id)
     .execute(pool.get_ref())
     .await?;
 
@@ -192,13 +192,13 @@ async fn update_job_status(
     result: Option<String>,
     error: Option<String>,
 ) {
-    let _ = sqlx::query!(
+    let _ = sqlx::query(
         "UPDATE jobs SET status = ?, result_b64 = ?, error_message = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-        status,
-        result,
-        error,
-        job_id
     )
+    .bind(status)
+    .bind(result)
+    .bind(error)
+    .bind(job_id)
     .execute(pool.get_ref())
     .await;
 }
@@ -208,12 +208,15 @@ pub async fn get_job_status(
     job_id: web::Path<String>,
     user_id: web::ReqData<String>,
 ) -> Result<impl Responder, AppError> {
-    let job = sqlx::query_as!(
-        Job,
-        "SELECT id, user_id, status, input_data_b64, operation, result_b64, error_message, created_at, updated_at FROM jobs WHERE id = ? AND user_id = ?",
-        job_id.into_inner(),
-        user_id.into_inner()
+    let jid = job_id.into_inner();
+    let uid = user_id.into_inner();
+
+    let job: Option<Job> = sqlx::query_as(
+        "SELECT id, user_id, status, input_data_b64, operation, result_b64, error_message, created_at, updated_at \
+         FROM jobs WHERE id = ? AND user_id = ?",
     )
+    .bind(&jid)
+    .bind(&uid)
     .fetch_optional(pool.get_ref())
     .await?;
 
@@ -229,12 +232,11 @@ pub async fn list_jobs(
     user_id: web::ReqData<String>,
 ) -> Result<impl Responder, AppError> {
     let uid = user_id.into_inner();
-    let jobs = sqlx::query_as!(
-        Job,
+    let jobs: Vec<Job> = sqlx::query_as(
         "SELECT id, user_id, status, input_data_b64, operation, result_b64, error_message, created_at, updated_at \
          FROM jobs WHERE user_id = ? ORDER BY created_at DESC LIMIT 50",
-        uid
     )
+    .bind(&uid)
     .fetch_all(pool.get_ref())
     .await?;
 

@@ -3,11 +3,26 @@
   import { onMount } from 'svelte';
   import { userStore } from '$lib/stores';
   import { goto } from '$app/navigation';
+  import { page } from '$app/stores';
+
+  function isTokenExpired(token: string): boolean {
+    try {
+      const [, payloadB64] = token.split('.');
+      const payload = JSON.parse(atob(payloadB64));
+      return typeof payload.exp !== 'number' || payload.exp * 1000 < Date.now();
+    } catch {
+      return true;
+    }
+  }
 
   onMount(() => {
     const token = localStorage.getItem('token');
-    if (!token) {
+    if (!token || isTokenExpired(token)) {
+      localStorage.removeItem('token');
       userStore.set(null);
+      if ($page.url.pathname !== '/login') {
+        goto('/login');
+      }
     }
   });
 </script>

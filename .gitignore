@@ -7,3 +7,8 @@ frontend/node_modules/
 frontend/.svelte-kit/
 frontend/build/
 frontend/dist/
+
+# Rust build artifacts and local database
+backend/target/
+backend/he_saas.db
+*.db

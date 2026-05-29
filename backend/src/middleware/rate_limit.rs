@@ -1,9 +1,9 @@
 use actix_web::{
+    body::BoxBody,
     dev::{ServiceRequest, ServiceResponse},
     Error, HttpResponse,
-    body::EitherBody,
 };
-use actix_web_lab::middleware::Next;
+use actix_web::middleware::Next;
 use dashmap::DashMap;
 use std::{
     sync::Arc,
@@ -18,7 +18,7 @@ const WINDOW_SECS: u64 = 60;
 /// Allows up to `MAX_REQUESTS` requests per `WINDOW_SECS`-second window per IP.
 #[derive(Clone)]
 pub struct RateLimiter {
-    map: Arc<DashMap<String, Vec<Instant>>>,
+    pub map: Arc<DashMap<String, Vec<Instant>>>,
 }
 
 impl RateLimiter {
@@ -36,17 +36,17 @@ impl Default for RateLimiter {
 }
 
 /// Actix `from_fn`-compatible middleware function that enforces rate limiting.
-pub async fn rate_limit_middleware(
+pub async fn rate_limit_middleware<B: actix_web::body::MessageBody + 'static>(
     req: ServiceRequest,
-    next: Next<impl actix_web::body::MessageBody + 'static>,
-) -> Result<ServiceResponse<EitherBody<impl actix_web::body::MessageBody>>, Error> {
+    next: Next<B>,
+) -> Result<ServiceResponse<BoxBody>, Error> {
     let ip = req
         .connection_info()
         .realip_remote_addr()
         .unwrap_or("unknown")
         .to_string();
 
-    // Retrieve or create the shared rate limiter stored in app data.
+    // Retrieve the shared rate limiter stored in app data.
     let limiter = req
         .app_data::<actix_web::web::Data<RateLimiter>>()
         .cloned();
@@ -63,13 +63,11 @@ pub async fn rate_limit_middleware(
             let response = HttpResponse::TooManyRequests()
                 .json(serde_json::json!({ "message": "Rate limit exceeded. Try again later." }));
             let (req_parts, _) = req.into_parts();
-            let srv_resp = ServiceResponse::new(req_parts, response)
-                .map_into_right_body();
-            return Ok(srv_resp);
+            return Ok(ServiceResponse::new(req_parts, response).map_into_boxed_body());
         }
 
         entry.push(now);
     }
 
-    next.call(req).await.map(|r| r.map_into_left_body())
+    next.call(req).await.map(|r| r.map_into_boxed_body())
 }

@@ -1,5 +1,5 @@
 use actix_web::{dev::ServiceRequest, Error, HttpMessage};
-use actix_web_lab::middleware::Next;
+use actix_web::middleware::Next;
 use jsonwebtoken::{decode, DecodingKey, Validation};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -11,10 +11,10 @@ pub struct Claims {
     pub exp: usize,
 }
 
-pub async fn jwt_validator(
+pub async fn jwt_validator<B: actix_web::body::MessageBody>(
     req: ServiceRequest,
-    next: Next<impl actix_web::body::MessageBody>,
-) -> Result<actix_web::dev::ServiceResponse<impl actix_web::body::MessageBody>, Error> {
+    next: Next<B>,
+) -> Result<actix_web::dev::ServiceResponse<B>, Error> {
     let config = req
         .app_data::<actix_web::web::Data<Arc<Config>>>()
         .cloned()
