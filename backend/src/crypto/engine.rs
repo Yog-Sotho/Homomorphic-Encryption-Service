@@ -1,14 +1,14 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::sync::Mutex;
-use tfhe::integer::{gen_keys_radix, ClientKey, ServerKey, RadixCiphertext};
+use tfhe::integer::{gen_keys_radix, RadixClientKey, ServerKey, RadixCiphertext};
 use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
 
 pub const NUM_BLOCKS: usize = 8;
 pub const PLAIN_MODULUS: u64 = 1u64 << 16; // 65536
 
 pub struct HeContext {
-    client_key: ClientKey,
+    client_key: RadixClientKey,
     server_key: ServerKey,
 }
 
@@ -46,7 +46,7 @@ impl HeContext {
     ) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
         let ct1: RadixCiphertext = bincode::deserialize(ct1_bytes)?;
         let ct2: RadixCiphertext = bincode::deserialize(ct2_bytes)?;
-        let result = self.server_key.unchecked_mul_lsb(&ct1, &ct2);
+        let result = self.server_key.unchecked_mul(&ct1, &ct2);
         Ok(bincode::serialize(&result)?)
     }
 }
