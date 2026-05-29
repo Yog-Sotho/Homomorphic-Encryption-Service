@@ -1,5 +1,6 @@
 <script lang="ts">
   import { goto } from '$app/navigation';
+  import { base } from '$app/paths';
   import { auth } from '$lib/api';
   import { userStore } from '$lib/stores';
 
@@ -11,7 +12,7 @@
       const res = isLogin ? await auth.login(email, password) : await auth.register(email, password);
       localStorage.setItem('token', res.data.token);
       userStore.set(res.data.user);
-      goto('/dashboard');
+      goto(`${base}/dashboard`);
     } catch (e: any) {
       error = e.response?.data?.message || (isLogin ? 'Login failed' : 'Registration failed');
     } finally { loading = false; }

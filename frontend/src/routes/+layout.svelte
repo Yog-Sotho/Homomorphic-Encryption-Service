@@ -1,6 +1,7 @@
 <script lang="ts">
   import '../app.css';
   import { onMount } from 'svelte';
+  import { base } from '$app/paths';
   import { userStore } from '$lib/stores';
   import { goto } from '$app/navigation';
   import { page } from '$app/stores';
@@ -20,8 +21,8 @@
     if (!token || isTokenExpired(token)) {
       localStorage.removeItem('token');
       userStore.set(null);
-      if ($page.url.pathname !== '/login') {
-        goto('/login');
+      if ($page.url.pathname !== `${base}/login`) {
+        goto(`${base}/login`);
       }
     }
   });
@@ -29,17 +30,17 @@
 
 <div class="layout">
   <nav class="navbar">
-    <div class="nav-brand">HEaaS Dashboard</div>
+    <a class="nav-brand" href="{base}/dashboard">HEaaS Dashboard</a>
     <div class="nav-links">
       {#if $userStore}
-        <a href="/dashboard">Dashboard</a>
+        <a href="{base}/dashboard">Dashboard</a>
         <button class="btn-secondary" on:click={() => {
           localStorage.removeItem('token');
           userStore.set(null);
-          goto('/login');
+          goto(`${base}/login`);
         }}>Logout</button>
       {:else}
-        <a href="/login">Login</a>
+        <a href="{base}/login">Login</a>
       {/if}
     </div>
   </nav>
@@ -54,7 +55,8 @@
     display: flex; justify-content: space-between; align-items: center;
     padding: 1rem 2rem; background: var(--bg-secondary); border-bottom: 1px solid var(--border);
   }
-  .nav-brand { font-weight: 700; font-size: 1.25rem; color: var(--accent); }
+  .nav-brand { font-weight: 700; font-size: 1.25rem; color: var(--accent); text-decoration: none; }
+  .nav-brand:hover { opacity: 0.85; }
   .nav-links { display: flex; gap: 1rem; align-items: center; }
   .nav-links a { color: var(--text-secondary); text-decoration: none; font-weight: 500; }
   .nav-links a:hover { color: var(--text-primary); }
