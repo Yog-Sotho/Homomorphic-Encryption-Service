@@ -9,3 +9,7 @@
 ## 2026-05-25 - Enhancing Async Feedback and Control
 **Learning:** Initial feedback after job submission was slightly delayed until the first poll returned. Using `<output aria-live="polite">` for status messages and providing a way to "Clear" the dashboard state significantly improves the user's sense of control and accessibility.
 **Action:** Always provide immediate 'pending' feedback for async tasks and include 'Clear' or 'Reset' actions for ephemeral dashboard results. Use semantic `<output>` for dynamic status text.
+
+## 2026-05-29 - Adding Randomize Utility to Developer Sandboxes
+**Learning:** For interfaces with multiple numeric inputs that have specific valid ranges (like 0-1023 in this case), providing a "Randomize" utility significantly reduces friction for testing and exploration.
+**Action:** Identify forms with multiple numeric constraints and provide a "Randomize" or "Auto-fill" button in the card header to populate valid data quickly.
