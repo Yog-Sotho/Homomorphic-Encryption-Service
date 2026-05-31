@@ -9,3 +9,7 @@
 ## 2026-05-25 - Enhancing Async Feedback and Control
 **Learning:** Initial feedback after job submission was slightly delayed until the first poll returned. Using `<output aria-live="polite">` for status messages and providing a way to "Clear" the dashboard state significantly improves the user's sense of control and accessibility.
 **Action:** Always provide immediate 'pending' feedback for async tasks and include 'Clear' or 'Reset' actions for ephemeral dashboard results. Use semantic `<output>` for dynamic status text.
+
+## 2026-05-28 - Utility Features for Sandbox Testing
+**Learning:** Adding 'Randomize' or 'Auto-fill' buttons in developer-focused sandbox environments (like a Homomorphic Encryption demo) significantly reduces user friction during repetitive testing and improves the overall experience by providing instant, valid data points.
+**Action:** Identify interactive input-heavy areas in sandbox tools and offer randomization utilities to streamline the user workflow.
