@@ -9,3 +9,7 @@
 ## 2026-05-25 - Enhancing Async Feedback and Control
 **Learning:** Initial feedback after job submission was slightly delayed until the first poll returned. Using `<output aria-live="polite">` for status messages and providing a way to "Clear" the dashboard state significantly improves the user's sense of control and accessibility.
 **Action:** Always provide immediate 'pending' feedback for async tasks and include 'Clear' or 'Reset' actions for ephemeral dashboard results. Use semantic `<output>` for dynamic status text.
+
+## 2026-06-01 - Hydration Latency in Playwright Verification
+**Learning:** When verifying UI changes in Svelte 5 via Playwright, initial state snapshots or immediate interactions may fail if the component hasn't fully hydrated. This can lead to capturing default values (e.g., '0') even after a programmed click.
+**Action:** Always include a sufficient hydration wait (e.g., `page.wait_for_timeout(2000)`) in Playwright verification scripts before interacting with or asserting on the state of Svelte components.
