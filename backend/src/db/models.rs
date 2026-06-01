@@ -9,6 +9,8 @@ pub struct User {
     #[serde(skip_serializing)]
     pub password_hash: String,
     pub created_at: NaiveDateTime,
+    pub email_verified: bool,
+    pub email_verify_token: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, FromRow)]

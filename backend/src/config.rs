@@ -11,6 +11,11 @@ pub struct Config {
     pub google_client_secret: Option<String>,
     pub github_client_id: Option<String>,
     pub github_client_secret: Option<String>,
+    pub smtp_host: Option<String>,
+    pub smtp_port: u16,
+    pub smtp_user: Option<String>,
+    pub smtp_pass: Option<String>,
+    pub from_email: String,
 }
 
 impl Config {
@@ -43,6 +48,11 @@ impl Config {
             .unwrap_or(2)
             .max(1);
 
+        let smtp_port = env::var("SMTP_PORT")
+            .ok()
+            .and_then(|v| v.parse::<u16>().ok())
+            .unwrap_or(587);
+
         Config {
             database_url: env::var("DATABASE_URL")
                 .unwrap_or_else(|_| "sqlite://./he_saas.db".to_string()),
@@ -56,6 +66,12 @@ impl Config {
             google_client_secret: env::var("GOOGLE_CLIENT_SECRET").ok(),
             github_client_id: env::var("GITHUB_CLIENT_ID").ok(),
             github_client_secret: env::var("GITHUB_CLIENT_SECRET").ok(),
+            smtp_host: env::var("SMTP_HOST").ok(),
+            smtp_port,
+            smtp_user: env::var("SMTP_USER").ok(),
+            smtp_pass: env::var("SMTP_PASS").ok(),
+            from_email: env::var("FROM_EMAIL")
+                .unwrap_or_else(|_| "noreply@heaas.local".to_string()),
         }
     }
 }

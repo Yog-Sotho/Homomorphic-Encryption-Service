@@ -5,6 +5,8 @@ use bcrypt::{hash, verify, DEFAULT_COST};
 use uuid::Uuid;
 use sqlx::SqlitePool;
 use std::sync::Arc;
+use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
+use lettre::transport::smtp::authentication::Credentials;
 use crate::config::Config;
 use crate::db::models::User;
 use crate::errors::AppError;
@@ -28,6 +30,8 @@ fn is_valid_password(password: &str) -> bool {
         && password.chars().any(|c| c.is_ascii_digit())
 }
 
+// ── Request / response types ──────────────────────────────────────────────────
+
 #[derive(Deserialize)]
 pub struct RegisterRequest {
     pub email: String,
@@ -38,6 +42,16 @@ pub struct RegisterRequest {
 pub struct LoginRequest {
     pub email: String,
     pub password: String,
+}
+
+#[derive(Deserialize)]
+pub struct ResendRequest {
+    pub email: String,
+}
+
+#[derive(Deserialize)]
+pub struct VerifyQuery {
+    pub token: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -59,6 +73,8 @@ pub struct AuthResponse {
     pub user: UserPublic,
 }
 
+// ── JWT ───────────────────────────────────────────────────────────────────────
+
 pub fn make_jwt(user_id: &str, config: &Config) -> Result<String, AppError> {
     let claims = crate::middleware::jwt::Claims {
         sub: user_id.to_string(),
@@ -71,6 +87,72 @@ pub fn make_jwt(user_id: &str, config: &Config) -> Result<String, AppError> {
     )
     .map_err(|e| AppError::internal(e.to_string()))
 }
+
+// ── Email sending ─────────────────────────────────────────────────────────────
+
+async fn send_verification_email(
+    config: &Config,
+    to_email: &str,
+    token: &str,
+) -> Result<(), AppError> {
+    let verify_url = format!("{}/api/auth/verify?token={}", config.app_base_url, token);
+
+    let Some(smtp_host) = config.smtp_host.as_deref() else {
+        log::info!(
+            "SMTP not configured — verification URL for {}: {}",
+            to_email,
+            verify_url
+        );
+        return Ok(());
+    };
+
+    let body = format!(
+        "<!DOCTYPE html><html><body style=\"font-family:sans-serif;max-width:520px;margin:2rem auto\">\
+         <h2>Verify your HEaaS account</h2>\
+         <p>Click the link below to activate your account and sign in:</p>\
+         <p><a href=\"{0}\" style=\"color:#6366f1\">{0}</a></p>\
+         <p style=\"color:#888;font-size:0.85rem\">If you did not create this account, ignore this email.</p>\
+         </body></html>",
+        verify_url
+    );
+
+    let from: lettre::message::Mailbox = config
+        .from_email
+        .parse()
+        .map_err(|_| AppError::internal("Invalid FROM_EMAIL configuration"))?;
+
+    let to: lettre::message::Mailbox = to_email
+        .parse()
+        .map_err(|_| AppError::internal("Invalid recipient email address"))?;
+
+    let message = Message::builder()
+        .from(from)
+        .to(to)
+        .subject("Verify your HEaaS account")
+        .header(lettre::message::header::ContentType::TEXT_HTML)
+        .body(body)
+        .map_err(|e| AppError::internal(format!("Email build error: {}", e)))?;
+
+    let base = AsyncSmtpTransport::<Tokio1Executor>::relay(smtp_host)
+        .map_err(|e| AppError::internal(format!("SMTP relay error: {}", e)))?
+        .port(config.smtp_port);
+
+    let mailer = match (config.smtp_user.as_deref(), config.smtp_pass.as_deref()) {
+        (Some(u), Some(p)) => base
+            .credentials(Credentials::new(u.to_string(), p.to_string()))
+            .build(),
+        _ => base.build(),
+    };
+
+    mailer.send(message).await.map_err(|e| {
+        log::error!("SMTP send to {}: {}", to_email, e);
+        AppError::internal("Failed to send verification email")
+    })?;
+
+    Ok(())
+}
+
+// ── Auth handlers ─────────────────────────────────────────────────────────────
 
 pub async fn register(
     pool: web::Data<SqlitePool>,
@@ -92,26 +174,24 @@ pub async fn register(
     let hashed = hash(&req.password, DEFAULT_COST)
         .map_err(|e| AppError::internal(e.to_string()))?;
     let user_id = Uuid::new_v4().to_string();
+    let verify_token = Uuid::new_v4().to_string();
 
-    sqlx::query("INSERT INTO users (id, email, password_hash) VALUES (?, ?, ?)")
-        .bind(&user_id)
-        .bind(&email)
-        .bind(&hashed)
-        .execute(pool.get_ref())
-        .await?;
+    sqlx::query(
+        "INSERT INTO users (id, email, password_hash, email_verified, email_verify_token) \
+         VALUES (?, ?, ?, 0, ?)",
+    )
+    .bind(&user_id)
+    .bind(&email)
+    .bind(&hashed)
+    .bind(&verify_token)
+    .execute(pool.get_ref())
+    .await?;
 
-    let user = User {
-        id: user_id.clone(),
-        email: email.clone(),
-        password_hash: String::new(),
-        created_at: chrono::Utc::now().naive_utc(),
-    };
-    let token = make_jwt(&user_id, &config)?;
+    send_verification_email(&config, &email, &verify_token).await?;
 
-    Ok(HttpResponse::Created().json(AuthResponse {
-        token,
-        user: UserPublic::from(user),
-    }))
+    Ok(HttpResponse::Accepted().json(serde_json::json!({
+        "message": "Account created. Check your inbox to verify your email before signing in."
+    })))
 }
 
 pub async fn login(
@@ -122,7 +202,8 @@ pub async fn login(
     let email = req.email.trim().to_lowercase();
 
     let user: Option<User> = sqlx::query_as(
-        "SELECT id, email, password_hash, created_at FROM users WHERE email = ?",
+        "SELECT id, email, password_hash, created_at, email_verified, email_verify_token \
+         FROM users WHERE email = ?",
     )
     .bind(&email)
     .fetch_optional(pool.get_ref())
@@ -130,6 +211,12 @@ pub async fn login(
 
     match user {
         Some(u) => {
+            if !u.email_verified {
+                let _ = verify(&req.password, DUMMY_HASH);
+                return Err(AppError::forbidden(
+                    "Please verify your email before signing in.",
+                ));
+            }
             if u.password_hash.is_empty() {
                 return Err(AppError::bad_request(
                     "This account was created with social login. Use Google or GitHub to sign in.",
@@ -152,6 +239,115 @@ pub async fn login(
             Err(AppError::unauthorized("Invalid credentials"))
         }
     }
+}
+
+pub async fn verify_email(
+    pool: web::Data<SqlitePool>,
+    config: web::Data<Arc<Config>>,
+    query: web::Query<VerifyQuery>,
+) -> HttpResponse {
+    let token = match query.token.as_deref() {
+        Some(t) if !t.is_empty() => t,
+        _ => return oauth_error_redirect(&config.app_base_url, "Missing verification token"),
+    };
+
+    let user: Option<User> = match sqlx::query_as(
+        "SELECT id, email, password_hash, created_at, email_verified, email_verify_token \
+         FROM users WHERE email_verify_token = ?",
+    )
+    .bind(token)
+    .fetch_optional(pool.get_ref())
+    .await
+    {
+        Ok(u) => u,
+        Err(e) => {
+            log::error!("DB error in verify_email: {}", e);
+            return oauth_error_redirect(&config.app_base_url, "Verification failed");
+        }
+    };
+
+    match user {
+        None => oauth_error_redirect(
+            &config.app_base_url,
+            "Invalid or already used verification link",
+        ),
+        Some(u) if u.email_verified => oauth_error_redirect(
+            &config.app_base_url,
+            "This account is already verified",
+        ),
+        Some(u) => {
+            if let Err(e) = sqlx::query(
+                "UPDATE users SET email_verified = 1, email_verify_token = NULL WHERE id = ?",
+            )
+            .bind(&u.id)
+            .execute(pool.get_ref())
+            .await
+            {
+                log::error!("DB error setting email_verified: {}", e);
+                return oauth_error_redirect(&config.app_base_url, "Verification failed");
+            }
+
+            match make_jwt(&u.id, &config) {
+                Ok(jwt) => oauth_success_redirect(&config.app_base_url, &jwt, &u.email),
+                Err(e) => {
+                    log::error!("JWT error after verify: {:?}", e);
+                    oauth_error_redirect(&config.app_base_url, "Verification failed")
+                }
+            }
+        }
+    }
+}
+
+fn resend_ok() -> HttpResponse {
+    HttpResponse::Ok().json(serde_json::json!({
+        "message": "If an unverified account exists for that email, a new verification link has been sent."
+    }))
+}
+
+pub async fn resend_verification(
+    pool: web::Data<SqlitePool>,
+    config: web::Data<Arc<Config>>,
+    req: web::Json<ResendRequest>,
+) -> HttpResponse {
+    let email = req.email.trim().to_lowercase();
+
+    let user: Option<User> = match sqlx::query_as(
+        "SELECT id, email, password_hash, created_at, email_verified, email_verify_token \
+         FROM users WHERE email = ?",
+    )
+    .bind(&email)
+    .fetch_optional(pool.get_ref())
+    .await
+    {
+        Ok(u) => u,
+        Err(e) => {
+            log::error!("DB error in resend_verification: {}", e);
+            return resend_ok();
+        }
+    };
+
+    let user = match user {
+        Some(u) if !u.email_verified => u,
+        _ => return resend_ok(),
+    };
+
+    let new_token = Uuid::new_v4().to_string();
+
+    if let Err(e) = sqlx::query("UPDATE users SET email_verify_token = ? WHERE id = ?")
+        .bind(&new_token)
+        .bind(&user.id)
+        .execute(pool.get_ref())
+        .await
+    {
+        log::error!("DB error updating verify token: {}", e);
+        return resend_ok();
+    }
+
+    if let Err(e) = send_verification_email(&config, &email, &new_token).await {
+        log::error!("Email send failed in resend: {:?}", e);
+    }
+
+    resend_ok()
 }
 
 // ── OAuth helpers ─────────────────────────────────────────────────────────────
@@ -196,7 +392,6 @@ async fn find_or_create_oauth_user(
     provider_id: &str,
     email: &str,
 ) -> Result<String, AppError> {
-    // 1. Existing OAuth link?
     let existing: Option<(String,)> = sqlx::query_as(
         "SELECT user_id FROM oauth_accounts WHERE provider = ? AND provider_id = ?",
     )
@@ -209,7 +404,6 @@ async fn find_or_create_oauth_user(
         return Ok(uid);
     }
 
-    // 2. User with same email (link accounts)?
     let email_lower = email.to_lowercase();
     let by_email: Option<(String,)> =
         sqlx::query_as("SELECT id FROM users WHERE email = ?")
@@ -218,19 +412,24 @@ async fn find_or_create_oauth_user(
             .await?;
 
     let user_id = if let Some((uid,)) = by_email {
-        uid
-    } else {
-        // 3. Create new user with empty password_hash (OAuth-only)
-        let new_id = Uuid::new_v4().to_string();
-        sqlx::query("INSERT INTO users (id, email, password_hash) VALUES (?, ?, '')")
-            .bind(&new_id)
-            .bind(&email_lower)
+        // Link OAuth to existing account; ensure it is marked verified
+        sqlx::query("UPDATE users SET email_verified = 1 WHERE id = ?")
+            .bind(&uid)
             .execute(pool)
             .await?;
+        uid
+    } else {
+        let new_id = Uuid::new_v4().to_string();
+        sqlx::query(
+            "INSERT INTO users (id, email, password_hash, email_verified) VALUES (?, ?, '', 1)",
+        )
+        .bind(&new_id)
+        .bind(&email_lower)
+        .execute(pool)
+        .await?;
         new_id
     };
 
-    // 4. Record OAuth link
     sqlx::query(
         "INSERT INTO oauth_accounts (id, user_id, provider, provider_id, provider_email) \
          VALUES (?, ?, ?, ?, ?)",
@@ -536,7 +735,6 @@ pub async fn github_callback(
         }
     };
 
-    // GitHub may omit email from /user — fall back to /user/emails
     let email = if let Some(e) = gh_user.email.filter(|e| !e.is_empty()) {
         e
     } else {

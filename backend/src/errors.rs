@@ -5,24 +5,18 @@ use std::fmt;
 #[derive(Debug)]
 pub enum AppError {
     Unauthorized(String),
+    Forbidden(String),
     NotFound(String),
     BadRequest(String),
     Internal(String),
 }
 
 impl AppError {
-    pub fn unauthorized(msg: impl Into<String>) -> Self {
-        AppError::Unauthorized(msg.into())
-    }
-    pub fn not_found(msg: impl Into<String>) -> Self {
-        AppError::NotFound(msg.into())
-    }
-    pub fn bad_request(msg: impl Into<String>) -> Self {
-        AppError::BadRequest(msg.into())
-    }
-    pub fn internal(msg: impl Into<String>) -> Self {
-        AppError::Internal(msg.into())
-    }
+    pub fn unauthorized(msg: impl Into<String>) -> Self { AppError::Unauthorized(msg.into()) }
+    pub fn forbidden(msg: impl Into<String>) -> Self { AppError::Forbidden(msg.into()) }
+    pub fn not_found(msg: impl Into<String>) -> Self { AppError::NotFound(msg.into()) }
+    pub fn bad_request(msg: impl Into<String>) -> Self { AppError::BadRequest(msg.into()) }
+    pub fn internal(msg: impl Into<String>) -> Self { AppError::Internal(msg.into()) }
 }
 
 #[derive(Serialize)]
@@ -34,6 +28,7 @@ impl fmt::Display for AppError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             AppError::Unauthorized(m) => write!(f, "{}", m),
+            AppError::Forbidden(m) => write!(f, "{}", m),
             AppError::NotFound(m) => write!(f, "{}", m),
             AppError::BadRequest(m) => write!(f, "{}", m),
             AppError::Internal(_) => write!(f, "Internal server error"),
@@ -45,6 +40,7 @@ impl ResponseError for AppError {
     fn status_code(&self) -> StatusCode {
         match self {
             AppError::Unauthorized(_) => StatusCode::UNAUTHORIZED,
+            AppError::Forbidden(_) => StatusCode::FORBIDDEN,
             AppError::NotFound(_) => StatusCode::NOT_FOUND,
             AppError::BadRequest(_) => StatusCode::BAD_REQUEST,
             AppError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
