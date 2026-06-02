@@ -6,10 +6,26 @@
   import { userStore } from '$lib/stores';
 
   let email = '', password = '', error = '', loading = false, isLogin = true;
-  let awaitingVerification = false, verifyEmail = '';
+  let pageMode: 'auth' | 'verify-pending' | 'forgot' | 'reset-pending' | 'reset-form' = 'auth';
+  let stateEmail = '';
+  let resetToken = '';
   let resendLoading = false, resendMessage = '';
 
+  // Forgot password state
+  let forgotEmail = '';
+  let forgotLoading = false;
+  let forgotMessage = '';
+
+  // Reset password state
+  let newPassword = '';
+  let confirmPassword = '';
+  let resetLoading = false;
+  let resetError = '';
+  let resetSuccess = false;
+
   $: passwordHint = !isLogin && password.length > 0 && !isValidPassword(password);
+  $: resetPasswordHint = newPassword.length > 0 && !isValidPassword(newPassword);
+  $: resetPasswordsMatch = newPassword.length > 0 && confirmPassword.length > 0 && newPassword !== confirmPassword;
 
   function isValidPassword(p: string): boolean {
     return p.length >= 8 && /[A-Z]/.test(p) && /[a-z]/.test(p) && /[0-9]/.test(p);
@@ -22,9 +38,15 @@
     const token = params.get('token');
     const userEmail = params.get('email');
     const oauthError = params.get('error');
+    const resetTok = params.get('reset_token');
     history.replaceState(null, '', window.location.pathname + window.location.search);
-    if (token && userEmail) {
+    if (resetTok) {
+      resetToken = resetTok;
+      pageMode = 'reset-form';
+    } else if (token && userEmail) {
+      const refreshToken = params.get('refresh_token');
       localStorage.setItem('token', token);
+      if (refreshToken) localStorage.setItem('refresh_token', refreshToken);
       userStore.set({ email: userEmail });
       goto(`${base}/dashboard`);
     } else if (oauthError) {
@@ -38,19 +60,20 @@
       if (isLogin) {
         const res = await auth.login(email, password);
         localStorage.setItem('token', res.data.token);
+        if (res.data.refresh_token) localStorage.setItem('refresh_token', res.data.refresh_token);
         userStore.set(res.data.user);
         goto(`${base}/dashboard`);
       } else {
         await auth.register(email, password);
-        verifyEmail = email;
-        awaitingVerification = true;
+        stateEmail = email;
+        pageMode = 'verify-pending';
       }
     } catch (e: any) {
       const status = e.response?.status;
       const msg = e.response?.data?.message ?? '';
       if (status === 403 && msg.toLowerCase().includes('verify')) {
-        verifyEmail = email;
-        awaitingVerification = true;
+        stateEmail = email;
+        pageMode = 'verify-pending';
       } else {
         error = msg || (isLogin ? 'Login failed' : 'Registration failed');
       }
@@ -60,11 +83,31 @@
   async function resend() {
     resendLoading = true; resendMessage = '';
     try {
-      await auth.resendVerification(verifyEmail);
+      await auth.resendVerification(stateEmail);
       resendMessage = 'New link sent — check your inbox.';
     } catch {
       resendMessage = 'Failed to resend. Try again shortly.';
     } finally { resendLoading = false; }
+  }
+
+  async function handleForgot() {
+    forgotLoading = true; forgotMessage = '';
+    try {
+      await auth.forgotPassword(forgotEmail);
+      pageMode = 'reset-pending';
+    } catch {
+      forgotMessage = 'Failed to send reset email. Try again.';
+    } finally { forgotLoading = false; }
+  }
+
+  async function handleReset() {
+    resetLoading = true; resetError = '';
+    try {
+      await auth.resetPassword(resetToken, newPassword);
+      resetSuccess = true;
+    } catch (e: any) {
+      resetError = e.response?.data?.message || 'Reset failed.';
+    } finally { resetLoading = false; }
   }
 
   function oauthRedirect(provider: 'google' | 'github') {
@@ -75,14 +118,14 @@
 <div class="container">
   <img src="{base}/logo.svg" alt="HEaaS" class="page-logo" />
 
-  {#if awaitingVerification}
+  {#if pageMode === 'verify-pending'}
     <div class="verify-pending">
       <svg class="envelope-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <rect x="2" y="4" width="20" height="16" rx="2"/>
         <path d="m2 7 10 7 10-7"/>
       </svg>
       <h2>Check your inbox</h2>
-      <p>We sent a verification link to<br><strong>{verifyEmail}</strong></p>
+      <p>We sent a verification link to<br><strong>{stateEmail}</strong></p>
       <p class="verify-hint">Click the link in the email to activate your account and sign in.</p>
       <button class="btn-primary resend-btn" on:click={resend} disabled={resendLoading} type="button">
         {resendLoading ? 'Sending…' : 'Resend link'}
@@ -90,9 +133,87 @@
       {#if resendMessage}
         <p class="resend-msg" class:resend-ok={resendMessage.includes('sent')}>{resendMessage}</p>
       {/if}
-      <button class="btn-link back-btn" on:click={() => { awaitingVerification = false; resendMessage = ''; error = ''; }} type="button">
-        ← Back to sign in
+      <button class="btn-link back-btn" on:click={() => { pageMode = 'auth'; resendMessage = ''; error = ''; }} type="button">
+        &larr; Back to sign in
       </button>
+    </div>
+
+  {:else if pageMode === 'forgot'}
+    <div class="state-section">
+      <h1>Reset Password</h1>
+      <p class="state-desc">Enter your email address and we will send you a password reset link.</p>
+      <form on:submit|preventDefault={handleForgot}>
+        <label for="forgot-email">Email</label>
+        <input id="forgot-email" type="email" bind:value={forgotEmail} placeholder="you@example.com" required autocomplete="email" />
+        {#if forgotMessage}
+          <p class="form-error" role="alert">{forgotMessage}</p>
+        {/if}
+        <button type="submit" class="btn-primary" disabled={forgotLoading}>
+          {forgotLoading ? 'Sending…' : 'Send reset link'}
+        </button>
+      </form>
+      <p class="toggle-text">
+        <button class="btn-link" on:click={() => { pageMode = 'auth'; forgotMessage = ''; }} type="button">
+          &larr; Back to sign in
+        </button>
+      </p>
+    </div>
+
+  {:else if pageMode === 'reset-pending'}
+    <div class="verify-pending">
+      <svg class="envelope-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <rect x="2" y="4" width="20" height="16" rx="2"/>
+        <path d="m2 7 10 7 10-7"/>
+      </svg>
+      <h2>Check your inbox</h2>
+      <p>We sent a password reset link to your email address.</p>
+      <p class="verify-hint">Click the link in the email to set a new password.</p>
+      <button class="btn-link back-btn" on:click={() => { pageMode = 'auth'; }} type="button">
+        &larr; Back to sign in
+      </button>
+    </div>
+
+  {:else if pageMode === 'reset-form'}
+    <div class="state-section">
+      {#if resetSuccess}
+        <div class="verify-pending">
+          <svg class="success-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="10"/>
+            <path d="m9 12 2 2 4-4"/>
+          </svg>
+          <h2>Password reset successfully</h2>
+          <p class="verify-hint">You can now sign in with your new password.</p>
+          <button class="btn-primary" on:click={() => { pageMode = 'auth'; resetSuccess = false; newPassword = ''; confirmPassword = ''; }} type="button">
+            Sign in
+          </button>
+        </div>
+      {:else}
+        <h1>Set new password</h1>
+        <p class="state-desc">Choose a strong password for your account.</p>
+        <form on:submit|preventDefault={handleReset}>
+          <label for="new-password">New Password</label>
+          <input id="new-password" type="password" bind:value={newPassword} placeholder="••••••••" required autocomplete="new-password" />
+          {#if resetPasswordHint}
+            <ul class="hint" aria-live="polite">
+              <li class:ok={newPassword.length >= 8}>At least 8 characters</li>
+              <li class:ok={/[A-Z]/.test(newPassword)}>One uppercase letter</li>
+              <li class:ok={/[a-z]/.test(newPassword)}>One lowercase letter</li>
+              <li class:ok={/[0-9]/.test(newPassword)}>One digit</li>
+            </ul>
+          {/if}
+          <label for="confirm-password">Confirm Password</label>
+          <input id="confirm-password" type="password" bind:value={confirmPassword} placeholder="••••••••" required autocomplete="new-password" />
+          {#if resetPasswordsMatch}
+            <p class="form-error">Passwords do not match.</p>
+          {/if}
+          {#if resetError}
+            <p class="form-error" role="alert">{resetError}</p>
+          {/if}
+          <button type="submit" class="btn-primary" disabled={resetLoading || !isValidPassword(newPassword) || newPassword !== confirmPassword}>
+            {resetLoading ? 'Resetting…' : 'Reset Password'}
+          </button>
+        </form>
+      {/if}
     </div>
 
   {:else}
@@ -127,6 +248,14 @@
       <input id="password" type="password" bind:value={password} placeholder="••••••••" required
         autocomplete={isLogin ? 'current-password' : 'new-password'} />
 
+      {#if isLogin}
+        <div class="forgot-row">
+          <button class="btn-link forgot-link" type="button" on:click={() => { pageMode = 'forgot'; forgotEmail = email; }}>
+            Forgot password?
+          </button>
+        </div>
+      {/if}
+
       {#if passwordHint}
         <ul class="hint" aria-live="polite">
           <li class:ok={password.length >= 8}>At least 8 characters</li>
@@ -156,6 +285,18 @@
   .toggle-text { margin-top: 1.5rem; text-align: center; font-size: 0.875rem; color: var(--text-secondary); }
   .btn-link { background: none; border: none; color: var(--accent); cursor: pointer; text-decoration: underline; padding: 0; font-size: inherit; }
 
+  /* ── State sections ── */
+  .state-section { display: flex; flex-direction: column; }
+  .state-desc { font-size: 0.875rem; color: var(--text-secondary); margin-bottom: 1.5rem; text-align: center; }
+
+  /* ── Forgot password link ── */
+  .forgot-row { display: flex; justify-content: flex-end; margin-top: -0.75rem; margin-bottom: 0.75rem; }
+  .forgot-link { font-size: 0.8rem; }
+
+  /* ── Form error ── */
+  .form-error { font-size: 0.8rem; color: var(--error); margin-bottom: 0.75rem; }
+  .error { font-size: 0.875rem; color: var(--error); margin-bottom: 1rem; text-align: center; }
+
   /* ── Verification pending ── */
   .verify-pending {
     display: flex; flex-direction: column; align-items: center;
@@ -163,6 +304,10 @@
   }
   .envelope-icon {
     width: 48px; height: 48px; color: var(--accent);
+    margin-bottom: 0.5rem;
+  }
+  .success-icon {
+    width: 48px; height: 48px; color: var(--success);
     margin-bottom: 0.5rem;
   }
   .verify-pending h2 { font-size: 1.25rem; }
