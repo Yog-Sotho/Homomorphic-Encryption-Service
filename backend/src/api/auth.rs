@@ -30,6 +30,13 @@ fn is_valid_password(password: &str) -> bool {
         && password.chars().any(|c| c.is_ascii_digit())
 }
 
+fn hash_token(token: &str) -> String {
+    use sha2::{Sha256, Digest};
+    let mut hasher = Sha256::new();
+    hasher.update(token.as_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
 // ── Request / response types ──────────────────────────────────────────────────
 
 #[derive(Deserialize)]
@@ -54,6 +61,27 @@ pub struct VerifyQuery {
     pub token: Option<String>,
 }
 
+#[derive(Deserialize)]
+pub struct ForgotPasswordRequest {
+    pub email: String,
+}
+
+#[derive(Deserialize)]
+pub struct ResetPasswordRequest {
+    pub token: String,
+    pub new_password: String,
+}
+
+#[derive(Deserialize)]
+pub struct RefreshRequest {
+    pub refresh_token: String,
+}
+
+#[derive(Deserialize)]
+pub struct LogoutRequest {
+    pub refresh_token: String,
+}
+
 #[derive(Serialize)]
 pub struct UserPublic {
     pub id: String,
@@ -70,6 +98,7 @@ impl From<User> for UserPublic {
 #[derive(Serialize)]
 pub struct AuthResponse {
     pub token: String,
+    pub refresh_token: String,
     pub user: UserPublic,
 }
 
@@ -86,6 +115,39 @@ pub fn make_jwt(user_id: &str, config: &Config) -> Result<String, AppError> {
         &EncodingKey::from_secret(config.jwt_secret.as_ref()),
     )
     .map_err(|e| AppError::internal(e.to_string()))
+}
+
+// ── Refresh token helpers ─────────────────────────────────────────────────────
+
+async fn create_refresh_token(pool: &SqlitePool, user_id: &str) -> Result<String, AppError> {
+    let raw = Uuid::new_v4().to_string();
+    let hash_val = hash_token(&raw);
+    let id = Uuid::new_v4().to_string();
+    let expires_at = chrono::Utc::now().naive_utc() + chrono::Duration::days(30);
+    sqlx::query(
+        "INSERT INTO refresh_tokens (id, user_id, token_hash, expires_at) VALUES (?, ?, ?, ?)"
+    )
+    .bind(&id)
+    .bind(user_id)
+    .bind(&hash_val)
+    .bind(expires_at)
+    .execute(pool)
+    .await?;
+    Ok(raw)
+}
+
+pub async fn make_auth_response(
+    pool: &SqlitePool,
+    user: User,
+    config: &Config,
+) -> Result<AuthResponse, AppError> {
+    let token = make_jwt(&user.id, config)?;
+    let refresh_token = create_refresh_token(pool, &user.id).await?;
+    Ok(AuthResponse {
+        token,
+        refresh_token,
+        user: UserPublic::from(user),
+    })
 }
 
 // ── Email sending ─────────────────────────────────────────────────────────────
@@ -152,6 +214,71 @@ async fn send_verification_email(
     Ok(())
 }
 
+async fn send_reset_email(
+    config: &Config,
+    to_email: &str,
+    token: &str,
+) -> Result<(), AppError> {
+    let reset_url = format!(
+        "{}/api/auth/forgot-password/redirect?token={}",
+        config.app_base_url, token
+    );
+
+    let Some(smtp_host) = config.smtp_host.as_deref() else {
+        log::info!(
+            "SMTP not configured — password reset URL for {}: {}",
+            to_email,
+            reset_url
+        );
+        return Ok(());
+    };
+
+    let body = format!(
+        "<!DOCTYPE html><html><body style=\"font-family:sans-serif;max-width:520px;margin:2rem auto\">\
+         <h2>Reset your HEaaS password</h2>\
+         <p>Click the link below to reset your password. This link expires in 1 hour.</p>\
+         <p><a href=\"{0}\" style=\"color:#6366f1\">{0}</a></p>\
+         <p style=\"color:#888;font-size:0.85rem\">If you did not request a password reset, ignore this email.</p>\
+         </body></html>",
+        reset_url
+    );
+
+    let from: lettre::message::Mailbox = config
+        .from_email
+        .parse()
+        .map_err(|_| AppError::internal("Invalid FROM_EMAIL configuration"))?;
+
+    let to: lettre::message::Mailbox = to_email
+        .parse()
+        .map_err(|_| AppError::internal("Invalid recipient email address"))?;
+
+    let message = Message::builder()
+        .from(from)
+        .to(to)
+        .subject("Reset your HEaaS password")
+        .header(lettre::message::header::ContentType::TEXT_HTML)
+        .body(body)
+        .map_err(|e| AppError::internal(format!("Email build error: {}", e)))?;
+
+    let base = AsyncSmtpTransport::<Tokio1Executor>::relay(smtp_host)
+        .map_err(|e| AppError::internal(format!("SMTP relay error: {}", e)))?
+        .port(config.smtp_port);
+
+    let mailer = match (config.smtp_user.as_deref(), config.smtp_pass.as_deref()) {
+        (Some(u), Some(p)) => base
+            .credentials(Credentials::new(u.to_string(), p.to_string()))
+            .build(),
+        _ => base.build(),
+    };
+
+    mailer.send(message).await.map_err(|e| {
+        log::error!("SMTP reset send to {}: {}", to_email, e);
+        AppError::internal("Failed to send password reset email")
+    })?;
+
+    Ok(())
+}
+
 // ── Auth handlers ─────────────────────────────────────────────────────────────
 
 pub async fn register(
@@ -202,7 +329,8 @@ pub async fn login(
     let email = req.email.trim().to_lowercase();
 
     let user: Option<User> = sqlx::query_as(
-        "SELECT id, email, password_hash, created_at, email_verified, email_verify_token \
+        "SELECT id, email, password_hash, created_at, email_verified, email_verify_token, \
+         password_reset_token, password_reset_expires_at \
          FROM users WHERE email = ?",
     )
     .bind(&email)
@@ -225,11 +353,8 @@ pub async fn login(
             let valid = verify(&req.password, &u.password_hash)
                 .map_err(|e| AppError::internal(e.to_string()))?;
             if valid {
-                let token = make_jwt(&u.id, &config)?;
-                Ok(HttpResponse::Ok().json(AuthResponse {
-                    token,
-                    user: UserPublic::from(u),
-                }))
+                let resp = make_auth_response(pool.get_ref(), u, &config).await?;
+                Ok(HttpResponse::Ok().json(resp))
             } else {
                 Err(AppError::unauthorized("Invalid credentials"))
             }
@@ -252,7 +377,8 @@ pub async fn verify_email(
     };
 
     let user: Option<User> = match sqlx::query_as(
-        "SELECT id, email, password_hash, created_at, email_verified, email_verify_token \
+        "SELECT id, email, password_hash, created_at, email_verified, email_verify_token, \
+         password_reset_token, password_reset_expires_at \
          FROM users WHERE email_verify_token = ?",
     )
     .bind(token)
@@ -287,13 +413,23 @@ pub async fn verify_email(
                 return oauth_error_redirect(&config.app_base_url, "Verification failed");
             }
 
-            match make_jwt(&u.id, &config) {
-                Ok(jwt) => oauth_success_redirect(&config.app_base_url, &jwt, &u.email),
+            let jwt = match make_jwt(&u.id, &config) {
+                Ok(j) => j,
                 Err(e) => {
                     log::error!("JWT error after verify: {:?}", e);
-                    oauth_error_redirect(&config.app_base_url, "Verification failed")
+                    return oauth_error_redirect(&config.app_base_url, "Verification failed");
                 }
-            }
+            };
+
+            let refresh_token = match create_refresh_token(pool.get_ref(), &u.id).await {
+                Ok(rt) => rt,
+                Err(e) => {
+                    log::error!("Refresh token error after verify: {:?}", e);
+                    return oauth_error_redirect(&config.app_base_url, "Verification failed");
+                }
+            };
+
+            oauth_success_redirect(&config.app_base_url, &jwt, &refresh_token, &u.email)
         }
     }
 }
@@ -312,7 +448,8 @@ pub async fn resend_verification(
     let email = req.email.trim().to_lowercase();
 
     let user: Option<User> = match sqlx::query_as(
-        "SELECT id, email, password_hash, created_at, email_verified, email_verify_token \
+        "SELECT id, email, password_hash, created_at, email_verified, email_verify_token, \
+         password_reset_token, password_reset_expires_at \
          FROM users WHERE email = ?",
     )
     .bind(&email)
@@ -348,6 +485,251 @@ pub async fn resend_verification(
     }
 
     resend_ok()
+}
+
+// ── Password reset handlers ───────────────────────────────────────────────────
+
+pub async fn forgot_password(
+    pool: web::Data<SqlitePool>,
+    config: web::Data<Arc<Config>>,
+    req: web::Json<ForgotPasswordRequest>,
+) -> Result<impl Responder, AppError> {
+    let email = req.email.trim().to_lowercase();
+
+    let user: Option<User> = sqlx::query_as(
+        "SELECT id, email, password_hash, created_at, email_verified, email_verify_token, \
+         password_reset_token, password_reset_expires_at \
+         FROM users WHERE email = ?",
+    )
+    .bind(&email)
+    .fetch_optional(pool.get_ref())
+    .await?;
+
+    if let Some(u) = user {
+        let reset_token = Uuid::new_v4().to_string();
+        let expires_at = chrono::Utc::now().naive_utc() + chrono::Duration::hours(1);
+
+        if let Err(e) = sqlx::query(
+            "UPDATE users SET password_reset_token = ?, password_reset_expires_at = ? WHERE id = ?",
+        )
+        .bind(&reset_token)
+        .bind(expires_at)
+        .bind(&u.id)
+        .execute(pool.get_ref())
+        .await
+        {
+            log::error!("DB error storing reset token: {}", e);
+            // Still return 200 to prevent enumeration
+        } else if let Err(e) = send_reset_email(&config, &email, &reset_token).await {
+            log::error!("Reset email send failed: {:?}", e);
+        }
+    }
+
+    Ok(HttpResponse::Ok().json(serde_json::json!({
+        "message": "If an account with that email exists, a reset link has been sent."
+    })))
+}
+
+pub async fn forgot_password_redirect(
+    pool: web::Data<SqlitePool>,
+    config: web::Data<Arc<Config>>,
+    query: web::Query<VerifyQuery>,
+) -> HttpResponse {
+    let token = match query.token.as_deref() {
+        Some(t) if !t.is_empty() => t,
+        _ => {
+            return HttpResponse::Found()
+                .insert_header((
+                    "Location",
+                    format!(
+                        "{}/heaas/login#error=Invalid+or+expired+reset+link",
+                        config.app_base_url
+                    ),
+                ))
+                .finish()
+        }
+    };
+
+    let user: Option<User> = match sqlx::query_as(
+        "SELECT id, email, password_hash, created_at, email_verified, email_verify_token, \
+         password_reset_token, password_reset_expires_at \
+         FROM users WHERE password_reset_token = ?",
+    )
+    .bind(token)
+    .fetch_optional(pool.get_ref())
+    .await
+    {
+        Ok(u) => u,
+        Err(e) => {
+            log::error!("DB error in forgot_password_redirect: {}", e);
+            return HttpResponse::Found()
+                .insert_header((
+                    "Location",
+                    format!(
+                        "{}/heaas/login#error=Invalid+or+expired+reset+link",
+                        config.app_base_url
+                    ),
+                ))
+                .finish();
+        }
+    };
+
+    match user {
+        None => HttpResponse::Found()
+            .insert_header((
+                "Location",
+                format!(
+                    "{}/heaas/login#error=Invalid+or+expired+reset+link",
+                    config.app_base_url
+                ),
+            ))
+            .finish(),
+        Some(u) => {
+            let now = chrono::Utc::now().naive_utc();
+            let expired = u
+                .password_reset_expires_at
+                .map(|exp| exp < now)
+                .unwrap_or(true);
+
+            if expired {
+                HttpResponse::Found()
+                    .insert_header((
+                        "Location",
+                        format!(
+                            "{}/heaas/login#error=Invalid+or+expired+reset+link",
+                            config.app_base_url
+                        ),
+                    ))
+                    .finish()
+            } else {
+                HttpResponse::Found()
+                    .insert_header((
+                        "Location",
+                        format!(
+                            "{}/heaas/login#reset_token={}",
+                            config.app_base_url, token
+                        ),
+                    ))
+                    .finish()
+            }
+        }
+    }
+}
+
+pub async fn reset_password(
+    pool: web::Data<SqlitePool>,
+    req: web::Json<ResetPasswordRequest>,
+) -> Result<impl Responder, AppError> {
+    let user: Option<User> = sqlx::query_as(
+        "SELECT id, email, password_hash, created_at, email_verified, email_verify_token, \
+         password_reset_token, password_reset_expires_at \
+         FROM users WHERE password_reset_token = ?",
+    )
+    .bind(&req.token)
+    .fetch_optional(pool.get_ref())
+    .await?;
+
+    let u = match user {
+        None => return Err(AppError::bad_request("Invalid or expired reset link")),
+        Some(u) => u,
+    };
+
+    let now = chrono::Utc::now().naive_utc();
+    let expired = u
+        .password_reset_expires_at
+        .map(|exp| exp < now)
+        .unwrap_or(true);
+
+    if expired {
+        return Err(AppError::bad_request("Reset link has expired"));
+    }
+
+    if !is_valid_password(&req.new_password) {
+        return Err(AppError::bad_request(
+            "Password must be at least 8 characters and include uppercase, lowercase, and a digit.",
+        ));
+    }
+
+    let new_hash = hash(&req.new_password, DEFAULT_COST)
+        .map_err(|e| AppError::internal(e.to_string()))?;
+
+    sqlx::query(
+        "UPDATE users SET password_hash = ?, password_reset_token = NULL, \
+         password_reset_expires_at = NULL WHERE id = ?",
+    )
+    .bind(&new_hash)
+    .bind(&u.id)
+    .execute(pool.get_ref())
+    .await?;
+
+    sqlx::query("DELETE FROM refresh_tokens WHERE user_id = ?")
+        .bind(&u.id)
+        .execute(pool.get_ref())
+        .await?;
+
+    Ok(HttpResponse::Ok().json(serde_json::json!({
+        "message": "Password reset successfully. You can now sign in."
+    })))
+}
+
+// ── Token refresh and logout ──────────────────────────────────────────────────
+
+pub async fn refresh_token_endpoint(
+    pool: web::Data<SqlitePool>,
+    config: web::Data<Arc<Config>>,
+    req: web::Json<RefreshRequest>,
+) -> Result<impl Responder, AppError> {
+    let hash_val = hash_token(&req.refresh_token);
+
+    let row: Option<(String, String, chrono::NaiveDateTime)> = sqlx::query_as(
+        "SELECT id, user_id, expires_at FROM refresh_tokens WHERE token_hash = ?",
+    )
+    .bind(&hash_val)
+    .fetch_optional(pool.get_ref())
+    .await?;
+
+    let (token_id, user_id, expires_at) = match row {
+        None => return Err(AppError::unauthorized("Invalid refresh token")),
+        Some(r) => r,
+    };
+
+    let now = chrono::Utc::now().naive_utc();
+    if expires_at < now {
+        let _ = sqlx::query("DELETE FROM refresh_tokens WHERE id = ?")
+            .bind(&token_id)
+            .execute(pool.get_ref())
+            .await;
+        return Err(AppError::unauthorized("Refresh token has expired"));
+    }
+
+    // Rotate: delete old token
+    sqlx::query("DELETE FROM refresh_tokens WHERE id = ?")
+        .bind(&token_id)
+        .execute(pool.get_ref())
+        .await?;
+
+    let new_jwt = make_jwt(&user_id, &config)?;
+    let new_refresh = create_refresh_token(pool.get_ref(), &user_id).await?;
+
+    Ok(HttpResponse::Ok().json(serde_json::json!({
+        "token": new_jwt,
+        "refresh_token": new_refresh,
+    })))
+}
+
+pub async fn logout(
+    pool: web::Data<SqlitePool>,
+    req: web::Json<LogoutRequest>,
+) -> Result<impl Responder, AppError> {
+    let hash_val = hash_token(&req.refresh_token);
+    sqlx::query("DELETE FROM refresh_tokens WHERE token_hash = ?")
+        .bind(&hash_val)
+        .execute(pool.get_ref())
+        .await?;
+
+    Ok(HttpResponse::Ok().json(serde_json::json!({
+        "message": "Logged out"
+    })))
 }
 
 // ── OAuth helpers ─────────────────────────────────────────────────────────────
@@ -462,11 +844,14 @@ fn oauth_error_redirect(base_url: &str, msg: &str) -> HttpResponse {
         .finish()
 }
 
-fn oauth_success_redirect(base_url: &str, token: &str, email: &str) -> HttpResponse {
+fn oauth_success_redirect(base_url: &str, token: &str, refresh_token: &str, email: &str) -> HttpResponse {
     HttpResponse::Found()
         .insert_header((
             "Location",
-            format!("{}/heaas/login#token={}&email={}", base_url, token, email),
+            format!(
+                "{}/heaas/login#token={}&refresh_token={}&email={}",
+                base_url, token, refresh_token, email
+            ),
         ))
         .finish()
 }
@@ -605,13 +990,23 @@ pub async fn google_callback(
         }
     };
 
-    match make_jwt(&user_id, &config) {
-        Ok(token) => oauth_success_redirect(&config.app_base_url, &token, &user_info.email),
+    let jwt = match make_jwt(&user_id, &config) {
+        Ok(t) => t,
         Err(e) => {
             log::error!("JWT generation: {:?}", e);
-            oauth_error_redirect(&config.app_base_url, "Authentication failed")
+            return oauth_error_redirect(&config.app_base_url, "Authentication failed");
         }
-    }
+    };
+
+    let refresh_token = match create_refresh_token(pool.get_ref(), &user_id).await {
+        Ok(rt) => rt,
+        Err(e) => {
+            log::error!("Refresh token creation (google): {:?}", e);
+            return oauth_error_redirect(&config.app_base_url, "Authentication failed");
+        }
+    };
+
+    oauth_success_redirect(&config.app_base_url, &jwt, &refresh_token, &user_info.email)
 }
 
 // ── GitHub OAuth ──────────────────────────────────────────────────────────────
@@ -769,11 +1164,21 @@ pub async fn github_callback(
             }
         };
 
-    match make_jwt(&user_id, &config) {
-        Ok(token) => oauth_success_redirect(&config.app_base_url, &token, &email),
+    let jwt = match make_jwt(&user_id, &config) {
+        Ok(t) => t,
         Err(e) => {
             log::error!("JWT generation: {:?}", e);
-            oauth_error_redirect(&config.app_base_url, "Authentication failed")
+            return oauth_error_redirect(&config.app_base_url, "Authentication failed");
         }
-    }
+    };
+
+    let refresh_token = match create_refresh_token(pool.get_ref(), &user_id).await {
+        Ok(rt) => rt,
+        Err(e) => {
+            log::error!("Refresh token creation (github): {:?}", e);
+            return oauth_error_redirect(&config.app_base_url, "Authentication failed");
+        }
+    };
+
+    oauth_success_redirect(&config.app_base_url, &jwt, &refresh_token, &email)
 }

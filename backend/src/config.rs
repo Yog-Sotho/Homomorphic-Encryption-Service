@@ -16,6 +16,7 @@ pub struct Config {
     pub smtp_user: Option<String>,
     pub smtp_pass: Option<String>,
     pub from_email: String,
+    pub daily_compute_quota: usize,
 }
 
 impl Config {
@@ -53,6 +54,11 @@ impl Config {
             .and_then(|v| v.parse::<u16>().ok())
             .unwrap_or(587);
 
+        let daily_compute_quota = env::var("DAILY_COMPUTE_QUOTA")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(100);
+
         Config {
             database_url: env::var("DATABASE_URL")
                 .unwrap_or_else(|_| "sqlite://./he_saas.db".to_string()),
@@ -72,6 +78,7 @@ impl Config {
             smtp_pass: env::var("SMTP_PASS").ok(),
             from_email: env::var("FROM_EMAIL")
                 .unwrap_or_else(|_| "noreply@heaas.local".to_string()),
+            daily_compute_quota,
         }
     }
 }

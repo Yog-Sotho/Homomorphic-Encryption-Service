@@ -11,6 +11,8 @@ pub struct User {
     pub created_at: NaiveDateTime,
     pub email_verified: bool,
     pub email_verify_token: Option<String>,
+    pub password_reset_token: Option<String>,
+    pub password_reset_expires_at: Option<chrono::NaiveDateTime>,
 }
 
 #[derive(Debug, Serialize, Deserialize, FromRow)]
