@@ -1,4 +1,4 @@
-use actix_web::{body::BoxBody, dev::{ServiceRequest, ServiceResponse}, Error, HttpResponse};
+use actix_web::{body::BoxBody, dev::{ServiceRequest, ServiceResponse}, Error, HttpMessage, HttpResponse};
 use actix_web::middleware::Next;
 use sqlx::SqlitePool;
 use std::sync::Arc;
