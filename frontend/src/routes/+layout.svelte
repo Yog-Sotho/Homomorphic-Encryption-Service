@@ -5,6 +5,7 @@
   import { userStore } from '$lib/stores';
   import { goto } from '$app/navigation';
   import { page } from '$app/stores';
+  import { auth } from '$lib/api';
 
   function isTokenExpired(token: string): boolean {
     try {
@@ -23,8 +24,13 @@
     }
   });
 
-  function logout() {
+  async function logout() {
+    const refreshToken = localStorage.getItem('refresh_token');
+    if (refreshToken) {
+      try { await auth.logout(refreshToken); } catch {}
+    }
     localStorage.removeItem('token');
+    localStorage.removeItem('refresh_token');
     userStore.set(null);
     goto(`${base}/login`);
   }
@@ -43,6 +49,7 @@
       <nav class="topbar-right">
         {#if $userStore}
           <span class="user-chip">{$userStore.email}</span>
+          <a class="btn-ghost" href="{base}/account">Account</a>
           <button class="btn-ghost" on:click={logout}>Sign out</button>
         {:else}
           <a class="btn-ghost" href="{base}/login">Sign in</a>
