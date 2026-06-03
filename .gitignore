@@ -1,9 +1,7 @@
+backend/target/
 node_modules/
 .svelte-kit/
 build/
 dist/
-.DS_Store
-frontend/node_modules/
-frontend/.svelte-kit/
-frontend/build/
-frontend/dist/
+.env
+*.log

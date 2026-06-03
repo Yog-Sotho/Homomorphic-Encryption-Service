@@ -90,7 +90,9 @@ async fn process_job(
         }
     };
 
-    let ctx = state.he_context.lock().await;
+    // Optimization: Accessing he_context directly from Arc without Mutex.
+    // This allows multiple concurrent HE operations.
+    let ctx = &state.he_context;
     
     let result_data = if operation == "add" {
         ctx.add_ciphertexts(&ct1_data, &ct2_data)
@@ -132,11 +134,13 @@ pub async fn get_job_status(
     job_id: web::Path<String>,
     user_id: web::ReqData<String>,
 ) -> Result<impl Responder, AppError> {
+    let jid = job_id.into_inner();
+    let uid = user_id.into_inner();
     let job = sqlx::query_as!(
         Job,
         "SELECT id, user_id, status, input_data_b64, operation, result_b64, error_message, created_at, updated_at FROM jobs WHERE id = ? AND user_id = ?",
-        job_id.into_inner(),
-        user_id.into_inner()
+        jid,
+        uid
     )
     .fetch_optional(pool.get_ref())
     .await?;

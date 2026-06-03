@@ -9,7 +9,6 @@ use actix_web::{web, App, HttpServer};
 use actix_cors::Cors;
 use crate::crypto::engine::{HeContext, AppState};
 use std::sync::Arc;
-use tokio::sync::Mutex;
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
@@ -20,7 +19,7 @@ async fn main() -> std::io::Result<()> {
     
     let he_context = HeContext::new().expect("Failed to initialize HE Context");
     let app_state = web::Data::new(AppState {
-        he_context: Arc::new(Mutex::new(he_context)),
+        he_context: Arc::new(he_context),
     });
 
     log::info!("Starting HE SaaS Backend on {}", config.server_addr);

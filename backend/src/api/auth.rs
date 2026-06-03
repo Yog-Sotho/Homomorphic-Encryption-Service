@@ -52,7 +52,7 @@ pub async fn register(
         id: user_id.clone(),
         email: email.clone(),
         password_hash: "".to_string(),
-        created_at: chrono::Utc::now(),
+        created_at: chrono::Utc::now().naive_utc(),
     };
 
     let claims = crate::middleware::jwt::Claims {
