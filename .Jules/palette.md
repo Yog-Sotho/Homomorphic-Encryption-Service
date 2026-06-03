@@ -9,3 +9,7 @@
 ## 2026-05-25 - Enhancing Async Feedback and Control
 **Learning:** Initial feedback after job submission was slightly delayed until the first poll returned. Using `<output aria-live="polite">` for status messages and providing a way to "Clear" the dashboard state significantly improves the user's sense of control and accessibility.
 **Action:** Always provide immediate 'pending' feedback for async tasks and include 'Clear' or 'Reset' actions for ephemeral dashboard results. Use semantic `<output>` for dynamic status text.
+
+## 2026-05-30 - Reducing Friction for Repetitive Testing
+**Learning:** In sandbox or demo environments with specific input constraints (e.g., 0-1023 range), users frequently perform repetitive manual entry for testing. A "Randomize" utility reduces this friction and encourages exploration of the tool.
+**Action:** Provide 'Randomize' or 'Auto-fill' buttons for complex or constrained inputs in developer-focused dashboards. Use flex-based headers (like `.card-header`) to align these utilities with section titles without breaking the layout.
