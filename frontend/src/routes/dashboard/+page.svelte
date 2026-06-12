@@ -28,7 +28,7 @@
     result = '';
   }
 
-  function randomizeInputs() {
+  function randomizeValues() {
     val1 = Math.floor(Math.random() * 1024);
     val2 = Math.floor(Math.random() * 1024);
   }
@@ -77,14 +77,7 @@
   <div class="card">
     <div class="card-header">
       <h2>New Computation</h2>
-      <button
-        class="btn-secondary btn-sm"
-        on:click={randomizeInputs}
-        type="button"
-        aria-label="Randomize input values"
-      >
-        Randomize
-      </button>
+      <button type="button" class="btn-secondary btn-sm" on:click={randomizeValues}>Randomize</button>
     </div>
     <form on:submit|preventDefault={submitJob}>
       <label for="val1">Value 1 (0-1023)</label>
