@@ -13,3 +13,7 @@
 ## 2026-06-08 - Standardizing Card Headers with Utility Actions
 **Learning:** Found that the '.card-header' class provides a consistent flex layout for titles and secondary actions (like 'Clear' or 'Randomize'). Using this pattern for the 'New Computation' card makes the utility action easily discoverable without cluttering the main form area.
 **Action:** Use '.card-header' to group card titles with relevant utility buttons, maintaining a clear visual hierarchy and consistent layout across different dashboard modules.
+
+## 2026-06-15 - Specificity in Playwright Locators for Labels
+**Learning:** Found that `get_by_label("Password")` in Playwright can match multiple elements if another element (like a button) has an `aria-label` containing "Password" (e.g., "Show password").
+**Action:** Use `exact=True` with `get_by_label` or use more specific locators like `page.locator("#id")` when multiple elements share similar label text or ARIA labels.
