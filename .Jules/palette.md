@@ -13,3 +13,7 @@
 ## 2026-06-08 - Standardizing Card Headers with Utility Actions
 **Learning:** Found that the '.card-header' class provides a consistent flex layout for titles and secondary actions (like 'Clear' or 'Randomize'). Using this pattern for the 'New Computation' card makes the utility action easily discoverable without cluttering the main form area.
 **Action:** Use '.card-header' to group card titles with relevant utility buttons, maintaining a clear visual hierarchy and consistent layout across different dashboard modules.
+
+## 2026-06-15 - Password Visibility Toggle Pattern
+**Learning:** Implementing a password visibility toggle improves UX by reducing input errors. A robust pattern for this Svelte app involves wrapping the input in a `.password-wrapper` div with `position: relative`, using an absolute-positioned `<button type="button">` for the toggle, and providing an `aria-label` that reflects the current state.
+**Action:** Use the `.password-wrapper` pattern for all sensitive input fields that require visibility toggling, ensuring the toggle button does not trigger form submission by explicitly setting `type="button"`.
