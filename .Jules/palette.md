@@ -13,3 +13,7 @@
 ## 2026-06-08 - Standardizing Card Headers with Utility Actions
 **Learning:** Found that the '.card-header' class provides a consistent flex layout for titles and secondary actions (like 'Clear' or 'Randomize'). Using this pattern for the 'New Computation' card makes the utility action easily discoverable without cluttering the main form area.
 **Action:** Use '.card-header' to group card titles with relevant utility buttons, maintaining a clear visual hierarchy and consistent layout across different dashboard modules.
+
+## 2026-06-22 - Dynamic Autocomplete for Shared Login/Registration Forms
+**Learning:** In SPAs where login and registration share the same form components, static `autocomplete` attributes on password fields can lead to incorrect browser auto-fill behavior (e.g., suggesting a new password on a login form). Using reactive state to toggle between `current-password` and `new-password` ensures the browser provides the correct context.
+**Action:** Use reactive bindings (e.g., `autocomplete={isLogin ? 'current-password' : 'new-password'}`) for password inputs in shared authentication forms to maintain auto-fill accuracy.
