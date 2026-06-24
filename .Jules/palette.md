@@ -13,3 +13,7 @@
 ## 2026-06-08 - Standardizing Card Headers with Utility Actions
 **Learning:** Found that the '.card-header' class provides a consistent flex layout for titles and secondary actions (like 'Clear' or 'Randomize'). Using this pattern for the 'New Computation' card makes the utility action easily discoverable without cluttering the main form area.
 **Action:** Use '.card-header' to group card titles with relevant utility buttons, maintaining a clear visual hierarchy and consistent layout across different dashboard modules.
+
+## 2026-06-15 - Enhancing Password Field Usability and Verification
+**Learning:** Standardizing password inputs with visibility toggles and dynamic `autocomplete` attributes (`current-password` vs `new-password`) significantly reduces friction during authentication. When verifying these with Playwright, the `get_by_label` locator with `exact=True` is crucial to avoid collisions between the input and the toggle button's `aria-label`.
+**Action:** Always implement password visibility toggles with appropriate `aria-label` and `autocomplete` hints. Use `exact=True` in Playwright tests to target specific labeled elements when ARIA labels overlap.
