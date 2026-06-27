@@ -13,3 +13,7 @@
 ## 2026-06-08 - Standardizing Card Headers with Utility Actions
 **Learning:** Found that the '.card-header' class provides a consistent flex layout for titles and secondary actions (like 'Clear' or 'Randomize'). Using this pattern for the 'New Computation' card makes the utility action easily discoverable without cluttering the main form area.
 **Action:** Use '.card-header' to group card titles with relevant utility buttons, maintaining a clear visual hierarchy and consistent layout across different dashboard modules.
+
+## 2026-06-15 - Implementing Password Visibility Toggles without Icon Libraries
+**Learning:** In repositories without a dedicated UI icon library, using clear text labels like 'SHOW' and 'HIDE' for password toggles provides a better UX than abstract symbols or missing functionality. Ensuring the 'autocomplete' attribute dynamically switches between 'current-password' and 'new-password' also significantly improves password manager compatibility.
+**Action:** Implement password toggles using a '.password-wrapper' with an absolute-positioned text button. Apply 'padding-right: 3.5rem' to the input to prevent text overlap and always synchronize the 'autocomplete' attribute with the form's mode.
