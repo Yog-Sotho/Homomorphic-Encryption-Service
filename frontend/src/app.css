@@ -113,3 +113,8 @@ input:focus, select:focus {
   font-size: 0.75rem;
   margin-top: 0;
 }
+
+.required {
+  color: var(--error);
+  margin-left: 0.125rem;
+}

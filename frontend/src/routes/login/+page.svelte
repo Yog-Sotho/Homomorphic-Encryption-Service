@@ -3,7 +3,7 @@
   import { auth } from '$lib/api';
   import { userStore } from '$lib/stores';
 
-  let email = '', password = '', error = '', loading = false, isLogin = true;
+  let email = '', password = '', error = '', loading = false, isLogin = true, showPassword = false;
 
   async function handleSubmit() {
     loading = true; error = '';
@@ -22,10 +22,28 @@
   <h1>{isLogin ? 'HE SaaS Login' : 'Create an Account'}</h1>
   {#if error}<p class="error" role="alert">{error}</p>{/if}
   <form on:submit|preventDefault={handleSubmit}>
-    <label for="email">Email</label>
+    <label for="email">Email <span class="required">*</span></label>
     <input id="email" type="email" bind:value={email} placeholder="email@example.com" required />
-    <label for="password">Password</label>
-    <input id="password" type="password" bind:value={password} placeholder="••••••••" required />
+    <label for="password">Password <span class="required">*</span></label>
+    <div class="password-wrapper">
+      <input
+        id="password"
+        type={showPassword ? 'text' : 'password'}
+        bind:value={password}
+        placeholder="••••••••"
+        autocomplete={isLogin ? 'current-password' : 'new-password'}
+        required
+      />
+      <button
+        type="button"
+        class="password-toggle"
+        on:click={() => (showPassword = !showPassword)}
+        aria-label={showPassword ? 'Hide password' : 'Show password'}
+        aria-pressed={showPassword}
+      >
+        {showPassword ? 'HIDE' : 'SHOW'}
+      </button>
+    </div>
     <button type="submit" disabled={loading} class="btn-primary">
       {loading ? 'Processing...' : (isLogin ? 'Login' : 'Register')}
     </button>
@@ -42,4 +60,7 @@
   .container { max-width: 400px; margin: 0 auto; padding: 2rem; }
   .toggle-text { margin-top: 1.5rem; text-align: center; font-size: 0.875rem; color: var(--text-secondary); }
   .btn-link { background: none; border: none; color: var(--accent); cursor: pointer; text-decoration: underline; padding: 0; font-size: inherit; }
+  .password-wrapper { position: relative; margin-bottom: 1rem; }
+  .password-wrapper input { padding-right: 3.5rem; margin-bottom: 0; }
+  .password-toggle { position: absolute; right: 1rem; top: 50%; transform: translateY(-50%); background: none; color: var(--accent); font-size: 0.75rem; font-weight: 600; padding: 0.5rem 0; }
 </style>
