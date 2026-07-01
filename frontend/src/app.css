@@ -95,6 +95,7 @@ input:focus, select:focus {
 
 .error { color: var(--error); font-size: 0.875rem; margin-top: 0.5rem; }
 .success { color: var(--success); font-size: 0.875rem; margin-top: 0.5rem; }
+.required { color: var(--error); margin-left: 0.125rem; }
 
 .btn-secondary {
   background: transparent;

@@ -80,10 +80,10 @@
       <button type="button" class="btn-secondary btn-sm" on:click={randomizeValues}>Randomize</button>
     </div>
     <form on:submit|preventDefault={submitJob}>
-      <label for="val1">Value 1 (0-1023)</label>
+      <label for="val1">Value 1 (0-1023) <span class="required" aria-hidden="true">*</span></label>
       <input id="val1" type="number" bind:value={val1} min="0" max="1023" placeholder="Value 1" required />
 
-      <label for="val2">Value 2 (0-1023)</label>
+      <label for="val2">Value 2 (0-1023) <span class="required" aria-hidden="true">*</span></label>
       <input id="val2" type="number" bind:value={val2} min="0" max="1023" placeholder="Value 2" required />
 
       <label for="operation">Operation</label>
