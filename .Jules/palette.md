@@ -13,3 +13,7 @@
 ## 2026-06-08 - Standardizing Card Headers with Utility Actions
 **Learning:** Found that the '.card-header' class provides a consistent flex layout for titles and secondary actions (like 'Clear' or 'Randomize'). Using this pattern for the 'New Computation' card makes the utility action easily discoverable without cluttering the main form area.
 **Action:** Use '.card-header' to group card titles with relevant utility buttons, maintaining a clear visual hierarchy and consistent layout across different dashboard modules.
+
+## 2026-07-02 - Accessible Password Toggle and Required Field Patterns
+**Learning:** Standardized a reusable UX pattern for password visibility toggles using a '.password-wrapper' container with absolute-positioned text buttons. Also established a consistent '.required' class for mandatory field indicators in labels, ensuring they are both visually distinct and screen-reader accessible.
+**Action:** Implement password toggles with appropriate ARIA labels and pressed states. Always use the '.required' utility class within '<label>' elements for mandatory inputs to maintain visual and semantic consistency across the app.
