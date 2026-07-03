@@ -4,6 +4,7 @@
   import { userStore } from '$lib/stores';
 
   let email = '', password = '', error = '', loading = false, isLogin = true;
+  let showPassword = false;
 
   async function handleSubmit() {
     loading = true; error = '';
@@ -22,10 +23,41 @@
   <h1>{isLogin ? 'HE SaaS Login' : 'Create an Account'}</h1>
   {#if error}<p class="error" role="alert">{error}</p>{/if}
   <form on:submit|preventDefault={handleSubmit}>
-    <label for="email">Email</label>
-    <input id="email" type="email" bind:value={email} placeholder="email@example.com" required />
-    <label for="password">Password</label>
-    <input id="password" type="password" bind:value={password} placeholder="••••••••" required />
+    <label for="email">
+      Email <span class="required" aria-hidden="true">*</span>
+    </label>
+    <input
+      id="email"
+      type="email"
+      bind:value={email}
+      placeholder="email@example.com"
+      required
+      autocomplete="email"
+    />
+
+    <label for="password">
+      Password <span class="required" aria-hidden="true">*</span>
+    </label>
+    <div class="password-wrapper">
+      <input
+        id="password"
+        type={showPassword ? 'text' : 'password'}
+        bind:value={password}
+        placeholder="••••••••"
+        required
+        autocomplete={isLogin ? 'current-password' : 'new-password'}
+      />
+      <button
+        type="button"
+        class="password-toggle"
+        on:click={() => (showPassword = !showPassword)}
+        aria-label={showPassword ? 'Hide password' : 'Show password'}
+        aria-pressed={showPassword}
+      >
+        {showPassword ? 'HIDE' : 'SHOW'}
+      </button>
+    </div>
+
     <button type="submit" disabled={loading} class="btn-primary">
       {loading ? 'Processing...' : (isLogin ? 'Login' : 'Register')}
     </button>

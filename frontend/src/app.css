@@ -96,6 +96,38 @@ input:focus, select:focus {
 .error { color: var(--error); font-size: 0.875rem; margin-top: 0.5rem; }
 .success { color: var(--success); font-size: 0.875rem; margin-top: 0.5rem; }
 
+.required {
+  color: var(--error);
+  margin-left: 0.125rem;
+}
+
+.password-wrapper {
+  position: relative;
+  margin-bottom: 1rem;
+}
+
+.password-wrapper input {
+  margin-bottom: 0;
+  padding-right: 3.5rem;
+}
+
+.password-toggle {
+  position: absolute;
+  right: 0.5rem;
+  top: 50%;
+  transform: translateY(-50%);
+  background: transparent;
+  color: var(--accent);
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 0.25rem 0.5rem;
+  border: none;
+}
+
+.password-toggle:hover {
+  background: var(--border);
+}
+
 .btn-secondary {
   background: transparent;
   border: 1px solid var(--border);
