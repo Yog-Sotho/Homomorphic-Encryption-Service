@@ -4,6 +4,7 @@
   import { userStore } from '$lib/stores';
 
   let email = '', password = '', error = '', loading = false, isLogin = true;
+  let showPassword = false;
 
   async function handleSubmit() {
     loading = true; error = '';
@@ -23,9 +24,36 @@
   {#if error}<p class="error" role="alert">{error}</p>{/if}
   <form on:submit|preventDefault={handleSubmit}>
     <label for="email">Email</label>
-    <input id="email" type="email" bind:value={email} placeholder="email@example.com" required />
+    <input
+      id="email"
+      type="email"
+      bind:value={email}
+      placeholder="email@example.com"
+      autocomplete="username"
+      required
+    />
+
     <label for="password">Password</label>
-    <input id="password" type="password" bind:value={password} placeholder="••••••••" required />
+    <div class="password-wrapper">
+      <input
+        id="password"
+        type={showPassword ? 'text' : 'password'}
+        bind:value={password}
+        placeholder="••••••••"
+        autocomplete={isLogin ? 'current-password' : 'new-password'}
+        required
+      />
+      <button
+        type="button"
+        class="password-toggle"
+        on:click={() => showPassword = !showPassword}
+        aria-label={showPassword ? 'Hide password' : 'Show password'}
+        aria-pressed={showPassword}
+      >
+        {showPassword ? 'HIDE' : 'SHOW'}
+      </button>
+    </div>
+
     <button type="submit" disabled={loading} class="btn-primary">
       {loading ? 'Processing...' : (isLogin ? 'Login' : 'Register')}
     </button>

@@ -113,3 +113,30 @@ input:focus, select:focus {
   font-size: 0.75rem;
   margin-top: 0;
 }
+
+.password-wrapper {
+  position: relative;
+  margin-bottom: 1rem;
+}
+
+.password-wrapper input {
+  margin-bottom: 0;
+  padding-right: 3.5rem;
+}
+
+.password-toggle {
+  position: absolute;
+  right: 0.75rem;
+  top: 50%;
+  transform: translateY(-50%);
+  background: transparent;
+  color: var(--accent);
+  font-size: 0.75rem;
+  font-weight: 700;
+  padding: 0.25rem;
+  border: none;
+}
+
+.password-toggle:hover {
+  color: var(--accent-hover);
+}
