@@ -13,3 +13,7 @@
 ## 2026-06-08 - Standardizing Card Headers with Utility Actions
 **Learning:** Found that the '.card-header' class provides a consistent flex layout for titles and secondary actions (like 'Clear' or 'Randomize'). Using this pattern for the 'New Computation' card makes the utility action easily discoverable without cluttering the main form area.
 **Action:** Use '.card-header' to group card titles with relevant utility buttons, maintaining a clear visual hierarchy and consistent layout across different dashboard modules.
+
+## 2026-07-05 - Standardizing Password Visibility Toggles
+**Learning:** For apps without a dedicated icon library, a text-based (SHOW/HIDE) toggle button inside a '.password-wrapper' provides a clear, accessible way to manage password visibility. To prevent text overlap with the toggle, the input requires a specific right padding (e.g., '3.5rem').
+**Action:** Implement password toggles using the '.password-wrapper' pattern with an absolute-positioned button (`type="button"`) and ensure inputs have sufficient right padding for the text label.
