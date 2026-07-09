@@ -73,7 +73,15 @@
   {#if error}<p class="error" role="alert">{error}</p>{/if}
   <form on:submit|preventDefault={handleSubmit}>
     <label for="email">Email</label>
-    <input id="email" type="email" bind:value={email} placeholder="email@example.com" required />
+    <input
+      id="email"
+      type="email"
+      bind:value={email}
+      placeholder="email@example.com"
+      autocomplete="email"
+      required
+    />
+
     <label for="password">Password</label>
     <div class="password-wrapper">
       <input
