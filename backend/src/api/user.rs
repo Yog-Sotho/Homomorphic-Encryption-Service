@@ -11,6 +11,7 @@ pub struct MeResponse {
     pub id: String,
     pub email: String,
     pub email_verified: bool,
+    pub has_password: bool,
     pub created_at: chrono::NaiveDateTime,
     pub oauth_providers: Vec<String>,
     pub daily_usage: DailyUsage,
@@ -52,14 +53,14 @@ pub async fn get_me(
         .cloned()
         .ok_or_else(|| AppError::unauthorized("Not authenticated"))?;
 
-    let row: Option<(String, String, bool, chrono::NaiveDateTime)> = sqlx::query_as(
-        "SELECT id, email, email_verified, created_at FROM users WHERE id = ?",
+    let row: Option<(String, String, bool, String, chrono::NaiveDateTime)> = sqlx::query_as(
+        "SELECT id, email, email_verified, password_hash, created_at FROM users WHERE id = ?",
     )
     .bind(&user_id)
     .fetch_optional(pool.get_ref())
     .await?;
 
-    let (id, email, email_verified, created_at) = match row {
+    let (id, email, email_verified, password_hash, created_at) = match row {
         None => return Err(AppError::not_found("User not found")),
         Some(r) => r,
     };
@@ -88,6 +89,7 @@ pub async fn get_me(
         id,
         email,
         email_verified,
+        has_password: !password_hash.is_empty(),
         created_at,
         oauth_providers,
         daily_usage: DailyUsage {
@@ -189,7 +191,23 @@ pub async fn delete_account(
         }
     }
 
+    // Revoke all sessions immediately (belt-and-suspenders alongside FK cascade)
+    sqlx::query("DELETE FROM refresh_tokens WHERE user_id = ?")
+        .bind(&user_id)
+        .execute(pool.get_ref())
+        .await?;
+
     sqlx::query("DELETE FROM jobs WHERE user_id = ?")
+        .bind(&user_id)
+        .execute(pool.get_ref())
+        .await?;
+
+    sqlx::query("DELETE FROM oauth_accounts WHERE user_id = ?")
+        .bind(&user_id)
+        .execute(pool.get_ref())
+        .await?;
+
+    sqlx::query("DELETE FROM daily_compute_usage WHERE user_id = ?")
         .bind(&user_id)
         .execute(pool.get_ref())
         .await?;

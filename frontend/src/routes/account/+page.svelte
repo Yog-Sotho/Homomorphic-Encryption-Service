@@ -10,9 +10,9 @@
     email: string;
     created_at: string;
     email_verified: boolean;
+    has_password: boolean;
     oauth_providers: string[];
-    usage_today: number;
-    usage_quota: number;
+    daily_usage: { count: number; quota: number; date: string };
   }
 
   let profile: UserProfile | null = null;
@@ -34,8 +34,8 @@
   let deleteError = '';
 
   $: passwordHint = newPassword.length > 0 && !isValidPassword(newPassword);
-  $: passwordsMatch = newPassword.length > 0 && confirmPassword.length > 0 && newPassword !== confirmPassword;
-  $: usagePercent = profile ? Math.min(100, Math.round((profile.usage_today / Math.max(profile.usage_quota, 1)) * 100)) : 0;
+  $: passwordMismatch = newPassword.length > 0 && confirmPassword.length > 0 && newPassword !== confirmPassword;
+  $: usagePercent = profile ? Math.min(100, Math.round((profile.daily_usage.count / Math.max(profile.daily_usage.quota, 1)) * 100)) : 0;
   $: memberSince = profile ? formatDate(profile.created_at) : '';
 
   function isValidPassword(p: string): boolean {
@@ -137,10 +137,10 @@
     <div class="card">
       <div class="section-header">
         <span class="section-label">Daily Usage</span>
-        <span class="usage-count mono">{profile.usage_today} / {profile.usage_quota}</span>
+        <span class="usage-count mono">{profile.daily_usage.count} / {profile.daily_usage.quota}</span>
       </div>
       <p class="section-desc">Homomorphic compute operations used today</p>
-      <div class="progress-track" role="progressbar" aria-valuenow={profile.usage_today} aria-valuemin={0} aria-valuemax={profile.usage_quota}>
+      <div class="progress-track" role="progressbar" aria-valuenow={profile.daily_usage.count} aria-valuemin={0} aria-valuemax={profile.daily_usage.quota}>
         <div class="progress-fill" style="width: {usagePercent}%" class:progress-warn={usagePercent >= 80} class:progress-full={usagePercent >= 100}></div>
       </div>
       <p class="progress-label">{usagePercent}% of daily quota used</p>
@@ -199,7 +199,7 @@
         <label for="confirm-password">Confirm New Password</label>
         <input id="confirm-password" type="password" bind:value={confirmPassword} placeholder="••••••••" required autocomplete="new-password" />
 
-        {#if passwordsMatch}
+        {#if passwordMismatch}
           <p class="field-error">Passwords do not match.</p>
         {/if}
 
@@ -242,7 +242,7 @@
           <label for="delete-confirm-input">Type DELETE to confirm</label>
           <input id="delete-confirm-input" type="text" bind:value={deleteConfirmText} placeholder="DELETE" autocomplete="off" />
 
-          {#if profile.oauth_providers && profile.oauth_providers.length === 0}
+          {#if profile.has_password}
             <label for="delete-password">Your password</label>
             <input id="delete-password" type="password" bind:value={deletePassword} placeholder="••••••••" autocomplete="current-password" />
           {/if}

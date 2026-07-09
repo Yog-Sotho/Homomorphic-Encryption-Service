@@ -314,7 +314,9 @@ pub async fn register(
     .execute(pool.get_ref())
     .await?;
 
-    send_verification_email(&config, &email, &verify_token).await?;
+    if let Err(e) = send_verification_email(&config, &email, &verify_token).await {
+        log::error!("Failed to send verification email to {}: {:?}", email, e);
+    }
 
     Ok(HttpResponse::Accepted().json(serde_json::json!({
         "message": "Account created. Check your inbox to verify your email before signing in."
@@ -702,14 +704,14 @@ pub async fn refresh_token_endpoint(
         return Err(AppError::unauthorized("Refresh token has expired"));
     }
 
-    // Rotate: delete old token
-    sqlx::query("DELETE FROM refresh_tokens WHERE id = ?")
-        .bind(&token_id)
-        .execute(pool.get_ref())
-        .await?;
-
+    // Rotate: issue new token before deleting old one so a failed insert doesn't strand the user
     let new_jwt = make_jwt(&user_id, &config)?;
     let new_refresh = create_refresh_token(pool.get_ref(), &user_id).await?;
+
+    let _ = sqlx::query("DELETE FROM refresh_tokens WHERE id = ?")
+        .bind(&token_id)
+        .execute(pool.get_ref())
+        .await;
 
     Ok(HttpResponse::Ok().json(serde_json::json!({
         "token": new_jwt,
