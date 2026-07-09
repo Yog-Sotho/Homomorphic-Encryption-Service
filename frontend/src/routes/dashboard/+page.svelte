@@ -38,7 +38,18 @@
     } catch {}
   }
 
-  async function runSandbox() {
+  function clearDashboard() {
+    jobId = '';
+    status = '';
+    result = '';
+  }
+
+  function randomizeValues() {
+    val1 = Math.floor(Math.random() * 1024);
+    val2 = Math.floor(Math.random() * 1024);
+  }
+
+  async function submitJob() {
     loading = true;
     clearResults();
     try {
@@ -53,34 +64,16 @@
   }
 </script>
 
-<div class="page">
-  <div class="page-header">
-    <div class="page-title-row">
-      <h1>Compute</h1>
-      <span class="live-dot" aria-label="Live"></span>
-    </div>
-    <div class="spec-row" aria-label="Engine specifications">
-      <span class="spec">BFV</span>
-      <span class="spec-sep">·</span>
-      <span class="spec">TFHE-rs 1.3</span>
-      <span class="spec-sep">·</span>
-      <span class="spec">128-bit</span>
-      <span class="spec-sep">·</span>
-      <span class="spec">mod 65536</span>
-      <span class="spec-sep">·</span>
-      <span class="spec">Sandbox</span>
-    </div>
-  </div>
-
-  <div class="card compute-card">
+<div class="dashboard">
+  <h1>Homomorphic Compute Dashboard</h1>
+  <div class="card">
     <div class="card-header">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="card-icon" aria-hidden="true">
-        <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
-        <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
-      </svg>
-      <span class="card-title">New Computation</span>
-      <span class="card-subtitle">Inputs are encrypted before leaving the browser — the server never sees plaintext values</span>
+      <h2>New Computation</h2>
+      <button type="button" class="btn-secondary btn-sm" on:click={randomizeValues}>Randomize</button>
     </div>
+    <form on:submit|preventDefault={submitJob}>
+      <label for="val1">Value 1 (0-1023)</label>
+      <input id="val1" type="number" bind:value={val1} min="0" max="1023" placeholder="Value 1" required />
 
     <form on:submit|preventDefault={runSandbox} class="compute-form">
       <div class="field-block">
