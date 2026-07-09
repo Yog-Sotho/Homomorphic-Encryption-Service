@@ -13,3 +13,10 @@
 ## 2026-06-08 - Standardizing Card Headers with Utility Actions
 **Learning:** Found that the '.card-header' class provides a consistent flex layout for titles and secondary actions (like 'Clear' or 'Randomize'). Using this pattern for the 'New Computation' card makes the utility action easily discoverable without cluttering the main form area.
 **Action:** Use '.card-header' to group card titles with relevant utility buttons, maintaining a clear visual hierarchy and consistent layout across different dashboard modules.
+
+## 2026-06-15 - Context-Aware Autocomplete for Shared Auth Forms
+**Learning:** In applications where Login and Registration share a form or component, using a static `autocomplete="current-password"` can confuse password managers during registration. Dynamically toggling between `current-password` and `new-password` ensures browser tools provide the correct suggestions.
+**Action:** Always bind the `autocomplete` attribute of password fields to the component's mode (e.g., `isLogin ? 'current-password' : 'new-password'`) to maintain high usability and accessibility for password management.
+## 2026-06-15 - Robust Password Visibility Toggle Pattern
+**Learning:** When implementing a password visibility toggle, using a '.password-wrapper' with relative positioning and an absolute-positioned toggle button ensures a stable layout. Furthermore, explicitly setting 'exact=True' in Playwright's 'get_by_label' prevents selector collisions with the toggle button's 'aria-label' if it contains the word "password".
+**Action:** Always wrap password inputs for utility actions, apply 'padding-right' to the input to prevent text overlap, and use precise Playwright locators to avoid ambiguity during testing.
