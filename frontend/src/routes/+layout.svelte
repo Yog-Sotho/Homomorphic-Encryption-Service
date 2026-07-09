@@ -19,6 +19,7 @@
     const token = localStorage.getItem('token');
     if (!token || isTokenExpired(token)) {
       localStorage.removeItem('token');
+      localStorage.removeItem('refresh_token');
       userStore.set(null);
       if ($page.url.pathname !== `${base}/login`) goto(`${base}/login`);
     }

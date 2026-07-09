@@ -21,16 +21,25 @@ pub async fn quota_middleware<B: actix_web::body::MessageBody + 'static>(
         let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
         let quota = config.daily_compute_quota as i64;
 
-        let row: Option<(i64,)> = sqlx::query_as(
+        let row = sqlx::query_as::<_, (i64,)>(
             "SELECT count FROM daily_compute_usage WHERE user_id = ? AND date = ?"
         )
         .bind(&user_id)
         .bind(&today)
         .fetch_optional(pool.get_ref())
-        .await
-        .unwrap_or(None);
+        .await;
 
-        let count = row.map(|(c,)| c).unwrap_or(0);
+        let count = match row {
+            Ok(r) => r.map(|(c,)| c).unwrap_or(0),
+            Err(e) => {
+                log::error!("Quota DB error for user {}: {}", user_id, e);
+                let resp = HttpResponse::TooManyRequests().json(serde_json::json!({
+                    "message": "Service temporarily unavailable. Please try again."
+                }));
+                let (parts, _) = req.into_parts();
+                return Ok(ServiceResponse::new(parts, resp).map_into_boxed_body());
+            }
+        };
 
         if count >= quota {
             let resp = HttpResponse::TooManyRequests().json(serde_json::json!({

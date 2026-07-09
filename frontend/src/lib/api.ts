@@ -14,6 +14,8 @@ api.interceptors.request.use((config) => {
   return config;
 });
 
+let refreshPromise: Promise<string> | null = null;
+
 api.interceptors.response.use(
   (response) => response,
   async (error) => {
@@ -22,21 +24,28 @@ api.interceptors.response.use(
       original._retry = true;
       const refreshToken = localStorage.getItem('refresh_token');
       if (refreshToken) {
+        if (!refreshPromise) {
+          refreshPromise = axios.post('/api/auth/refresh', { refresh_token: refreshToken })
+            .then(res => {
+              localStorage.setItem('token', res.data.token);
+              localStorage.setItem('refresh_token', res.data.refresh_token);
+              return res.data.token as string;
+            })
+            .finally(() => { refreshPromise = null; });
+        }
         try {
-          const res = await axios.post('/api/auth/refresh', { refresh_token: refreshToken });
-          localStorage.setItem('token', res.data.token);
-          localStorage.setItem('refresh_token', res.data.refresh_token);
-          original.headers.Authorization = `Bearer ${res.data.token}`;
+          const newToken = await refreshPromise;
+          original.headers.Authorization = `Bearer ${newToken}`;
           return api(original);
         } catch {
           localStorage.removeItem('token');
           localStorage.removeItem('refresh_token');
-          window.location.href = '/login';
+          window.location.href = '/heaas/login';
           return Promise.reject(error);
         }
       } else {
         localStorage.removeItem('token');
-        window.location.href = '/login';
+        window.location.href = '/heaas/login';
       }
     }
     return Promise.reject(error);
