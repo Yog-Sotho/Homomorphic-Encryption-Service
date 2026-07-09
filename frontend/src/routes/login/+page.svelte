@@ -1,21 +1,70 @@
 <script lang="ts">
   import { goto } from '$app/navigation';
+  import { base } from '$app/paths';
+  import { onMount } from 'svelte';
   import { auth } from '$lib/api';
   import { userStore } from '$lib/stores';
 
-  let email = '', password = '', error = '', loading = false, isLogin = true;
-  let showPassword = false;
+  let email = '', password = '', error = '', loading = false, isLogin = true, showPassword = false;
 
   async function handleSubmit() {
     loading = true; error = '';
     try {
-      const res = isLogin ? await auth.login(email, password) : await auth.register(email, password);
-      localStorage.setItem('token', res.data.token);
-      userStore.set(res.data.user);
-      goto('/dashboard');
+      if (isLogin) {
+        const res = await auth.login(email, password);
+        localStorage.setItem('token', res.data.token);
+        if (res.data.refresh_token) localStorage.setItem('refresh_token', res.data.refresh_token);
+        userStore.set(res.data.user);
+        goto(`${base}/dashboard`);
+      } else {
+        await auth.register(email, password);
+        stateEmail = email;
+        pageMode = 'verify-pending';
+      }
     } catch (e: any) {
-      error = e.response?.data?.message || (isLogin ? 'Login failed' : 'Registration failed');
+      const status = e.response?.status;
+      const msg = e.response?.data?.message ?? '';
+      if (status === 403 && msg.toLowerCase().includes('verify')) {
+        stateEmail = email;
+        pageMode = 'verify-pending';
+      } else {
+        error = msg || (isLogin ? 'Login failed' : 'Registration failed');
+      }
     } finally { loading = false; }
+  }
+
+  async function resend() {
+    resendLoading = true; resendMessage = '';
+    try {
+      await auth.resendVerification(stateEmail);
+      resendMessage = 'New link sent — check your inbox.';
+    } catch {
+      resendMessage = 'Failed to resend. Try again shortly.';
+    } finally { resendLoading = false; }
+  }
+
+  async function handleForgot() {
+    forgotLoading = true; forgotMessage = '';
+    try {
+      await auth.forgotPassword(forgotEmail);
+      pageMode = 'reset-pending';
+    } catch {
+      forgotMessage = 'Failed to send reset email. Try again.';
+    } finally { forgotLoading = false; }
+  }
+
+  async function handleReset() {
+    resetLoading = true; resetError = '';
+    try {
+      await auth.resetPassword(resetToken, newPassword);
+      resetSuccess = true;
+    } catch (e: any) {
+      resetError = e.response?.data?.message || 'Reset failed.';
+    } finally { resetLoading = false; }
+  }
+
+  function oauthRedirect(provider: 'google' | 'github') {
+    window.location.href = '/api/auth/' + provider;
   }
 </script>
 
@@ -27,18 +76,22 @@
     <input id="email" type="email" bind:value={email} placeholder="email@example.com" required />
     <label for="password">Password</label>
     <div class="password-wrapper">
-      <input id="password" type={showPassword ? 'text' : 'password'} bind:value={password} placeholder="••••••••" required />
+      <input
+        id="password"
+        type={showPassword ? 'text' : 'password'}
+        bind:value={password}
+        placeholder="••••••••"
+        required
+        autocomplete={isLogin ? 'current-password' : 'new-password'}
+      />
       <button
         type="button"
         class="toggle-password"
-        on:click={() => showPassword = !showPassword}
+        on:click={() => (showPassword = !showPassword)}
         aria-label={showPassword ? 'Hide password' : 'Show password'}
+        aria-pressed={showPassword}
       >
-        {#if showPassword}
-          <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-eye-off"><path d="M9.88 9.88a3 3 0 1 0 4.24 4.24"/><path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68"/><path d="M6.61 6.61A13.52 13.52 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61"/><line x1="2" x2="22" y1="2" y2="22"/></svg>
-        {:else}
-          <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-eye"><path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0z"/><circle cx="12" cy="12" r="3"/></svg>
-        {/if}
+        {showPassword ? 'HIDE' : 'SHOW'}
       </button>
     </div>
     <button type="submit" disabled={loading} class="btn-primary">
@@ -54,15 +107,24 @@
 </div>
 
 <style>
-  .container { max-width: 400px; margin: 0 auto; padding: 2rem; }
+  .container { max-width: 420px; margin: 3rem auto; padding: 2rem; }
+  .page-logo { width: 200px; height: auto; display: block; margin: 0 auto 1.75rem; }
+  h1 { margin-bottom: 1.25rem; font-size: 1.375rem; text-align: center; }
   .toggle-text { margin-top: 1.5rem; text-align: center; font-size: 0.875rem; color: var(--text-secondary); }
   .btn-link { background: none; border: none; color: var(--accent); cursor: pointer; text-decoration: underline; padding: 0; font-size: inherit; }
-  .password-wrapper { position: relative; margin-bottom: 0.5rem; }
-  .password-wrapper input { margin-bottom: 0; padding-right: 2.5rem; }
+  .password-wrapper { position: relative; margin-bottom: 1rem; }
+  .password-wrapper input { padding-right: 3.5rem; margin-bottom: 0; }
   .toggle-password {
-    position: absolute; right: 0.25rem; top: 50%; transform: translateY(-50%);
-    background: none; border: none; padding: 0.5rem; color: var(--text-secondary);
-    display: flex; align-items: center; justify-content: center;
+    position: absolute;
+    right: 0.75rem;
+    top: 50%;
+    transform: translateY(-50%);
+    background: none;
+    border: none;
+    color: var(--accent);
+    font-size: 0.75rem;
+    font-weight: 700;
+    cursor: pointer;
+    padding: 0.25rem;
   }
-  .toggle-password:hover { color: var(--text-primary); }
 </style>
