@@ -1,98 +1,81 @@
-use seal_rs::{
-    BatchEncoder, Encryptor, Evaluator, KeyGenerator, Plaintext, PublicKey, SecretKey,
-    SerializationMode,
-};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::sync::Mutex;
+use tfhe::integer::{gen_keys_radix, RadixClientKey, ServerKey, RadixCiphertext};
+use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
+
+pub const NUM_BLOCKS: usize = 8;
+pub const PLAIN_MODULUS: u64 = 1u64 << 16; // 65536
 
 pub struct HeContext {
-    pub encoder: BatchEncoder,
-    pub evaluator: Evaluator,
-    pub public_key: PublicKey,
-    pub secret_key: SecretKey,
+    client_key: RadixClientKey,
+    server_key: ServerKey,
 }
 
 impl HeContext {
-    pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
-        let context = seal_rs::SEALContext::create(
-            seal_rs::EncryptionParameters::new(seal_rs::SchemeType::BFV)?
-                .set_poly_modulus_degree(4096)?
-                .set_plain_modulus(1024)?
-                .set_coeff_modulus(seal_rs::CoeffModulus::bfv_default(4096, seal_rs::SecurityLevel::TC128)?)?,
-        )?;
-
-        let keygen = KeyGenerator::new(&context)?;
-        let public_key = keygen.create_public_key()?;
-        let secret_key = keygen.secret_key();
-        
-        let encoder = BatchEncoder::new(&context)?;
-        let evaluator = Evaluator::new(&context)?;
-
-        Ok(HeContext {
-            encoder,
-            evaluator,
-            public_key,
-            secret_key,
-        })
+    pub fn new() -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        let (client_key, server_key) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS, NUM_BLOCKS);
+        Ok(HeContext { client_key, server_key })
     }
 
-    pub fn encrypt_batch(&self, values: &[u64]) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-        let mut plain = Plaintext::new()?;
-        self.encoder.encode(values, &mut plain)?;
-        
-        let encryptor = Encryptor::new_with_pk(&self.public_key)?;
-        let mut encrypted = seal_rs::Ciphertext::new()?;
-        encryptor.encrypt(&plain, &mut encrypted)?;
-
-        let mut buffer = Vec::new();
-        encrypted.save(&mut buffer, SerializationMode::Compressed)?;
-        Ok(buffer)
+    pub fn encrypt(&self, value: u64) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
+        let ct: RadixCiphertext = self.client_key.encrypt(value);
+        Ok(bincode::serialize(&ct)?)
     }
 
-    pub fn decrypt_batch(&self, data: &[u8]) -> Result<Vec<u64>, Box<dyn std::error::Error>> {
-        let mut encrypted = seal_rs::Ciphertext::new()?;
-        encrypted.load(&self.evaluator.context(), data)?;
-
-        let decryptor = seal_rs::Decryptor::new_with_sk(&self.secret_key)?;
-        let mut plain = Plaintext::new()?;
-        decryptor.decrypt(&encrypted, &mut plain)?;
-
-        let mut decoded = vec![0u64; self.encoder.slot_count()];
-        self.encoder.decode(&plain, &mut decoded)?;
-        Ok(decoded)
+    pub fn decrypt(&self, data: &[u8]) -> Result<u64, Box<dyn std::error::Error + Send + Sync>> {
+        let ct: RadixCiphertext = bincode::deserialize(data)?;
+        Ok(self.client_key.decrypt(&ct))
     }
 
-    pub fn add_ciphertexts(&self, ct1_ &[u8], ct2_ &[u8]) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-        let mut ct1 = seal_rs::Ciphertext::new()?;
-        let mut ct2 = seal_rs::Ciphertext::new()?;
-        
-        ct1.load(&self.evaluator.context(), ct1_data)?;
-        ct2.load(&self.evaluator.context(), ct2_data)?;
-
-        let mut result = seal_rs::Ciphertext::new()?;
-        self.evaluator.add(&ct1, &ct2, &mut result)?;
-
-        let mut buffer = Vec::new();
-        result.save(&mut buffer, SerializationMode::Compressed)?;
-        Ok(buffer)
+    pub fn add_ciphertexts(
+        &self,
+        ct1_bytes: &[u8],
+        ct2_bytes: &[u8],
+    ) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
+        let ct1: RadixCiphertext = bincode::deserialize(ct1_bytes)?;
+        let ct2: RadixCiphertext = bincode::deserialize(ct2_bytes)?;
+        let result = self.server_key.unchecked_add(&ct1, &ct2);
+        Ok(bincode::serialize(&result)?)
     }
 
-    pub fn multiply_ciphertexts(&self, ct1_ &[u8], ct2_ &[u8]) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-        let mut ct1 = seal_rs::Ciphertext::new()?;
-        let mut ct2 = seal_rs::Ciphertext::new()?;
-        
-        ct1.load(&self.evaluator.context(), ct1_data)?;
-        ct2.load(&self.evaluator.context(), ct2_data)?;
+    pub fn multiply_ciphertexts(
+        &self,
+        ct1_bytes: &[u8],
+        ct2_bytes: &[u8],
+    ) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
+        let ct1: RadixCiphertext = bincode::deserialize(ct1_bytes)?;
+        let ct2: RadixCiphertext = bincode::deserialize(ct2_bytes)?;
+        let result = self.server_key.unchecked_mul(&ct1, &ct2);
+        Ok(bincode::serialize(&result)?)
+    }
+}
 
-        let mut result = seal_rs::Ciphertext::new()?;
-        self.evaluator.multiply(&ct1, &ct2, &mut result)?;
+pub struct HeContextPool {
+    contexts: Vec<Arc<Mutex<HeContext>>>,
+    counter: AtomicUsize,
+}
 
-        let mut buffer = Vec::new();
-        result.save(&mut buffer, SerializationMode::Compressed)?;
-        Ok(buffer)
+impl HeContextPool {
+    pub fn new(size: usize) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        log::info!("Generating {} TFHE-rs key pair(s) — this takes 10-60 s per slot…", size);
+        let contexts = (0..size)
+            .map(|i| {
+                log::info!("  Generating key pair {}/{}…", i + 1, size);
+                let ctx = HeContext::new()?;
+                Ok(Arc::new(Mutex::new(ctx)))
+            })
+            .collect::<Result<Vec<_>, Box<dyn std::error::Error + Send + Sync>>>()?;
+        log::info!("TFHE-rs key pool ready ({} slot(s))", size);
+        Ok(HeContextPool { contexts, counter: AtomicUsize::new(0) })
+    }
+
+    pub fn acquire(&self) -> Arc<Mutex<HeContext>> {
+        let idx = self.counter.fetch_add(1, Ordering::Relaxed) % self.contexts.len();
+        self.contexts[idx].clone()
     }
 }
 
 pub struct AppState {
-    pub he_context: Arc<Mutex<HeContext>>,
+    pub he_pool: Arc<HeContextPool>,
 }
