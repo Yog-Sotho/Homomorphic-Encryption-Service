@@ -71,6 +71,7 @@ impl From<sqlx::Error> for AppError {
 
 impl From<jsonwebtoken::errors::Error> for AppError {
     fn from(err: jsonwebtoken::errors::Error) -> Self {
-        AppError::Unauthorized(format!("Auth error: {}", err))
+        log::error!("JWT error: {}", err);
+        AppError::Unauthorized("Invalid or expired token".to_string())
     }
 }
