@@ -302,6 +302,7 @@ pub async fn register(
         .map_err(|e| AppError::internal(e.to_string()))?;
     let user_id = Uuid::new_v4().to_string();
     let verify_token = Uuid::new_v4().to_string();
+    let verify_token_hash = hash_token(&verify_token);
 
     sqlx::query(
         "INSERT INTO users (id, email, password_hash, email_verified, email_verify_token) \
@@ -310,7 +311,7 @@ pub async fn register(
     .bind(&user_id)
     .bind(&email)
     .bind(&hashed)
-    .bind(&verify_token)
+    .bind(&verify_token_hash)
     .execute(pool.get_ref())
     .await?;
 
@@ -377,12 +378,14 @@ pub async fn verify_email(
         Some(t) if !t.is_empty() => t,
         _ => return oauth_error_redirect(&config.app_base_url, "Missing verification token"),
     };
+    let token_hash = hash_token(token);
 
     let user: Option<User> = match sqlx::query_as(
         "SELECT id, email, password_hash, created_at, email_verified, email_verify_token, \
          password_reset_token, password_reset_expires_at \
-         FROM users WHERE email_verify_token = ?",
+         FROM users WHERE email_verify_token = ? OR email_verify_token = ?",
     )
+    .bind(&token_hash)
     .bind(token)
     .fetch_optional(pool.get_ref())
     .await
@@ -471,9 +474,10 @@ pub async fn resend_verification(
     };
 
     let new_token = Uuid::new_v4().to_string();
+    let new_token_hash = hash_token(&new_token);
 
     if let Err(e) = sqlx::query("UPDATE users SET email_verify_token = ? WHERE id = ?")
-        .bind(&new_token)
+        .bind(&new_token_hash)
         .bind(&user.id)
         .execute(pool.get_ref())
         .await
@@ -509,12 +513,13 @@ pub async fn forgot_password(
 
     if let Some(u) = user {
         let reset_token = Uuid::new_v4().to_string();
+        let reset_token_hash = hash_token(&reset_token);
         let expires_at = chrono::Utc::now().naive_utc() + chrono::Duration::hours(1);
 
         if let Err(e) = sqlx::query(
             "UPDATE users SET password_reset_token = ?, password_reset_expires_at = ? WHERE id = ?",
         )
-        .bind(&reset_token)
+        .bind(&reset_token_hash)
         .bind(expires_at)
         .bind(&u.id)
         .execute(pool.get_ref())
@@ -551,12 +556,14 @@ pub async fn forgot_password_redirect(
                 .finish()
         }
     };
+    let token_hash = hash_token(token);
 
     let user: Option<User> = match sqlx::query_as(
         "SELECT id, email, password_hash, created_at, email_verified, email_verify_token, \
          password_reset_token, password_reset_expires_at \
-         FROM users WHERE password_reset_token = ?",
+         FROM users WHERE password_reset_token = ? OR password_reset_token = ?",
     )
+    .bind(&token_hash)
     .bind(token)
     .fetch_optional(pool.get_ref())
     .await
@@ -622,11 +629,14 @@ pub async fn reset_password(
     pool: web::Data<SqlitePool>,
     req: web::Json<ResetPasswordRequest>,
 ) -> Result<impl Responder, AppError> {
+    let token_hash = hash_token(&req.token);
+
     let user: Option<User> = sqlx::query_as(
         "SELECT id, email, password_hash, created_at, email_verified, email_verify_token, \
          password_reset_token, password_reset_expires_at \
-         FROM users WHERE password_reset_token = ?",
+         FROM users WHERE password_reset_token = ? OR password_reset_token = ?",
     )
+    .bind(&token_hash)
     .bind(&req.token)
     .fetch_optional(pool.get_ref())
     .await?;
