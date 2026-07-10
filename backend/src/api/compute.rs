@@ -33,8 +33,7 @@ pub async fn sandbox_compute(
         ));
     }
 
-    let ctx_arc = state.he_pool.acquire();
-    let ctx = ctx_arc.lock().await;
+    let ctx = state.he_pool.acquire();
 
     let ct1 = ctx.encrypt(req.value1)
         .map_err(|e| AppError::internal(format!("Encrypt value1: {}", e)))?;
@@ -145,8 +144,7 @@ async fn try_process_job(
         }
     };
 
-    let ctx_arc = state.he_pool.acquire();
-    let ctx = ctx_arc.lock().await;
+    let ctx = state.he_pool.acquire();
 
     let result_data = if operation == "add" {
         ctx.add_ciphertexts(&ct1_data, &ct2_data)

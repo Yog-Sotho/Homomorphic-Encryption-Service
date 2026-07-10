@@ -1,6 +1,5 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use tokio::sync::Mutex;
 use tfhe::integer::{gen_keys_radix, RadixClientKey, ServerKey, RadixCiphertext};
 use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
 
@@ -52,25 +51,33 @@ impl HeContext {
 }
 
 pub struct HeContextPool {
-    contexts: Vec<Arc<Mutex<HeContext>>>,
+    contexts: Vec<Arc<HeContext>>,
     counter: AtomicUsize,
 }
 
 impl HeContextPool {
-    pub fn new(size: usize) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        log::info!("Generating {} TFHE-rs key pair(s) — this takes 10-60 s per slot…", size);
-        let contexts = (0..size)
-            .map(|i| {
+    pub async fn new(size: usize) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        log::info!("Generating {} TFHE-rs key pair(s) in parallel — this takes 10-60 s…", size);
+
+        let mut handles = Vec::with_capacity(size);
+        for i in 0..size {
+            handles.push(tokio::task::spawn_blocking(move || {
                 log::info!("  Generating key pair {}/{}…", i + 1, size);
-                let ctx = HeContext::new()?;
-                Ok(Arc::new(Mutex::new(ctx)))
-            })
-            .collect::<Result<Vec<_>, Box<dyn std::error::Error + Send + Sync>>>()?;
+                HeContext::new()
+            }));
+        }
+
+        let mut contexts = Vec::with_capacity(size);
+        for handle in handles {
+            let ctx = handle.await??;
+            contexts.push(Arc::new(ctx));
+        }
+
         log::info!("TFHE-rs key pool ready ({} slot(s))", size);
         Ok(HeContextPool { contexts, counter: AtomicUsize::new(0) })
     }
 
-    pub fn acquire(&self) -> Arc<Mutex<HeContext>> {
+    pub fn acquire(&self) -> Arc<HeContext> {
         let idx = self.counter.fetch_add(1, Ordering::Relaxed) % self.contexts.len();
         self.contexts[idx].clone()
     }

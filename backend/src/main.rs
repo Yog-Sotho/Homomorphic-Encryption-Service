@@ -27,7 +27,7 @@ async fn main() -> std::io::Result<()> {
 
     let pool = db::connect(&config.database_url).await.expect("Failed to connect to DB");
 
-    let he_pool = HeContextPool::new(config.he_pool_size)
+    let he_pool = HeContextPool::new(config.he_pool_size).await
         .expect("Failed to initialize HE Context pool");
     let app_state = web::Data::new(AppState {
         he_pool: Arc::new(he_pool),
