@@ -342,23 +342,18 @@ pub async fn login(
 
     match user {
         Some(u) => {
-            if !u.email_verified {
-                let _ = verify(&req.password, DUMMY_HASH);
-                return Err(AppError::forbidden(
-                    "Please verify your email before signing in.",
-                ));
-            }
-            if u.password_hash.is_empty() {
-                return Err(AppError::bad_request(
-                    "This account was created with social login. Use Google or GitHub to sign in.",
-                ));
-            }
-            let valid = verify(&req.password, &u.password_hash)
+            let has_password = !u.password_hash.is_empty();
+            let target_hash = if has_password { &u.password_hash } else { DUMMY_HASH };
+
+            let valid = verify(&req.password, target_hash)
                 .map_err(|e| AppError::internal(e.to_string()))?;
-            if valid {
+
+            if valid && has_password && u.email_verified {
                 let resp = make_auth_response(pool.get_ref(), u, &config).await?;
                 Ok(HttpResponse::Ok().json(resp))
             } else {
+                // Generic error for wrong password, social accounts, or unverified accounts
+                // to prevent account enumeration and metadata leakage.
                 Err(AppError::unauthorized("Invalid credentials"))
             }
         }
