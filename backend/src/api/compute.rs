@@ -34,21 +34,17 @@ pub async fn sandbox_compute(
     }
 
     let ctx = state.he_pool.acquire();
+    let v1 = req.value1;
+    let v2 = req.value2;
+    let op = req.operation.clone();
 
-    let ct1 = ctx.encrypt(req.value1)
-        .map_err(|e| AppError::internal(format!("Encrypt value1: {}", e)))?;
-    let ct2 = ctx.encrypt(req.value2)
-        .map_err(|e| AppError::internal(format!("Encrypt value2: {}", e)))?;
-
-    let result_ct = if req.operation == "add" {
-        ctx.add_ciphertexts(&ct1, &ct2)
-    } else {
-        ctx.multiply_ciphertexts(&ct1, &ct2)
-    }
+    // Offload CPU-heavy HE operations to a blocking thread to keep the async executor responsive.
+    let (plaintext_result, result_ct) = tokio::task::spawn_blocking(move || {
+        ctx.sandbox_compute_optimized(v1, v2, &op)
+    })
+    .await
+    .map_err(|e| AppError::internal(format!("Task join error: {}", e)))?
     .map_err(|e| AppError::internal(format!("HE operation failed: {}", e)))?;
-
-    let plaintext_result = ctx.decrypt(&result_ct)
-        .map_err(|e| AppError::internal(format!("Decrypt failed: {}", e)))?;
 
     let result_b64 = general_purpose::STANDARD.encode(&result_ct);
 
@@ -146,11 +142,15 @@ async fn try_process_job(
 
     let ctx = state.he_pool.acquire();
 
-    let result_data = if operation == "add" {
-        ctx.add_ciphertexts(&ct1_data, &ct2_data)
-    } else {
-        ctx.multiply_ciphertexts(&ct1_data, &ct2_data)
-    };
+    let result_data = tokio::task::spawn_blocking(move || {
+        if operation == "add" {
+            ctx.add_ciphertexts(&ct1_data, &ct2_data)
+        } else {
+            ctx.multiply_ciphertexts(&ct1_data, &ct2_data)
+        }
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?;
 
     match result_data {
         Ok(data) => {

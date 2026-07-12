@@ -48,6 +48,29 @@ impl HeContext {
         let result = self.server_key.unchecked_mul(&ct1, &ct2);
         Ok(bincode::serialize(&result)?)
     }
+
+    /// Optimized sandbox compute: encrypts, operates, and decrypts in a single pass.
+    /// Avoids 5 serialization/deserialization cycles of large HE ciphertexts.
+    pub fn sandbox_compute_optimized(
+        &self,
+        v1: u64,
+        v2: u64,
+        op: &str,
+    ) -> Result<(u64, Vec<u8>), Box<dyn std::error::Error + Send + Sync>> {
+        let ct1: RadixCiphertext = self.client_key.encrypt(v1);
+        let ct2: RadixCiphertext = self.client_key.encrypt(v2);
+
+        let result_ct = if op == "add" {
+            self.server_key.unchecked_add(&ct1, &ct2)
+        } else {
+            self.server_key.unchecked_mul(&ct1, &ct2)
+        };
+
+        let plaintext = self.client_key.decrypt(&result_ct);
+        let result_bytes = bincode::serialize(&result_ct)?;
+
+        Ok((plaintext, result_bytes))
+    }
 }
 
 pub struct HeContextPool {
