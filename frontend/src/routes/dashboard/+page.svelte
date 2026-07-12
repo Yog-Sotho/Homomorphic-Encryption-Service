@@ -4,7 +4,7 @@
 
   let val1 = 10;
   let val2 = 5;
-  let operation = 'add';
+  let operation = 'add' as 'add' | 'multiply';
   let loading = false;
 
   let plaintextResult: number | null = null;
@@ -38,15 +38,9 @@
     } catch {}
   }
 
-  function clearDashboard() {
-    jobId = '';
-    status = '';
-    result = '';
-  }
-
   function randomizeValues() {
-    val1 = Math.floor(Math.random() * 1024);
-    val2 = Math.floor(Math.random() * 1024);
+    val1 = Math.floor(Math.random() * (operation === 'multiply' ? 256 : 1024));
+    val2 = Math.floor(Math.random() * (operation === 'multiply' ? 256 : 1024));
   }
 
   async function submitJob() {
@@ -65,21 +59,31 @@
 </script>
 
 <div class="dashboard">
-  <h1>Homomorphic Compute Dashboard</h1>
-  <div class="card">
-    <div class="card-header">
-      <h2>New Computation</h2>
-      <button type="button" class="btn-secondary btn-sm" on:click={randomizeValues}>Randomize</button>
+  <div class="page-header">
+    <div class="page-title-row">
+      <div class="live-dot"></div>
+      <h1>Homomorphic Compute Dashboard</h1>
     </div>
-    <form on:submit|preventDefault={submitJob}>
-      <label for="val1">Value 1 (0-1023) <span class="required" aria-hidden="true">*</span></label>
-      <input id="val1" type="number" bind:value={val1} min="0" max="1023" placeholder="Value 1" required />
+    <div class="spec-row">
+      <span class="spec">TFHE-rs BFV</span>
+      <span class="spec-sep">•</span>
+      <span class="spec">Radix64</span>
+      <span class="spec-sep">•</span>
+      <span class="spec">Zero-Knowledge Sandbox</span>
+    </div>
+  </div>
 
-      <label for="val2">Value 2 (0-1023) <span class="required" aria-hidden="true">*</span></label>
-      <input id="val2" type="number" bind:value={val2} min="0" max="1023" placeholder="Value 2" required />
-    <form on:submit|preventDefault={runSandbox} class="compute-form">
+  <div class="card compute-card">
+    <div class="card-header">
+      <div class="card-icon">⚡</div>
+      <div class="card-title">New Computation</div>
+      <p class="card-subtitle">Encrypted arithmetic performed on the server without decryption.</p>
+      <button type="button" class="btn-secondary btn-sm" on:click={randomizeValues} style="margin-left: auto;">Randomize</button>
+    </div>
+
+    <form on:submit|preventDefault={submitJob} class="compute-form">
       <div class="field-block">
-        <label id="op-label">Operation</label>
+        <div id="op-label" class="label-like">Operation</div>
         <div class="op-tabs" role="group" aria-labelledby="op-label">
           <button
             type="button"
@@ -115,7 +119,7 @@
         </div>
         <div class="op-glyph" aria-hidden="true">=</div>
         <div class="field-block expected-block">
-          <label>Expected</label>
+          <div class="label-like">Expected</div>
           <div class="expected-val">{expectedResult}</div>
         </div>
       </div>
@@ -176,7 +180,7 @@
 </div>
 
 <style>
-  .page { display: flex; flex-direction: column; gap: 1rem; }
+  .dashboard { display: flex; flex-direction: column; gap: 1rem; }
 
   /* ── Page header ─────────────────────────────────── */
   .page-header { margin-bottom: 0.25rem; }
@@ -227,6 +231,15 @@
 
   /* ── Op tabs ─────────────────────────────────────── */
   .field-block { display: flex; flex-direction: column; }
+  .label-like {
+    display: block;
+    margin-bottom: 0.375rem;
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
 
   .op-tabs {
     display: inline-flex; gap: 0.25rem;

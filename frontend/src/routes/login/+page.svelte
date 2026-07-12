@@ -1,7 +1,6 @@
 <script lang="ts">
   import { goto } from '$app/navigation';
   import { base } from '$app/paths';
-  import { onMount } from 'svelte';
   import { auth } from '$lib/api';
   import { userStore } from '$lib/stores';
 
@@ -18,53 +17,12 @@
         goto(`${base}/dashboard`);
       } else {
         await auth.register(email, password);
-        stateEmail = email;
-        pageMode = 'verify-pending';
+        isLogin = true;
+        error = 'Account created! Please sign in.';
       }
     } catch (e: any) {
-      const status = e.response?.status;
-      const msg = e.response?.data?.message ?? '';
-      if (status === 403 && msg.toLowerCase().includes('verify')) {
-        stateEmail = email;
-        pageMode = 'verify-pending';
-      } else {
-        error = msg || (isLogin ? 'Login failed' : 'Registration failed');
-      }
+      error = e.response?.data?.message || (isLogin ? 'Login failed' : 'Registration failed');
     } finally { loading = false; }
-  }
-
-  async function resend() {
-    resendLoading = true; resendMessage = '';
-    try {
-      await auth.resendVerification(stateEmail);
-      resendMessage = 'New link sent — check your inbox.';
-    } catch {
-      resendMessage = 'Failed to resend. Try again shortly.';
-    } finally { resendLoading = false; }
-  }
-
-  async function handleForgot() {
-    forgotLoading = true; forgotMessage = '';
-    try {
-      await auth.forgotPassword(forgotEmail);
-      pageMode = 'reset-pending';
-    } catch {
-      forgotMessage = 'Failed to send reset email. Try again.';
-    } finally { forgotLoading = false; }
-  }
-
-  async function handleReset() {
-    resetLoading = true; resetError = '';
-    try {
-      await auth.resetPassword(resetToken, newPassword);
-      resetSuccess = true;
-    } catch (e: any) {
-      resetError = e.response?.data?.message || 'Reset failed.';
-    } finally { resetLoading = false; }
-  }
-
-  function oauthRedirect(provider: 'google' | 'github') {
-    window.location.href = '/api/auth/' + provider;
   }
 </script>
 
@@ -73,7 +31,6 @@
   {#if error}<p class="error" role="alert">{error}</p>{/if}
   <form on:submit|preventDefault={handleSubmit}>
     <label for="email">Email <span class="required" aria-hidden="true">*</span></label>
-    <label for="email">Email</label>
     <input
       id="email"
       type="email"
@@ -84,7 +41,6 @@
     />
 
     <label for="password">Password <span class="required" aria-hidden="true">*</span></label>
-    <label for="password">Password</label>
     <div class="password-wrapper">
       <input
         id="password"
@@ -93,14 +49,6 @@
         placeholder="••••••••"
         autocomplete={isLogin ? 'current-password' : 'new-password'}
         required
-      />
-      <button
-        type="button"
-        class="password-toggle"
-        on:click={() => (showPassword = !showPassword)}
-        aria-label={showPassword ? 'Hide password' : 'Show password'}
-        required
-        autocomplete={isLogin ? 'current-password' : 'new-password'}
       />
       <button
         type="button"
@@ -127,14 +75,10 @@
 
 <style>
   .container { max-width: 420px; margin: 3rem auto; padding: 2rem; }
-  .page-logo { width: 200px; height: auto; display: block; margin: 0 auto 1.75rem; }
   h1 { margin-bottom: 1.25rem; font-size: 1.375rem; text-align: center; }
   .toggle-text { margin-top: 1.5rem; text-align: center; font-size: 0.875rem; color: var(--text-secondary); }
   .btn-link { background: none; border: none; color: var(--accent); cursor: pointer; text-decoration: underline; padding: 0; font-size: inherit; }
 
-  .password-wrapper { position: relative; margin-bottom: 1rem; }
-  .password-wrapper input { margin-bottom: 0; padding-right: 3.5rem; }
-  .password-toggle {
   .password-wrapper { position: relative; margin-bottom: 1rem; }
   .password-wrapper input { padding-right: 3.5rem; margin-bottom: 0; }
   .toggle-password {
@@ -148,9 +92,6 @@
     font-size: 0.75rem;
     font-weight: 700;
     padding: 0.25rem;
-  }
-</style>
     cursor: pointer;
-    padding: 0.25rem;
   }
 </style>
