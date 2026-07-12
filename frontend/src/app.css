@@ -133,12 +133,6 @@ button { cursor: pointer; font-family: var(--font-sans); border: none; }
 .success { color: var(--success); font-size: 0.875rem; margin-top: 0.5rem; }
 .required { color: var(--error); margin-left: 0.125rem; }
 
-.btn-secondary {
-  background: transparent;
-  border: 1px solid var(--border);
-  color: var(--text-primary);
-  padding: 0.5rem 1rem;
-  border-radius: var(--radius);
 /* ── Badges ─────────────────────────────────────────── */
 .badge {
   display: inline-flex; align-items: center;
