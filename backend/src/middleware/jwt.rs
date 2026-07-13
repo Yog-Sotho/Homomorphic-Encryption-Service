@@ -24,19 +24,14 @@ pub async fn jwt_validator<B: actix_web::body::MessageBody>(
 
     if let Some(auth_header) = auth_header {
         if let Ok(auth_str) = auth_header.to_str() {
-            if auth_str.starts_with("Bearer ") {
-                let token = &auth_str[7..];
-
-                match decode::<Claims>(
+            if let Some(token) = auth_str.strip_prefix("Bearer ") {
+                if let Ok(token_data) = decode::<Claims>(
                     token,
                     &DecodingKey::from_secret(config.jwt_secret.as_ref()),
                     &Validation::default(),
                 ) {
-                    Ok(token_data) => {
-                        req.extensions_mut().insert(token_data.claims.sub);
-                        return next.call(req).await;
-                    }
-                    Err(_) => {}
+                    req.extensions_mut().insert(token_data.claims.sub);
+                    return next.call(req).await;
                 }
             }
         }

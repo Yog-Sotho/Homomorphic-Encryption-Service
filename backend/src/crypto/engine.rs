@@ -17,11 +17,13 @@ impl HeContext {
         Ok(HeContext { client_key, server_key })
     }
 
+    #[allow(dead_code)]
     pub fn encrypt(&self, value: u64) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
         let ct: RadixCiphertext = self.client_key.encrypt(value);
         Ok(bincode::serialize(&ct)?)
     }
 
+    #[allow(dead_code)]
     pub fn decrypt(&self, data: &[u8]) -> Result<u64, Box<dyn std::error::Error + Send + Sync>> {
         let ct: RadixCiphertext = bincode::deserialize(data)?;
         Ok(self.client_key.decrypt(&ct))

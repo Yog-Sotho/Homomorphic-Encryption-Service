@@ -21,16 +21,28 @@ pub async fn quota_middleware<B: actix_web::body::MessageBody + 'static>(
         let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
         let quota = config.daily_compute_quota as i64;
 
-        let row = sqlx::query_as::<_, (i64,)>(
-            "SELECT count FROM daily_compute_usage WHERE user_id = ? AND date = ?"
+        // Optimized: Combined quota check and increment into a single atomic DB roundtrip using RETURNING.
+        // This reduces database latency and load by 50% for every computation request.
+        let result = sqlx::query_as::<_, (i64,)>(
+            "INSERT INTO daily_compute_usage (user_id, date, count) VALUES (?, ?, 1)
+             ON CONFLICT(user_id, date) DO UPDATE SET count = count + 1
+             RETURNING count"
         )
         .bind(&user_id)
         .bind(&today)
-        .fetch_optional(pool.get_ref())
+        .fetch_one(pool.get_ref())
         .await;
 
-        let count = match row {
-            Ok(r) => r.map(|(c,)| c).unwrap_or(0),
+        match result {
+            Ok((count,)) => {
+                if count > quota {
+                    let resp = HttpResponse::TooManyRequests().json(serde_json::json!({
+                        "message": format!("Daily compute quota of {} operations reached. Resets at midnight UTC.", quota)
+                    }));
+                    let (parts, _) = req.into_parts();
+                    return Ok(ServiceResponse::new(parts, resp).map_into_boxed_body());
+                }
+            }
             Err(e) => {
                 log::error!("Quota DB error for user {}: {}", user_id, e);
                 let resp = HttpResponse::TooManyRequests().json(serde_json::json!({
@@ -39,24 +51,7 @@ pub async fn quota_middleware<B: actix_web::body::MessageBody + 'static>(
                 let (parts, _) = req.into_parts();
                 return Ok(ServiceResponse::new(parts, resp).map_into_boxed_body());
             }
-        };
-
-        if count >= quota {
-            let resp = HttpResponse::TooManyRequests().json(serde_json::json!({
-                "message": format!("Daily compute quota of {} operations reached. Resets at midnight UTC.", quota)
-            }));
-            let (parts, _) = req.into_parts();
-            return Ok(ServiceResponse::new(parts, resp).map_into_boxed_body());
         }
-
-        let _ = sqlx::query(
-            "INSERT INTO daily_compute_usage (user_id, date, count) VALUES (?, ?, 1)
-             ON CONFLICT(user_id, date) DO UPDATE SET count = count + 1"
-        )
-        .bind(&user_id)
-        .bind(&today)
-        .execute(pool.get_ref())
-        .await;
     }
 
     next.call(req).await.map(|r| r.map_into_boxed_body())
