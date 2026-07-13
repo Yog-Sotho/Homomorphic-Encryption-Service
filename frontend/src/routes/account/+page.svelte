@@ -22,6 +22,9 @@
   let currentPassword = '';
   let newPassword = '';
   let confirmPassword = '';
+  let showCurrentPassword = false;
+  let showNewPassword = false;
+  let showConfirmPassword = false;
   let passwordLoading = false;
   let passwordError = '';
   let passwordSuccess = false;
@@ -30,6 +33,7 @@
   let showDeleteConfirm = false;
   let deleteConfirmText = '';
   let deletePassword = '';
+  let showDeletePassword = false;
   let deleteLoading = false;
   let deleteError = '';
 
@@ -182,10 +186,20 @@
       </div>
       <form on:submit|preventDefault={handleChangePassword} class="settings-form">
         <label for="current-password">Current Password</label>
-        <input id="current-password" type="password" bind:value={currentPassword} placeholder="••••••••" required autocomplete="current-password" />
+        <div class="password-wrapper">
+          <input id="current-password" type={showCurrentPassword ? 'text' : 'password'} bind:value={currentPassword} placeholder="••••••••" required autocomplete="current-password" />
+          <button type="button" class="toggle-password" on:click={() => showCurrentPassword = !showCurrentPassword} aria-label={showCurrentPassword ? 'Hide current password' : 'Show current password'} aria-pressed={showCurrentPassword}>
+            {showCurrentPassword ? 'HIDE' : 'SHOW'}
+          </button>
+        </div>
 
         <label for="new-password">New Password</label>
-        <input id="new-password" type="password" bind:value={newPassword} placeholder="••••••••" required autocomplete="new-password" />
+        <div class="password-wrapper">
+          <input id="new-password" type={showNewPassword ? 'text' : 'password'} bind:value={newPassword} placeholder="••••••••" required autocomplete="new-password" />
+          <button type="button" class="toggle-password" on:click={() => showNewPassword = !showNewPassword} aria-label={showNewPassword ? 'Hide new password' : 'Show new password'} aria-pressed={showNewPassword}>
+            {showNewPassword ? 'HIDE' : 'SHOW'}
+          </button>
+        </div>
 
         {#if passwordHint}
           <ul class="hint" aria-live="polite">
@@ -197,7 +211,12 @@
         {/if}
 
         <label for="confirm-password">Confirm New Password</label>
-        <input id="confirm-password" type="password" bind:value={confirmPassword} placeholder="••••••••" required autocomplete="new-password" />
+        <div class="password-wrapper">
+          <input id="confirm-password" type={showConfirmPassword ? 'text' : 'password'} bind:value={confirmPassword} placeholder="••••••••" required autocomplete="new-password" />
+          <button type="button" class="toggle-password" on:click={() => showConfirmPassword = !showConfirmPassword} aria-label={showConfirmPassword ? 'Hide confirm password' : 'Show confirm password'} aria-pressed={showConfirmPassword}>
+            {showConfirmPassword ? 'HIDE' : 'SHOW'}
+          </button>
+        </div>
 
         {#if passwordMismatch}
           <p class="field-error">Passwords do not match.</p>
@@ -244,7 +263,12 @@
 
           {#if profile.has_password}
             <label for="delete-password">Your password</label>
-            <input id="delete-password" type="password" bind:value={deletePassword} placeholder="••••••••" autocomplete="current-password" />
+            <div class="password-wrapper">
+              <input id="delete-password" type={showDeletePassword ? 'text' : 'password'} bind:value={deletePassword} placeholder="••••••••" autocomplete="current-password" />
+              <button type="button" class="toggle-password" on:click={() => showDeletePassword = !showDeletePassword} aria-label={showDeletePassword ? 'Hide delete password' : 'Show delete password'} aria-pressed={showDeletePassword}>
+                {showDeletePassword ? 'HIDE' : 'SHOW'}
+              </button>
+            </div>
           {/if}
 
           {#if deleteError}
