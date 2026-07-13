@@ -5,6 +5,7 @@ use bcrypt::{hash, verify, DEFAULT_COST};
 use std::sync::Arc;
 use crate::config::Config;
 use crate::errors::AppError;
+use crate::api::validation::{is_strong_password, PASSWORD_REQUIREMENTS};
 
 #[derive(Serialize)]
 pub struct MeResponse {
@@ -33,13 +34,6 @@ pub struct ChangePasswordRequest {
 #[derive(Deserialize)]
 pub struct DeleteAccountRequest {
     pub password: String,
-}
-
-fn is_valid_password(password: &str) -> bool {
-    password.len() >= 8
-        && password.chars().any(|c| c.is_uppercase())
-        && password.chars().any(|c| c.is_lowercase())
-        && password.chars().any(|c| c.is_ascii_digit())
 }
 
 pub async fn get_me(
@@ -135,10 +129,8 @@ pub async fn change_password(
         return Err(AppError::unauthorized("Current password is incorrect"));
     }
 
-    if !is_valid_password(&body.new_password) {
-        return Err(AppError::bad_request(
-            "Password must be at least 8 characters and include uppercase, lowercase, and a digit.",
-        ));
+    if !is_strong_password(&body.new_password) {
+        return Err(AppError::bad_request(PASSWORD_REQUIREMENTS));
     }
 
     let new_hash = hash(&body.new_password, DEFAULT_COST)
