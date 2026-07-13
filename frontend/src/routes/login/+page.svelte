@@ -79,19 +79,4 @@
   .toggle-text { margin-top: 1.5rem; text-align: center; font-size: 0.875rem; color: var(--text-secondary); }
   .btn-link { background: none; border: none; color: var(--accent); cursor: pointer; text-decoration: underline; padding: 0; font-size: inherit; }
 
-  .password-wrapper { position: relative; margin-bottom: 1rem; }
-  .password-wrapper input { padding-right: 3.5rem; margin-bottom: 0; }
-  .toggle-password {
-    position: absolute;
-    right: 0.75rem;
-    top: 50%;
-    transform: translateY(-50%);
-    background: none;
-    border: none;
-    color: var(--accent);
-    font-size: 0.75rem;
-    font-weight: 700;
-    padding: 0.25rem;
-    cursor: pointer;
-  }
 </style>
