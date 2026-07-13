@@ -10,25 +10,9 @@ use lettre::transport::smtp::authentication::Credentials;
 use crate::config::Config;
 use crate::db::models::User;
 use crate::errors::AppError;
+use crate::api::validation::{is_valid_email, is_strong_password, PASSWORD_REQUIREMENTS};
 
 const DUMMY_HASH: &str = "$2b$12$WXQEq5YBFxVkx2j5bVBNNOLIGgWS0DVOvt0gp8b2ioY6O3S9XEi/6";
-
-fn is_valid_email(email: &str) -> bool {
-    if let Some(at_pos) = email.find('@') {
-        let local = &email[..at_pos];
-        let domain = &email[at_pos + 1..];
-        !local.is_empty() && domain.contains('.')
-    } else {
-        false
-    }
-}
-
-fn is_valid_password(password: &str) -> bool {
-    password.len() >= 8
-        && password.chars().any(|c| c.is_uppercase())
-        && password.chars().any(|c| c.is_lowercase())
-        && password.chars().any(|c| c.is_ascii_digit())
-}
 
 fn hash_token(token: &str) -> String {
     use sha2::{Sha256, Digest};
@@ -292,10 +276,8 @@ pub async fn register(
             "Invalid email address. Provide a valid email (e.g. user@example.com).",
         ));
     }
-    if !is_valid_password(&req.password) {
-        return Err(AppError::bad_request(
-            "Password must be at least 8 characters and include uppercase, lowercase, and a digit.",
-        ));
+    if !is_strong_password(&req.password) {
+        return Err(AppError::bad_request(PASSWORD_REQUIREMENTS));
     }
 
     let hashed = hash(&req.password, DEFAULT_COST)
@@ -651,10 +633,8 @@ pub async fn reset_password(
         return Err(AppError::bad_request("Reset link has expired"));
     }
 
-    if !is_valid_password(&req.new_password) {
-        return Err(AppError::bad_request(
-            "Password must be at least 8 characters and include uppercase, lowercase, and a digit.",
-        ));
+    if !is_strong_password(&req.new_password) {
+        return Err(AppError::bad_request(PASSWORD_REQUIREMENTS));
     }
 
     let new_hash = hash(&req.new_password, DEFAULT_COST)
