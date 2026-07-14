@@ -110,6 +110,8 @@ button { cursor: pointer; font-family: var(--font-sans); border: none; }
 }
 .btn-secondary:hover { border-color: var(--accent); color: var(--text-primary); background: var(--accent-glow); }
 
+.btn-sm { padding: 0.25rem 0.625rem; font-size: 0.75rem; }
+
 .btn-ghost {
   background: none; border: none;
   color: var(--text-secondary);
