@@ -99,6 +99,7 @@ pub async fn change_password(
     body: web::Json<ChangePasswordRequest>,
     req: HttpRequest,
 ) -> Result<impl Responder, AppError> {
+    let body = body.into_inner();
     let user_id = req
         .extensions()
         .get::<String>()
@@ -123,8 +124,13 @@ pub async fn change_password(
         ));
     }
 
-    let valid = verify(&body.current_password, &password_hash)
+    // Offload CPU-intensive verification to a blocking thread.
+    let current_password = body.current_password;
+    let valid = tokio::task::spawn_blocking(move || verify(&current_password, &password_hash))
+        .await
+        .map_err(|e| AppError::internal(format!("Task join error: {}", e)))?
         .map_err(|e| AppError::internal(e.to_string()))?;
+
     if !valid {
         return Err(AppError::unauthorized("Current password is incorrect"));
     }
@@ -133,7 +139,11 @@ pub async fn change_password(
         return Err(AppError::bad_request(PASSWORD_REQUIREMENTS));
     }
 
-    let new_hash = hash(&body.new_password, DEFAULT_COST)
+    // Offload CPU-intensive hashing to a blocking thread.
+    let new_password = body.new_password;
+    let new_hash = tokio::task::spawn_blocking(move || hash(&new_password, DEFAULT_COST))
+        .await
+        .map_err(|e| AppError::internal(format!("Task join error: {}", e)))?
         .map_err(|e| AppError::internal(e.to_string()))?;
 
     sqlx::query("UPDATE users SET password_hash = ? WHERE id = ?")
@@ -157,6 +167,7 @@ pub async fn delete_account(
     body: web::Json<DeleteAccountRequest>,
     req: HttpRequest,
 ) -> Result<impl Responder, AppError> {
+    let body = body.into_inner();
     let user_id = req
         .extensions()
         .get::<String>()
@@ -176,8 +187,13 @@ pub async fn delete_account(
     };
 
     if !password_hash.is_empty() {
-        let valid = verify(&body.password, &password_hash)
+        // Offload CPU-intensive verification to a blocking thread.
+        let password = body.password;
+        let valid = tokio::task::spawn_blocking(move || verify(&password, &password_hash))
+            .await
+            .map_err(|e| AppError::internal(format!("Task join error: {}", e)))?
             .map_err(|e| AppError::internal(e.to_string()))?;
+
         if !valid {
             return Err(AppError::forbidden("Invalid password"));
         }
