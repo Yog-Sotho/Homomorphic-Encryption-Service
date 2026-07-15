@@ -286,7 +286,7 @@ pub async fn register(
     let verify_token = Uuid::new_v4().to_string();
     let verify_token_hash = hash_token(&verify_token);
 
-    sqlx::query(
+    let result = sqlx::query(
         "INSERT INTO users (id, email, password_hash, email_verified, email_verify_token) \
          VALUES (?, ?, ?, 0, ?)",
     )
@@ -295,10 +295,26 @@ pub async fn register(
     .bind(&hashed)
     .bind(&verify_token_hash)
     .execute(pool.get_ref())
-    .await?;
+    .await;
 
-    if let Err(e) = send_verification_email(&config, &email, &verify_token).await {
-        log::error!("Failed to send verification email to {}: {:?}", email, e);
+    match result {
+        Ok(_) => {
+            if let Err(e) = send_verification_email(&config, &email, &verify_token).await {
+                log::error!("Failed to send verification email to {}: {:?}", email, e);
+            }
+        }
+        Err(e) => {
+            if let sqlx::Error::Database(ref db_err) = e {
+                if db_err.is_unique_violation() || db_err.message().contains("UNIQUE constraint") {
+                    // Swallow unique violation to prevent account enumeration
+                    log::info!("Swallowed unique violation for email: {}", email);
+                } else {
+                    return Err(e.into());
+                }
+            } else {
+                return Err(e.into());
+            }
+        }
     }
 
     Ok(HttpResponse::Accepted().json(serde_json::json!({
