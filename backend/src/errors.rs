@@ -61,7 +61,7 @@ impl From<sqlx::Error> for AppError {
     fn from(err: sqlx::Error) -> Self {
         if let sqlx::Error::Database(ref db_err) = err {
             if db_err.is_unique_violation() || db_err.message().contains("UNIQUE constraint") {
-                return AppError::BadRequest("Email address is already registered".to_string());
+                return AppError::BadRequest("An error occurred while processing the request".to_string());
             }
         }
         log::error!("Database error: {}", err);
