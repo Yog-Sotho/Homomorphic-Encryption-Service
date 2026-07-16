@@ -8,6 +8,7 @@
   let loading = false;
 
   let plaintextResult: number | null = null;
+  let lastExpected: number | null = null;
   let resultB64 = '';
   let errorMessage = '';
   let showFullCiphertext = false;
@@ -25,6 +26,7 @@
 
   function clearResults() {
     plaintextResult = null;
+    lastExpected = null;
     resultB64 = '';
     errorMessage = '';
     showFullCiphertext = false;
@@ -45,10 +47,12 @@
 
   async function submitJob() {
     loading = true;
+    const currentExpected = expectedResult;
     clearResults();
     try {
       const res = await compute.sandboxCompute(val1Clamped, val2Clamped, operation);
       plaintextResult = res.data.plaintext_result;
+      lastExpected = currentExpected;
       resultB64 = res.data.result_b64;
     } catch (e: any) {
       errorMessage = e?.response?.data?.message ?? e?.message ?? 'Computation failed';
@@ -147,7 +151,12 @@
   {#if plaintextResult !== null}
     <div class="card result-card success-card">
       <div class="result-header">
-        <span class="badge badge-green">Result</span>
+        <div class="badge-group">
+          <span class="badge badge-green">Result</span>
+          {#if plaintextResult === lastExpected}
+            <span class="badge badge-green">Verified Match</span>
+          {/if}
+        </div>
         <button class="btn-ghost dismiss-btn" on:click={clearResults} type="button">Clear</button>
       </div>
 
@@ -304,6 +313,7 @@
     display: flex; justify-content: space-between; align-items: center;
     margin-bottom: 1rem;
   }
+  .badge-group { display: flex; gap: 0.5rem; }
   .dismiss-btn { font-size: 0.775rem; padding: 0.2rem 0.5rem; }
 
   .success-card { border-color: rgba(16,185,129,0.18); }
