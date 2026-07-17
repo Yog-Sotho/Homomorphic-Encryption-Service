@@ -286,12 +286,26 @@ pub async fn register(
     let hashed = tokio::task::spawn_blocking(move || hash(&password, DEFAULT_COST))
         .await
         .map_err(|e| AppError::internal(e.to_string()))?
+    // Offload CPU-heavy bcrypt hashing to a blocking thread.
+    let password = req.password.clone();
+    let hashed = tokio::task::spawn_blocking(move || {
+        hash(&password, DEFAULT_COST)
+    })
+    .await
+    .map_err(|e| AppError::internal(format!("Task join error: {}", e)))?
+    .map_err(|e| AppError::internal(e.to_string()))?;
+    // Offload CPU-intensive bcrypt hashing to a blocking thread to avoid blocking the async executor.
+    let password = req.password.clone();
+    let hashed = tokio::task::spawn_blocking(move || hash(password, DEFAULT_COST))
+        .await
+        .map_err(|e| AppError::internal(format!("Task join error: {}", e)))?
         .map_err(|e| AppError::internal(e.to_string()))?;
+
     let user_id = Uuid::new_v4().to_string();
     let verify_token = Uuid::new_v4().to_string();
     let verify_token_hash = hash_token(&verify_token);
 
-    sqlx::query(
+    let result = sqlx::query(
         "INSERT INTO users (id, email, password_hash, email_verified, email_verify_token) \
          VALUES (?, ?, ?, 0, ?)",
     )
@@ -300,11 +314,36 @@ pub async fn register(
     .bind(&hashed)
     .bind(&verify_token_hash)
     .execute(pool.get_ref())
-    .await?;
+    .await;
 
-    if let Err(e) = send_verification_email(&config, &email, &verify_token).await {
-        log::error!("Failed to send verification email to {}: {:?}", email, e);
+    match result {
+        Ok(_) => {
+            if let Err(e) = send_verification_email(&config, &email, &verify_token).await {
+                log::error!("Failed to send verification email to {}: {:?}", email, e);
+            }
+        }
+        Err(e) => {
+            if let sqlx::Error::Database(ref db_err) = e {
+                if db_err.is_unique_violation() || db_err.message().contains("UNIQUE constraint") {
+                    // Prevent account enumeration by returning 202 even if email already exists.
+                    return Ok(HttpResponse::Accepted().json(serde_json::json!({
+                        "message": "Account created. Check your inbox to verify your email before signing in."
+                    })));
+                }
+            }
+            return Err(e.into());
+        }
     }
+                    // Swallow unique violation to prevent account enumeration
+                } else {
+                    return Err(e.into());
+                }
+            } else {
+                return Err(e.into());
+            }
+        }
+    }
+
 
     Ok(HttpResponse::Accepted().json(serde_json::json!({
         "message": "Account created. Check your inbox to verify your email before signing in."
@@ -338,6 +377,12 @@ pub async fn login(
             let valid = tokio::task::spawn_blocking(move || verify(&password, &target_hash))
                 .await
                 .map_err(|e| AppError::internal(e.to_string()))?
+
+            // Offload CPU-intensive bcrypt verification to a blocking thread.
+            let password = req.password.clone();
+            let valid = tokio::task::spawn_blocking(move || verify(password, &target_hash))
+                .await
+                .map_err(|e| AppError::internal(format!("Task join error: {}", e)))?
                 .map_err(|e| AppError::internal(e.to_string()))?;
 
             if valid && has_password && u.email_verified {
@@ -353,6 +398,11 @@ pub async fn login(
             let password = req.password;
             // Offload dummy verification to prevent timing attacks without blocking.
             let _ = tokio::task::spawn_blocking(move || verify(&password, DUMMY_HASH)).await;
+            // Always perform a dummy verification to prevent timing attacks.
+            // Offload to blocking thread as bcrypt is expensive.
+            let password = req.password.clone();
+            let _ = tokio::task::spawn_blocking(move || verify(password, DUMMY_HASH)).await;
+
             Err(AppError::unauthorized("Invalid credentials"))
         }
     }
@@ -649,7 +699,11 @@ pub async fn reset_password(
         return Err(AppError::bad_request(PASSWORD_REQUIREMENTS));
     }
 
-    let new_hash = hash(&req.new_password, DEFAULT_COST)
+    // Offload CPU-intensive bcrypt hashing to a blocking thread.
+    let new_password = req.new_password.clone();
+    let new_hash = tokio::task::spawn_blocking(move || hash(new_password, DEFAULT_COST))
+        .await
+        .map_err(|e| AppError::internal(format!("Task join error: {}", e)))?
         .map_err(|e| AppError::internal(e.to_string()))?;
 
     sqlx::query(
@@ -786,18 +840,48 @@ async fn find_or_create_oauth_user(
     }
 
     let email_lower = email.to_lowercase();
-    let by_email: Option<(String,)> =
-        sqlx::query_as("SELECT id FROM users WHERE email = ?")
+    let by_email: Option<(String, bool)> =
+        sqlx::query_as("SELECT id, email_verified FROM users WHERE email = ?")
             .bind(&email_lower)
             .fetch_optional(pool)
             .await?;
 
+    let user_id = if let Some((uid, verified)) = by_email {
+        if !verified {
+            // Pre-registration account takeover prevention: clear password_hash and email_verify_token
+            sqlx::query(
+                "UPDATE users SET email_verified = 1, password_hash = '', email_verify_token = NULL WHERE id = ?",
     let user_id = if let Some((uid,)) = by_email {
-        // Link OAuth to existing account; ensure it is marked verified
-        sqlx::query("UPDATE users SET email_verified = 1 WHERE id = ?")
+        // Link OAuth to existing account; ensure it is marked verified.
+        // Clearing password_hash and email_verify_token prevents account takeover
+        // if an unverified account was pre-registered by an attacker.
+        sqlx::query(
+            "UPDATE users SET email_verified = 1, password_hash = '', email_verify_token = NULL \
+             WHERE id = ?",
+        )
+        .bind(&uid)
+        .execute(pool)
+        .await?;
+    let user_id = if let Some((uid, verified)) = by_email {
+        // Link OAuth to existing account; ensure it is marked verified.
+        // If the account was previously unverified, clear password_hash and verify_token
+        // to prevent pre-registration takeover (an attacker who pre-registered the email
+        // cannot later sign in with their password once the legitimate owner claims it via OAuth).
+        if !verified {
+            sqlx::query(
+                "UPDATE users SET email_verified = 1, password_hash = '', email_verify_token = NULL \
+                 WHERE id = ?"
+            )
             .bind(&uid)
             .execute(pool)
             .await?;
+        } else {
+            // Link OAuth to existing verified account
+            sqlx::query("UPDATE users SET email_verified = 1 WHERE id = ?")
+                .bind(&uid)
+                .execute(pool)
+                .await?;
+        }
         uid
     } else {
         let new_id = Uuid::new_v4().to_string();
@@ -1180,4 +1264,54 @@ pub async fn github_callback(
     };
 
     oauth_success_redirect(&config.app_base_url, &jwt, &refresh_token, &email)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sqlx::SqlitePool;
+
+    #[tokio::test]
+    async fn test_find_or_create_oauth_user_pre_registration_takeover() {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+
+        // 1. Pre-register an unverified user (simulate attacker registration)
+        let user_id = uuid::Uuid::new_v4().to_string();
+        let email = "victim@example.com";
+        let password_hash = "some_attacker_password_hash";
+        let email_verify_token = "some_verify_token";
+
+        sqlx::query(
+            "INSERT INTO users (id, email, password_hash, email_verified, email_verify_token) VALUES (?, ?, ?, 0, ?)"
+        )
+        .bind(&user_id)
+        .bind(email)
+        .bind(password_hash)
+        .bind(email_verify_token)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // 2. Log in via Google/GitHub OAuth with the same email (simulate victim OAuth login)
+        let oauth_user_id = find_or_create_oauth_user(&pool, "google", "google-id-123", email)
+            .await
+            .unwrap();
+
+        // 3. Verify that the user ID remains the same (linked)
+        assert_eq!(user_id, oauth_user_id);
+
+        // 4. Verify that the account is now verified, and password_hash and email_verify_token are cleared
+        let (verified, current_hash, current_verify_token): (bool, String, Option<String>) = sqlx::query_as(
+            "SELECT email_verified, password_hash, email_verify_token FROM users WHERE id = ?"
+        )
+        .bind(&user_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        assert!(verified);
+        assert_eq!(current_hash, "");
+        assert_eq!(current_verify_token, None);
+    }
 }
