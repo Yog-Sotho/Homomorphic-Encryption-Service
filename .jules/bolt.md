@@ -9,3 +9,7 @@
 ## 2026-07-13 - Atomic Quota Enforcement with RETURNING
 **Learning:** Performing 'SELECT quota -> logic -> UPDATE quota' in middleware creates unnecessary DB roundtrips and introduces race conditions. SQLite's 'INSERT...ON CONFLICT...RETURNING' allows for atomic increment-and-check in a single roundtrip.
 **Action:** Use atomic SQL operations with 'RETURNING' for counters and state changes to reduce latency by 50% on hot paths.
+
+## 2026-07-14 - Offloading Bcrypt to Blocking Threads
+**Learning:** Bcrypt hashing/verification is a CPU-bound operation taking ~100ms+. Running it directly in an async handler blocks the entire Actix-web worker thread, preventing it from processing other requests and leading to high tail latency under load.
+**Action:** Always wrap `bcrypt::hash` and `bcrypt::verify` (including timing-attack dummy calls) in `tokio::task::spawn_blocking`.
