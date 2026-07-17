@@ -270,6 +270,7 @@ pub async fn register(
     config: web::Data<Arc<Config>>,
     req: web::Json<RegisterRequest>,
 ) -> Result<impl Responder, AppError> {
+    let req = req.into_inner();
     let email = req.email.trim().to_lowercase();
     if !is_valid_email(&email) {
         return Err(AppError::bad_request(
@@ -280,6 +281,11 @@ pub async fn register(
         return Err(AppError::bad_request(PASSWORD_REQUIREMENTS));
     }
 
+    let password = req.password;
+    // Offload CPU-heavy bcrypt hashing to a blocking thread to keep the async executor responsive.
+    let hashed = tokio::task::spawn_blocking(move || hash(&password, DEFAULT_COST))
+        .await
+        .map_err(|e| AppError::internal(e.to_string()))?
     // Offload CPU-heavy bcrypt hashing to a blocking thread.
     let password = req.password.clone();
     let hashed = tokio::task::spawn_blocking(move || {
@@ -349,6 +355,7 @@ pub async fn login(
     config: web::Data<Arc<Config>>,
     req: web::Json<LoginRequest>,
 ) -> Result<impl Responder, AppError> {
+    let req = req.into_inner();
     let email = req.email.trim().to_lowercase();
 
     let user: Option<User> = sqlx::query_as(
@@ -364,6 +371,12 @@ pub async fn login(
         Some(u) => {
             let has_password = !u.password_hash.is_empty();
             let target_hash = if has_password { u.password_hash.clone() } else { DUMMY_HASH.to_string() };
+            let password = req.password;
+
+            // Offload CPU-heavy bcrypt verification to a blocking thread to keep the async executor responsive.
+            let valid = tokio::task::spawn_blocking(move || verify(&password, &target_hash))
+                .await
+                .map_err(|e| AppError::internal(e.to_string()))?
 
             // Offload CPU-intensive bcrypt verification to a blocking thread.
             let password = req.password.clone();
@@ -382,6 +395,9 @@ pub async fn login(
             }
         }
         None => {
+            let password = req.password;
+            // Offload dummy verification to prevent timing attacks without blocking.
+            let _ = tokio::task::spawn_blocking(move || verify(&password, DUMMY_HASH)).await;
             // Always perform a dummy verification to prevent timing attacks.
             // Offload to blocking thread as bcrypt is expensive.
             let password = req.password.clone();
