@@ -774,18 +774,28 @@ async fn find_or_create_oauth_user(
     }
 
     let email_lower = email.to_lowercase();
-    let by_email: Option<(String,)> =
-        sqlx::query_as("SELECT id FROM users WHERE email = ?")
+    let by_email: Option<(String, bool)> =
+        sqlx::query_as("SELECT id, email_verified FROM users WHERE email = ?")
             .bind(&email_lower)
             .fetch_optional(pool)
             .await?;
 
-    let user_id = if let Some((uid,)) = by_email {
-        // Link OAuth to existing account; ensure it is marked verified
-        sqlx::query("UPDATE users SET email_verified = 1 WHERE id = ?")
+    let user_id = if let Some((uid, verified)) = by_email {
+        if !verified {
+            // Pre-registration account takeover prevention: clear password_hash and email_verify_token
+            sqlx::query(
+                "UPDATE users SET email_verified = 1, password_hash = '', email_verify_token = NULL WHERE id = ?",
+            )
             .bind(&uid)
             .execute(pool)
             .await?;
+        } else {
+            // Link OAuth to existing verified account
+            sqlx::query("UPDATE users SET email_verified = 1 WHERE id = ?")
+                .bind(&uid)
+                .execute(pool)
+                .await?;
+        }
         uid
     } else {
         let new_id = Uuid::new_v4().to_string();
@@ -1168,4 +1178,54 @@ pub async fn github_callback(
     };
 
     oauth_success_redirect(&config.app_base_url, &jwt, &refresh_token, &email)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sqlx::SqlitePool;
+
+    #[tokio::test]
+    async fn test_find_or_create_oauth_user_pre_registration_takeover() {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+
+        // 1. Pre-register an unverified user (simulate attacker registration)
+        let user_id = uuid::Uuid::new_v4().to_string();
+        let email = "victim@example.com";
+        let password_hash = "some_attacker_password_hash";
+        let email_verify_token = "some_verify_token";
+
+        sqlx::query(
+            "INSERT INTO users (id, email, password_hash, email_verified, email_verify_token) VALUES (?, ?, ?, 0, ?)"
+        )
+        .bind(&user_id)
+        .bind(email)
+        .bind(password_hash)
+        .bind(email_verify_token)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // 2. Log in via Google/GitHub OAuth with the same email (simulate victim OAuth login)
+        let oauth_user_id = find_or_create_oauth_user(&pool, "google", "google-id-123", email)
+            .await
+            .unwrap();
+
+        // 3. Verify that the user ID remains the same (linked)
+        assert_eq!(user_id, oauth_user_id);
+
+        // 4. Verify that the account is now verified, and password_hash and email_verify_token are cleared
+        let (verified, current_hash, current_verify_token): (bool, String, Option<String>) = sqlx::query_as(
+            "SELECT email_verified, password_hash, email_verify_token FROM users WHERE id = ?"
+        )
+        .bind(&user_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        assert!(verified);
+        assert_eq!(current_hash, "");
+        assert_eq!(current_verify_token, None);
+    }
 }
