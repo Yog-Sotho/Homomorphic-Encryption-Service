@@ -7,3 +7,7 @@
 **Vulnerability:** Existing unverified accounts could be claimed via OAuth without clearing existing credentials, potentially allowing an attacker who pre-registered an email to retain access or intercept tokens if the legitimate owner later signed in via OAuth.
 **Learning:** Linking OAuth providers to existing accounts must be treated as a "claim" event that invalidates previous unverified states or weak credentials.
 **Prevention:** When linking an OAuth provider to an existing unverified account, always clear `password_hash` and `email_verify_token` to ensure only the OAuth identity can access the account.
+## 2026-06-04 - Account Enumeration and OAuth Takeover
+**Vulnerability:** Account enumeration via database unique constraint errors and account takeover of unverified accounts during OAuth linking.
+**Learning:** Returning specific "Email already registered" messages from the database layer allows enumeration. OAuth linking to unverified accounts can leave attacker-controlled passwords active.
+**Prevention:** Catch unique constraint violations and return generic success or error messages. Clear password hashes and verification tokens when taking over unverified accounts via OAuth.
