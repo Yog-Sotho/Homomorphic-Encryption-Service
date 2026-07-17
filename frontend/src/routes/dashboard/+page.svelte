@@ -8,6 +8,7 @@
   let loading = false;
 
   let plaintextResult: number | null = null;
+  let lastExpected: number | null = null;
   let resultB64 = '';
   let errorMessage = '';
   let showFullCiphertext = false;
@@ -25,6 +26,7 @@
 
   function clearResults() {
     plaintextResult = null;
+    lastExpected = null;
     resultB64 = '';
     errorMessage = '';
     showFullCiphertext = false;
@@ -45,10 +47,12 @@
 
   async function submitJob() {
     loading = true;
+    const currentExpected = expectedResult;
     clearResults();
     try {
       const res = await compute.sandboxCompute(val1Clamped, val2Clamped, operation);
       plaintextResult = res.data.plaintext_result;
+      lastExpected = currentExpected;
       resultB64 = res.data.result_b64;
     } catch (e: any) {
       errorMessage = e?.response?.data?.message ?? e?.message ?? 'Computation failed';
@@ -109,18 +113,18 @@
 
       <div class="inputs-row">
         <div class="field-block">
-          <label for="val1">Value A</label>
+          <label for="val1">Value A <span class="required" aria-hidden="true">*</span></label>
           <input id="val1" type="number" bind:value={val1} min="0" max={maxVal} required />
         </div>
         <div class="op-glyph" aria-hidden="true">{operation === 'add' ? '+' : '×'}</div>
         <div class="field-block">
-          <label for="val2">Value B</label>
+          <label for="val2">Value B <span class="required" aria-hidden="true">*</span></label>
           <input id="val2" type="number" bind:value={val2} min="0" max={maxVal} required />
         </div>
         <div class="op-glyph" aria-hidden="true">=</div>
         <div class="field-block expected-block">
           <div class="label-like">Expected</div>
-          <div class="expected-val">{expectedResult}</div>
+          <div class="expected-val" aria-live="polite">{expectedResult}</div>
         </div>
       </div>
 
@@ -147,13 +151,21 @@
   {#if plaintextResult !== null}
     <div class="card result-card success-card">
       <div class="result-header">
-        <span class="badge badge-green">Result</span>
+        <div class="badge-group">
+          <span class="badge badge-green">Result</span>
+          {#if plaintextResult === lastExpected}
+            <span class="badge badge-green">Verified Match</span>
+          {/if}
+        </div>
         <button class="btn-ghost dismiss-btn" on:click={clearResults} type="button">Clear</button>
       </div>
 
       <div class="result-plaintext">
         <div class="result-label-row">
           <span class="result-label">Plaintext</span>
+          {#if plaintextResult === expectedResult}
+            <span class="badge badge-green badge-match">Matches Expected</span>
+          {/if}
         </div>
         <span class="result-number">{plaintextResult}</span>
       </div>
@@ -304,6 +316,7 @@
     display: flex; justify-content: space-between; align-items: center;
     margin-bottom: 1rem;
   }
+  .badge-group { display: flex; gap: 0.5rem; }
   .dismiss-btn { font-size: 0.775rem; padding: 0.2rem 0.5rem; }
 
   .success-card { border-color: rgba(16,185,129,0.18); }
@@ -317,6 +330,7 @@
     color: var(--text-muted);
     letter-spacing: 0.08em; text-transform: uppercase;
   }
+  .badge-match { margin-left: 0.5rem; vertical-align: middle; }
   .result-number {
     font-family: var(--font-mono);
     font-size: 3rem; font-weight: 700;

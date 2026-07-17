@@ -280,13 +280,26 @@ pub async fn register(
         return Err(AppError::bad_request(PASSWORD_REQUIREMENTS));
     }
 
-    let hashed = hash(&req.password, DEFAULT_COST)
+    // Offload CPU-heavy bcrypt hashing to a blocking thread.
+    let password = req.password.clone();
+    let hashed = tokio::task::spawn_blocking(move || {
+        hash(&password, DEFAULT_COST)
+    })
+    .await
+    .map_err(|e| AppError::internal(format!("Task join error: {}", e)))?
+    .map_err(|e| AppError::internal(e.to_string()))?;
+    // Offload CPU-intensive bcrypt hashing to a blocking thread to avoid blocking the async executor.
+    let password = req.password.clone();
+    let hashed = tokio::task::spawn_blocking(move || hash(password, DEFAULT_COST))
+        .await
+        .map_err(|e| AppError::internal(format!("Task join error: {}", e)))?
         .map_err(|e| AppError::internal(e.to_string()))?;
+
     let user_id = Uuid::new_v4().to_string();
     let verify_token = Uuid::new_v4().to_string();
     let verify_token_hash = hash_token(&verify_token);
 
-    sqlx::query(
+    let result = sqlx::query(
         "INSERT INTO users (id, email, password_hash, email_verified, email_verify_token) \
          VALUES (?, ?, ?, 0, ?)",
     )
@@ -295,11 +308,36 @@ pub async fn register(
     .bind(&hashed)
     .bind(&verify_token_hash)
     .execute(pool.get_ref())
-    .await?;
+    .await;
 
-    if let Err(e) = send_verification_email(&config, &email, &verify_token).await {
-        log::error!("Failed to send verification email to {}: {:?}", email, e);
+    match result {
+        Ok(_) => {
+            if let Err(e) = send_verification_email(&config, &email, &verify_token).await {
+                log::error!("Failed to send verification email to {}: {:?}", email, e);
+            }
+        }
+        Err(e) => {
+            if let sqlx::Error::Database(ref db_err) = e {
+                if db_err.is_unique_violation() || db_err.message().contains("UNIQUE constraint") {
+                    // Prevent account enumeration by returning 202 even if email already exists.
+                    return Ok(HttpResponse::Accepted().json(serde_json::json!({
+                        "message": "Account created. Check your inbox to verify your email before signing in."
+                    })));
+                }
+            }
+            return Err(e.into());
+        }
     }
+                    // Swallow unique violation to prevent account enumeration
+                } else {
+                    return Err(e.into());
+                }
+            } else {
+                return Err(e.into());
+            }
+        }
+    }
+
 
     Ok(HttpResponse::Accepted().json(serde_json::json!({
         "message": "Account created. Check your inbox to verify your email before signing in."
@@ -325,9 +363,13 @@ pub async fn login(
     match user {
         Some(u) => {
             let has_password = !u.password_hash.is_empty();
-            let target_hash = if has_password { &u.password_hash } else { DUMMY_HASH };
+            let target_hash = if has_password { u.password_hash.clone() } else { DUMMY_HASH.to_string() };
 
-            let valid = verify(&req.password, target_hash)
+            // Offload CPU-intensive bcrypt verification to a blocking thread.
+            let password = req.password.clone();
+            let valid = tokio::task::spawn_blocking(move || verify(password, &target_hash))
+                .await
+                .map_err(|e| AppError::internal(format!("Task join error: {}", e)))?
                 .map_err(|e| AppError::internal(e.to_string()))?;
 
             if valid && has_password && u.email_verified {
@@ -340,7 +382,11 @@ pub async fn login(
             }
         }
         None => {
-            let _ = verify(&req.password, DUMMY_HASH);
+            // Always perform a dummy verification to prevent timing attacks.
+            // Offload to blocking thread as bcrypt is expensive.
+            let password = req.password.clone();
+            let _ = tokio::task::spawn_blocking(move || verify(password, DUMMY_HASH)).await;
+
             Err(AppError::unauthorized("Invalid credentials"))
         }
     }
@@ -637,7 +683,11 @@ pub async fn reset_password(
         return Err(AppError::bad_request(PASSWORD_REQUIREMENTS));
     }
 
-    let new_hash = hash(&req.new_password, DEFAULT_COST)
+    // Offload CPU-intensive bcrypt hashing to a blocking thread.
+    let new_password = req.new_password.clone();
+    let new_hash = tokio::task::spawn_blocking(move || hash(new_password, DEFAULT_COST))
+        .await
+        .map_err(|e| AppError::internal(format!("Task join error: {}", e)))?
         .map_err(|e| AppError::internal(e.to_string()))?;
 
     sqlx::query(
@@ -785,6 +835,26 @@ async fn find_or_create_oauth_user(
             // Pre-registration account takeover prevention: clear password_hash and email_verify_token
             sqlx::query(
                 "UPDATE users SET email_verified = 1, password_hash = '', email_verify_token = NULL WHERE id = ?",
+    let user_id = if let Some((uid,)) = by_email {
+        // Link OAuth to existing account; ensure it is marked verified.
+        // Clearing password_hash and email_verify_token prevents account takeover
+        // if an unverified account was pre-registered by an attacker.
+        sqlx::query(
+            "UPDATE users SET email_verified = 1, password_hash = '', email_verify_token = NULL \
+             WHERE id = ?",
+        )
+        .bind(&uid)
+        .execute(pool)
+        .await?;
+    let user_id = if let Some((uid, verified)) = by_email {
+        // Link OAuth to existing account; ensure it is marked verified.
+        // If the account was previously unverified, clear password_hash and verify_token
+        // to prevent pre-registration takeover (an attacker who pre-registered the email
+        // cannot later sign in with their password once the legitimate owner claims it via OAuth).
+        if !verified {
+            sqlx::query(
+                "UPDATE users SET email_verified = 1, password_hash = '', email_verify_token = NULL \
+                 WHERE id = ?"
             )
             .bind(&uid)
             .execute(pool)
