@@ -280,6 +280,14 @@ pub async fn register(
         return Err(AppError::bad_request(PASSWORD_REQUIREMENTS));
     }
 
+    // Offload CPU-heavy bcrypt hashing to a blocking thread.
+    let password = req.password.clone();
+    let hashed = tokio::task::spawn_blocking(move || {
+        hash(&password, DEFAULT_COST)
+    })
+    .await
+    .map_err(|e| AppError::internal(format!("Task join error: {}", e)))?
+    .map_err(|e| AppError::internal(e.to_string()))?;
     // Offload CPU-intensive bcrypt hashing to a blocking thread to avoid blocking the async executor.
     let password = req.password.clone();
     let hashed = tokio::task::spawn_blocking(move || hash(password, DEFAULT_COST))
@@ -311,6 +319,15 @@ pub async fn register(
         Err(e) => {
             if let sqlx::Error::Database(ref db_err) = e {
                 if db_err.is_unique_violation() || db_err.message().contains("UNIQUE constraint") {
+                    // Prevent account enumeration by returning 202 even if email already exists.
+                    return Ok(HttpResponse::Accepted().json(serde_json::json!({
+                        "message": "Account created. Check your inbox to verify your email before signing in."
+                    })));
+                }
+            }
+            return Err(e.into());
+        }
+    }
                     // Swallow unique violation to prevent account enumeration
                 } else {
                     return Err(e.into());
@@ -813,6 +830,17 @@ async fn find_or_create_oauth_user(
             .fetch_optional(pool)
             .await?;
 
+    let user_id = if let Some((uid,)) = by_email {
+        // Link OAuth to existing account; ensure it is marked verified.
+        // Clearing password_hash and email_verify_token prevents account takeover
+        // if an unverified account was pre-registered by an attacker.
+        sqlx::query(
+            "UPDATE users SET email_verified = 1, password_hash = '', email_verify_token = NULL \
+             WHERE id = ?",
+        )
+        .bind(&uid)
+        .execute(pool)
+        .await?;
     let user_id = if let Some((uid, verified)) = by_email {
         // Link OAuth to existing account; ensure it is marked verified.
         // If the account was previously unverified, clear password_hash and verify_token

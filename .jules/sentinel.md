@@ -3,6 +3,10 @@
 **Learning:** Returning specific errors before password verification or based on account state allows attackers to enumerate registered emails and identify authentication methods.
 **Prevention:** Use generic "Invalid credentials" error messages for all failed login attempts and ensure constant-time-ish behavior by always performing a password hash verification (real or dummy).
 
+## 2026-06-05 - OAuth Pre-Registration Takeover
+**Vulnerability:** Existing unverified accounts could be claimed via OAuth without clearing existing credentials, potentially allowing an attacker who pre-registered an email to retain access or intercept tokens if the legitimate owner later signed in via OAuth.
+**Learning:** Linking OAuth providers to existing accounts must be treated as a "claim" event that invalidates previous unverified states or weak credentials.
+**Prevention:** When linking an OAuth provider to an existing unverified account, always clear `password_hash` and `email_verify_token` to ensure only the OAuth identity can access the account.
 ## 2026-06-04 - Account Enumeration and OAuth Takeover
 **Vulnerability:** Account enumeration via database unique constraint errors and account takeover of unverified accounts during OAuth linking.
 **Learning:** Returning specific "Email already registered" messages from the database layer allows enumeration. OAuth linking to unverified accounts can leave attacker-controlled passwords active.
