@@ -286,7 +286,7 @@ pub async fn register(
     let verify_token = Uuid::new_v4().to_string();
     let verify_token_hash = hash_token(&verify_token);
 
-    sqlx::query(
+    let result = sqlx::query(
         "INSERT INTO users (id, email, password_hash, email_verified, email_verify_token) \
          VALUES (?, ?, ?, 0, ?)",
     )
@@ -295,11 +295,27 @@ pub async fn register(
     .bind(&hashed)
     .bind(&verify_token_hash)
     .execute(pool.get_ref())
-    .await?;
+    .await;
 
-    if let Err(e) = send_verification_email(&config, &email, &verify_token).await {
-        log::error!("Failed to send verification email to {}: {:?}", email, e);
+    match result {
+        Ok(_) => {
+            if let Err(e) = send_verification_email(&config, &email, &verify_token).await {
+                log::error!("Failed to send verification email to {}: {:?}", email, e);
+            }
+        }
+        Err(e) => {
+            if let sqlx::Error::Database(ref db_err) = e {
+                if db_err.is_unique_violation() || db_err.message().contains("UNIQUE constraint") {
+                    // Swallow unique violation to prevent account enumeration
+                } else {
+                    return Err(e.into());
+                }
+            } else {
+                return Err(e.into());
+            }
+        }
     }
+
 
     Ok(HttpResponse::Accepted().json(serde_json::json!({
         "message": "Account created. Check your inbox to verify your email before signing in."
@@ -774,18 +790,26 @@ async fn find_or_create_oauth_user(
     }
 
     let email_lower = email.to_lowercase();
-    let by_email: Option<(String,)> =
-        sqlx::query_as("SELECT id FROM users WHERE email = ?")
+    let by_email: Option<(String, bool)> =
+        sqlx::query_as("SELECT id, email_verified FROM users WHERE email = ?")
             .bind(&email_lower)
             .fetch_optional(pool)
             .await?;
 
-    let user_id = if let Some((uid,)) = by_email {
-        // Link OAuth to existing account; ensure it is marked verified
-        sqlx::query("UPDATE users SET email_verified = 1 WHERE id = ?")
+    let user_id = if let Some((uid, verified)) = by_email {
+        // Link OAuth to existing account; ensure it is marked verified.
+        // If the account was previously unverified, clear password_hash and verify_token
+        // to prevent pre-registration takeover (an attacker who pre-registered the email
+        // cannot later sign in with their password once the legitimate owner claims it via OAuth).
+        if !verified {
+            sqlx::query(
+                "UPDATE users SET email_verified = 1, password_hash = '', email_verify_token = NULL \
+                 WHERE id = ?"
+            )
             .bind(&uid)
             .execute(pool)
             .await?;
+        }
         uid
     } else {
         let new_id = Uuid::new_v4().to_string();
