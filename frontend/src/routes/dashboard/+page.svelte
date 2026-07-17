@@ -109,18 +109,18 @@
 
       <div class="inputs-row">
         <div class="field-block">
-          <label for="val1">Value A</label>
+          <label for="val1">Value A <span class="required" aria-hidden="true">*</span></label>
           <input id="val1" type="number" bind:value={val1} min="0" max={maxVal} required />
         </div>
         <div class="op-glyph" aria-hidden="true">{operation === 'add' ? '+' : '×'}</div>
         <div class="field-block">
-          <label for="val2">Value B</label>
+          <label for="val2">Value B <span class="required" aria-hidden="true">*</span></label>
           <input id="val2" type="number" bind:value={val2} min="0" max={maxVal} required />
         </div>
         <div class="op-glyph" aria-hidden="true">=</div>
         <div class="field-block expected-block">
           <div class="label-like">Expected</div>
-          <div class="expected-val">{expectedResult}</div>
+          <div class="expected-val" aria-live="polite">{expectedResult}</div>
         </div>
       </div>
 
@@ -154,6 +154,9 @@
       <div class="result-plaintext">
         <div class="result-label-row">
           <span class="result-label">Plaintext</span>
+          {#if plaintextResult === expectedResult}
+            <span class="badge badge-green badge-match">Matches Expected</span>
+          {/if}
         </div>
         <span class="result-number">{plaintextResult}</span>
       </div>
@@ -317,6 +320,7 @@
     color: var(--text-muted);
     letter-spacing: 0.08em; text-transform: uppercase;
   }
+  .badge-match { margin-left: 0.5rem; vertical-align: middle; }
   .result-number {
     font-family: var(--font-mono);
     font-size: 3rem; font-weight: 700;
