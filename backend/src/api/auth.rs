@@ -270,6 +270,7 @@ pub async fn register(
     config: web::Data<Arc<Config>>,
     req: web::Json<RegisterRequest>,
 ) -> Result<impl Responder, AppError> {
+    let req = req.into_inner();
     let email = req.email.trim().to_lowercase();
     if !is_valid_email(&email) {
         return Err(AppError::bad_request(
@@ -280,7 +281,11 @@ pub async fn register(
         return Err(AppError::bad_request(PASSWORD_REQUIREMENTS));
     }
 
-    let hashed = hash(&req.password, DEFAULT_COST)
+    let password = req.password;
+    // Offload CPU-heavy bcrypt hashing to a blocking thread to keep the async executor responsive.
+    let hashed = tokio::task::spawn_blocking(move || hash(&password, DEFAULT_COST))
+        .await
+        .map_err(|e| AppError::internal(e.to_string()))?
         .map_err(|e| AppError::internal(e.to_string()))?;
     let user_id = Uuid::new_v4().to_string();
     let verify_token = Uuid::new_v4().to_string();
@@ -311,6 +316,7 @@ pub async fn login(
     config: web::Data<Arc<Config>>,
     req: web::Json<LoginRequest>,
 ) -> Result<impl Responder, AppError> {
+    let req = req.into_inner();
     let email = req.email.trim().to_lowercase();
 
     let user: Option<User> = sqlx::query_as(
@@ -325,9 +331,13 @@ pub async fn login(
     match user {
         Some(u) => {
             let has_password = !u.password_hash.is_empty();
-            let target_hash = if has_password { &u.password_hash } else { DUMMY_HASH };
+            let target_hash = if has_password { u.password_hash.clone() } else { DUMMY_HASH.to_string() };
+            let password = req.password;
 
-            let valid = verify(&req.password, target_hash)
+            // Offload CPU-heavy bcrypt verification to a blocking thread to keep the async executor responsive.
+            let valid = tokio::task::spawn_blocking(move || verify(&password, &target_hash))
+                .await
+                .map_err(|e| AppError::internal(e.to_string()))?
                 .map_err(|e| AppError::internal(e.to_string()))?;
 
             if valid && has_password && u.email_verified {
@@ -340,7 +350,9 @@ pub async fn login(
             }
         }
         None => {
-            let _ = verify(&req.password, DUMMY_HASH);
+            let password = req.password;
+            // Offload dummy verification to prevent timing attacks without blocking.
+            let _ = tokio::task::spawn_blocking(move || verify(&password, DUMMY_HASH)).await;
             Err(AppError::unauthorized("Invalid credentials"))
         }
     }
