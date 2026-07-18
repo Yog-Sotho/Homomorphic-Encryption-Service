@@ -13,6 +13,11 @@
 ## 2026-07-14 - Offloading High-Cost CPU Operations to spawn_blocking
 **Learning:** CPU-intensive cryptography such as bcrypt hashing/verification (DEFAULT_COST=12, taking ~1.4s per call) blocks the active async worker thread in Actix-web, starving the executor and blocking concurrent requests.
 **Action:** Always offload bcrypt operations to `tokio::task::spawn_blocking`. Use `.into_inner()` on request payloads (like `web::Json`) to move ownership and avoid unnecessary memory cloning when passing data to the blocking thread pool.
+
 ## 2026-07-14 - Offloading Bcrypt to Blocking Threads
 **Learning:** Bcrypt hashing/verification is a CPU-bound operation taking ~100ms+. Running it directly in an async handler blocks the entire Actix-web worker thread, preventing it from processing other requests and leading to high tail latency under load.
 **Action:** Always wrap `bcrypt::hash` and `bcrypt::verify` (including timing-attack dummy calls) in `tokio::task::spawn_blocking`.
+
+## 2026-07-18 - High-Concurrency SQLite WAL and Synchronous Normal
+**Learning:** Default SQLite configurations use `journal_mode = DELETE` and `synchronous = FULL`, causing extensive disk writes/syncs and locking the entire database during write transactions (blocking concurrent read requests).
+**Action:** Configure SQLite connection options to use `journal_mode(SqliteJournalMode::Wal)` and `synchronous(SqliteSynchronous::Normal)` for concurrent non-blocking reads and significantly faster write throughput.
