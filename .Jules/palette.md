@@ -20,3 +20,7 @@
 ## 2026-06-15 - Robust Password Visibility Toggle Pattern
 **Learning:** When implementing a password visibility toggle, using a '.password-wrapper' with relative positioning and an absolute-positioned toggle button ensures a stable layout. Furthermore, explicitly setting 'exact=True' in Playwright's 'get_by_label' prevents selector collisions with the toggle button's 'aria-label' if it contains the word "password".
 **Action:** Always wrap password inputs for utility actions, apply 'padding-right' to the input to prevent text overlap, and use precise Playwright locators to avoid ambiguity during testing.
+
+## 2026-07-19 - Standardizing Route Titles for SPA Navigation and SSR Toggling
+**Learning:** Document/tab titles are crucial for accessibility (WCAG 2.4.2) so screen readers can announce page changes. In SvelteKit, wrapping titles in `<svelte:head>` elements is the most robust way to handle this. When CSP rules block client-side inline scripts (preventing Svelte hydration in preview mode), direct URL navigation still validates the title changes on the server-rendered (SSR) HTML output.
+**Action:** Always verify page titles on both client and server (via direct page loads) to ensure full screen-reader compliance across static and dynamic routing.

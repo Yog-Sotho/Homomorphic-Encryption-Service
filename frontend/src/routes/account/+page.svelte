@@ -95,6 +95,10 @@
   }
 </script>
 
+<svelte:head>
+  <title>Account - HEaaS</title>
+</svelte:head>
+
 <div class="page">
   <div class="page-header">
     <h1>Account</h1>

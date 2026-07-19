@@ -62,6 +62,10 @@
   }
 </script>
 
+<svelte:head>
+  <title>Dashboard - HEaaS</title>
+</svelte:head>
+
 <div class="dashboard">
   <div class="page-header">
     <div class="page-title-row">

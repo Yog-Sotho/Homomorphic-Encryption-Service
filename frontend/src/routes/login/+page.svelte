@@ -26,6 +26,10 @@
   }
 </script>
 
+<svelte:head>
+  <title>{isLogin ? 'Sign In' : 'Register'} - HEaaS</title>
+</svelte:head>
+
 <div class="container">
   <h1>{isLogin ? 'HE SaaS Login' : 'Create an Account'}</h1>
   {#if error}<p class="error" role="alert">{error}</p>{/if}
