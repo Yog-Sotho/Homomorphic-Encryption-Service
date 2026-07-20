@@ -15,3 +15,8 @@
 **Vulnerability:** Account enumeration via database unique constraint errors and account takeover of unverified accounts during OAuth linking.
 **Learning:** Returning specific "Email already registered" messages from the database layer allows enumeration. OAuth linking to unverified accounts can leave attacker-controlled passwords active.
 **Prevention:** Catch unique constraint violations and return generic success or error messages. Clear password hashes and verification tokens when taking over unverified accounts via OAuth.
+
+## 2026-06-06 - Hashing-induced Denial of Service (DoS)
+**Vulnerability:** Input fields for email and password did not enforce any maximum length limit, allowing attackers to send arbitrarily large payloads (e.g. multi-megabyte passwords) to endpoints that perform CPU-intensive hashing (bcrypt) or DB queries.
+**Learning:** CPU-intensive algorithms like bcrypt scale non-linearly with input length (or consume excessive memory/cycles), which can easily block thread pools and crash the service if unbounded strings are hashed.
+**Prevention:** Enforce strict maximum length limits at the validation layer before any hashing or DB queries are performed (e.g., maximum email length of 254 characters and maximum password length of 128 characters).

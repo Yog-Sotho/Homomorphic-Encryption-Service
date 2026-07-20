@@ -99,6 +99,10 @@ pub async fn change_password(
     body: web::Json<ChangePasswordRequest>,
     req: HttpRequest,
 ) -> Result<impl Responder, AppError> {
+    if body.current_password.len() > 128 || body.new_password.len() > 128 {
+        return Err(AppError::bad_request("Password must not exceed 128 characters"));
+    }
+
     let user_id = req
         .extensions()
         .get::<String>()
@@ -165,6 +169,10 @@ pub async fn delete_account(
     body: web::Json<DeleteAccountRequest>,
     req: HttpRequest,
 ) -> Result<impl Responder, AppError> {
+    if body.password.len() > 128 {
+        return Err(AppError::forbidden("Invalid password"));
+    }
+
     let user_id = req
         .extensions()
         .get::<String>()

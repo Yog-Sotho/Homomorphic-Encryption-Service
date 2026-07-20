@@ -285,19 +285,6 @@ pub async fn register(
     // Offload CPU-heavy bcrypt hashing to a blocking thread to keep the async executor responsive.
     let hashed = tokio::task::spawn_blocking(move || hash(&password, DEFAULT_COST))
         .await
-        .map_err(|e| AppError::internal(e.to_string()))?
-    // Offload CPU-heavy bcrypt hashing to a blocking thread.
-    let password = req.password.clone();
-    let hashed = tokio::task::spawn_blocking(move || {
-        hash(&password, DEFAULT_COST)
-    })
-    .await
-    .map_err(|e| AppError::internal(format!("Task join error: {}", e)))?
-    .map_err(|e| AppError::internal(e.to_string()))?;
-    // Offload CPU-intensive bcrypt hashing to a blocking thread to avoid blocking the async executor.
-    let password = req.password.clone();
-    let hashed = tokio::task::spawn_blocking(move || hash(password, DEFAULT_COST))
-        .await
         .map_err(|e| AppError::internal(format!("Task join error: {}", e)))?
         .map_err(|e| AppError::internal(e.to_string()))?;
 
@@ -334,16 +321,6 @@ pub async fn register(
             return Err(e.into());
         }
     }
-                    // Swallow unique violation to prevent account enumeration
-                } else {
-                    return Err(e.into());
-                }
-            } else {
-                return Err(e.into());
-            }
-        }
-    }
-
 
     Ok(HttpResponse::Accepted().json(serde_json::json!({
         "message": "Account created. Check your inbox to verify your email before signing in."
@@ -357,6 +334,10 @@ pub async fn login(
 ) -> Result<impl Responder, AppError> {
     let req = req.into_inner();
     let email = req.email.trim().to_lowercase();
+
+    if email.len() > 254 || req.password.len() > 128 {
+        return Err(AppError::unauthorized("Invalid credentials"));
+    }
 
     let user: Option<User> = sqlx::query_as(
         "SELECT id, email, password_hash, created_at, email_verified, email_verify_token, \
@@ -373,14 +354,8 @@ pub async fn login(
             let target_hash = if has_password { u.password_hash.clone() } else { DUMMY_HASH.to_string() };
             let password = req.password;
 
-            // Offload CPU-heavy bcrypt verification to a blocking thread to keep the async executor responsive.
+            // Offload CPU-heavy bcrypt verification to a blocking thread.
             let valid = tokio::task::spawn_blocking(move || verify(&password, &target_hash))
-                .await
-                .map_err(|e| AppError::internal(e.to_string()))?
-
-            // Offload CPU-intensive bcrypt verification to a blocking thread.
-            let password = req.password.clone();
-            let valid = tokio::task::spawn_blocking(move || verify(password, &target_hash))
                 .await
                 .map_err(|e| AppError::internal(format!("Task join error: {}", e)))?
                 .map_err(|e| AppError::internal(e.to_string()))?;
@@ -398,10 +373,6 @@ pub async fn login(
             let password = req.password;
             // Offload dummy verification to prevent timing attacks without blocking.
             let _ = tokio::task::spawn_blocking(move || verify(&password, DUMMY_HASH)).await;
-            // Always perform a dummy verification to prevent timing attacks.
-            // Offload to blocking thread as bcrypt is expensive.
-            let password = req.password.clone();
-            let _ = tokio::task::spawn_blocking(move || verify(password, DUMMY_HASH)).await;
 
             Err(AppError::unauthorized("Invalid credentials"))
         }
@@ -491,6 +462,10 @@ pub async fn resend_verification(
 ) -> HttpResponse {
     let email = req.email.trim().to_lowercase();
 
+    if email.len() > 254 {
+        return resend_ok();
+    }
+
     let user: Option<User> = match sqlx::query_as(
         "SELECT id, email, password_hash, created_at, email_verified, email_verify_token, \
          password_reset_token, password_reset_expires_at \
@@ -540,6 +515,12 @@ pub async fn forgot_password(
     req: web::Json<ForgotPasswordRequest>,
 ) -> Result<impl Responder, AppError> {
     let email = req.email.trim().to_lowercase();
+
+    if email.len() > 254 {
+        return Ok(HttpResponse::Ok().json(serde_json::json!({
+            "message": "If an account with that email exists, a reset link has been sent."
+        })));
+    }
 
     let user: Option<User> = sqlx::query_as(
         "SELECT id, email, password_hash, created_at, email_verified, email_verify_token, \
@@ -668,6 +649,10 @@ pub async fn reset_password(
     pool: web::Data<SqlitePool>,
     req: web::Json<ResetPasswordRequest>,
 ) -> Result<impl Responder, AppError> {
+    if req.new_password.len() > 128 {
+        return Err(AppError::bad_request("Password must not exceed 128 characters"));
+    }
+
     let token_hash = hash_token(&req.token);
 
     let user: Option<User> = sqlx::query_as(
@@ -846,22 +831,6 @@ async fn find_or_create_oauth_user(
             .fetch_optional(pool)
             .await?;
 
-    let user_id = if let Some((uid, verified)) = by_email {
-        if !verified {
-            // Pre-registration account takeover prevention: clear password_hash and email_verify_token
-            sqlx::query(
-                "UPDATE users SET email_verified = 1, password_hash = '', email_verify_token = NULL WHERE id = ?",
-    let user_id = if let Some((uid,)) = by_email {
-        // Link OAuth to existing account; ensure it is marked verified.
-        // Clearing password_hash and email_verify_token prevents account takeover
-        // if an unverified account was pre-registered by an attacker.
-        sqlx::query(
-            "UPDATE users SET email_verified = 1, password_hash = '', email_verify_token = NULL \
-             WHERE id = ?",
-        )
-        .bind(&uid)
-        .execute(pool)
-        .await?;
     let user_id = if let Some((uid, verified)) = by_email {
         // Link OAuth to existing account; ensure it is marked verified.
         // If the account was previously unverified, clear password_hash and verify_token
