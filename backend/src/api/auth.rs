@@ -282,20 +282,7 @@ pub async fn register(
     }
 
     let password = req.password;
-    // Offload CPU-heavy bcrypt hashing to a blocking thread to keep the async executor responsive.
-    let hashed = tokio::task::spawn_blocking(move || hash(&password, DEFAULT_COST))
-        .await
-        .map_err(|e| AppError::internal(e.to_string()))?
-    // Offload CPU-heavy bcrypt hashing to a blocking thread.
-    let password = req.password.clone();
-    let hashed = tokio::task::spawn_blocking(move || {
-        hash(&password, DEFAULT_COST)
-    })
-    .await
-    .map_err(|e| AppError::internal(format!("Task join error: {}", e)))?
-    .map_err(|e| AppError::internal(e.to_string()))?;
     // Offload CPU-intensive bcrypt hashing to a blocking thread to avoid blocking the async executor.
-    let password = req.password.clone();
     let hashed = tokio::task::spawn_blocking(move || hash(password, DEFAULT_COST))
         .await
         .map_err(|e| AppError::internal(format!("Task join error: {}", e)))?
@@ -334,16 +321,6 @@ pub async fn register(
             return Err(e.into());
         }
     }
-                    // Swallow unique violation to prevent account enumeration
-                } else {
-                    return Err(e.into());
-                }
-            } else {
-                return Err(e.into());
-            }
-        }
-    }
-
 
     Ok(HttpResponse::Accepted().json(serde_json::json!({
         "message": "Account created. Check your inbox to verify your email before signing in."
@@ -374,12 +351,6 @@ pub async fn login(
             let password = req.password;
 
             // Offload CPU-heavy bcrypt verification to a blocking thread to keep the async executor responsive.
-            let valid = tokio::task::spawn_blocking(move || verify(&password, &target_hash))
-                .await
-                .map_err(|e| AppError::internal(e.to_string()))?
-
-            // Offload CPU-intensive bcrypt verification to a blocking thread.
-            let password = req.password.clone();
             let valid = tokio::task::spawn_blocking(move || verify(password, &target_hash))
                 .await
                 .map_err(|e| AppError::internal(format!("Task join error: {}", e)))?
@@ -397,10 +368,6 @@ pub async fn login(
         None => {
             let password = req.password;
             // Offload dummy verification to prevent timing attacks without blocking.
-            let _ = tokio::task::spawn_blocking(move || verify(&password, DUMMY_HASH)).await;
-            // Always perform a dummy verification to prevent timing attacks.
-            // Offload to blocking thread as bcrypt is expensive.
-            let password = req.password.clone();
             let _ = tokio::task::spawn_blocking(move || verify(password, DUMMY_HASH)).await;
 
             Err(AppError::unauthorized("Invalid credentials"))
@@ -846,22 +813,6 @@ async fn find_or_create_oauth_user(
             .fetch_optional(pool)
             .await?;
 
-    let user_id = if let Some((uid, verified)) = by_email {
-        if !verified {
-            // Pre-registration account takeover prevention: clear password_hash and email_verify_token
-            sqlx::query(
-                "UPDATE users SET email_verified = 1, password_hash = '', email_verify_token = NULL WHERE id = ?",
-    let user_id = if let Some((uid,)) = by_email {
-        // Link OAuth to existing account; ensure it is marked verified.
-        // Clearing password_hash and email_verify_token prevents account takeover
-        // if an unverified account was pre-registered by an attacker.
-        sqlx::query(
-            "UPDATE users SET email_verified = 1, password_hash = '', email_verify_token = NULL \
-             WHERE id = ?",
-        )
-        .bind(&uid)
-        .execute(pool)
-        .await?;
     let user_id = if let Some((uid, verified)) = by_email {
         // Link OAuth to existing account; ensure it is marked verified.
         // If the account was previously unverified, clear password_hash and verify_token
