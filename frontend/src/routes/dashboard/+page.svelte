@@ -18,8 +18,12 @@
   onDestroy(() => { if (_intervalHandle !== null) clearInterval(_intervalHandle); });
 
   $: maxVal = operation === 'multiply' ? 255 : 65535;
-  $: val1Clamped = Math.min(val1, maxVal);
-  $: val2Clamped = Math.min(val2, maxVal);
+  $: if (val1 !== null && val1 > maxVal) val1 = maxVal;
+  $: if (val2 !== null && val2 > maxVal) val2 = maxVal;
+  $: if (val1 !== null && val1 < 0) val1 = 0;
+  $: if (val2 !== null && val2 < 0) val2 = 0;
+  $: val1Clamped = Math.min(val1 || 0, maxVal);
+  $: val2Clamped = Math.min(val2 || 0, maxVal);
   $: expectedResult = operation === 'add'
     ? (val1Clamped + val2Clamped) % 65536
     : (val1Clamped * val2Clamped) % 65536;
@@ -93,6 +97,7 @@
             type="button"
             class="op-tab"
             class:active={operation === 'add'}
+            aria-pressed={operation === 'add'}
             on:click={() => { operation = 'add'; clearResults(); }}
           >
             <span class="op-sym">+</span> Add
@@ -101,6 +106,7 @@
             type="button"
             class="op-tab"
             class:active={operation === 'multiply'}
+            aria-pressed={operation === 'multiply'}
             on:click={() => { operation = 'multiply'; clearResults(); }}
           >
             <span class="op-sym">×</span> Multiply
