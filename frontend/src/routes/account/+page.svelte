@@ -43,7 +43,7 @@
   $: memberSince = profile ? formatDate(profile.created_at) : '';
 
   function isValidPassword(p: string): boolean {
-    return p.length >= 8 && /[A-Z]/.test(p) && /[a-z]/.test(p) && /[0-9]/.test(p);
+    return p.length >= 10 && p.length <= 128 && /[A-Z]/.test(p) && /[a-z]/.test(p) && /[0-9]/.test(p) && /[^A-Za-z0-9]/.test(p);
   }
 
   function formatDate(iso: string): string {
@@ -203,10 +203,11 @@
 
         {#if passwordHint}
           <ul class="hint" aria-live="polite">
-            <li class:ok={newPassword.length >= 8}>At least 8 characters</li>
+            <li class:ok={newPassword.length >= 10 && newPassword.length <= 128}>Between 10 and 128 characters</li>
             <li class:ok={/[A-Z]/.test(newPassword)}>One uppercase letter</li>
             <li class:ok={/[a-z]/.test(newPassword)}>One lowercase letter</li>
             <li class:ok={/[0-9]/.test(newPassword)}>One digit</li>
+            <li class:ok={/[^A-Za-z0-9]/.test(newPassword)}>One special character</li>
           </ul>
         {/if}
 

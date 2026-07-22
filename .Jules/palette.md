@@ -17,6 +17,7 @@
 ## 2026-06-15 - Context-Aware Autocomplete for Shared Auth Forms
 **Learning:** In applications where Login and Registration share a form or component, using a static `autocomplete="current-password"` can confuse password managers during registration. Dynamically toggling between `current-password` and `new-password` ensures browser tools provide the correct suggestions.
 **Action:** Always bind the `autocomplete` attribute of password fields to the component's mode (e.g., `isLogin ? 'current-password' : 'new-password'`) to maintain high usability and accessibility for password management.
+
 ## 2026-06-15 - Robust Password Visibility Toggle Pattern
 **Learning:** When implementing a password visibility toggle, using a '.password-wrapper' with relative positioning and an absolute-positioned toggle button ensures a stable layout. Furthermore, explicitly setting 'exact=True' in Playwright's 'get_by_label' prevents selector collisions with the toggle button's 'aria-label' if it contains the word "password".
 **Action:** Always wrap password inputs for utility actions, apply 'padding-right' to the input to prevent text overlap, and use precise Playwright locators to avoid ambiguity during testing.
@@ -24,3 +25,7 @@
 ## 2026-07-20 - Real-Time Programmatic Input Clamping and Tab Accessibility
 **Learning:** For custom tab controls, toggling the `aria-pressed` attribute dynamically provides screen readers with the correct state. Additionally, rather than relying on brittle HTML5 forms or displaying static validation warning text that doesn't actually limit the raw input, programmatically clamping input values in real-time using Svelte reactive statements (`$: if (val > max) val = max`) creates an exceptionally smooth, responsive user experience that completely prevents validation blocking and layout breaking.
 **Action:** Always prefer real-time programmatic clamping/sanitization of user input over static tooltip notifications, and ensure custom interactive tabs have dynamic `aria-pressed` attributes.
+
+## 2026-07-22 - Aligning Interactive Password Criteria Lists
+**Learning:** Providing a real-time list of password complexity requirements on the frontend that perfectly mirrors the backend security guidelines significantly improves interactive confidence. Highlighting met/unmet requirements prevents frustrating form rejects.
+**Action:** Always verify local form rules against the centralized backend validation patterns (e.g. `validation.rs`), and supply dynamic UI checklist states to assist users in selecting correct credentials.
