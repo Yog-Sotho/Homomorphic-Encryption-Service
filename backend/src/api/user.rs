@@ -99,6 +99,10 @@ pub async fn change_password(
     body: web::Json<ChangePasswordRequest>,
     req: HttpRequest,
 ) -> Result<impl Responder, AppError> {
+    if body.current_password.len() > 128 || body.new_password.len() > 128 {
+        return Err(AppError::bad_request("Password exceeds maximum allowed length of 128 characters"));
+    }
+
     let user_id = req
         .extensions()
         .get::<String>()
@@ -184,6 +188,9 @@ pub async fn delete_account(
     };
 
     if !password_hash.is_empty() {
+        if body.password.len() > 128 {
+            return Err(AppError::forbidden("Invalid password"));
+        }
         // Offload CPU-intensive bcrypt verification to a blocking thread.
         let password = body.password.clone();
         let valid = tokio::task::spawn_blocking(move || verify(password, &password_hash))

@@ -1,3 +1,8 @@
+## 2026-06-06 - Input Length CPU-Exhaustion DoS on BCrypt and DB
+**Vulnerability:** Unconstrained email and password input lengths on authentication, password change, and account deletion endpoints allowed potential Denial of Service (DoS) attacks via CPU exhaustion on expensive cryptographic hashing (bcrypt) or database server resources.
+**Learning:** Centralized validation logic must enforce maximum payload limits in addition to format and strength requirements before any downstream CPU-heavy cryptographic operations or complex DB queries are performed.
+**Prevention:** Enforce strict length limits (<= 254 characters for email, <= 128 characters for password) early in the handler or validation function and immediately reject invalid requests.
+
 ## 2026-06-03 - Login Account Enumeration
 **Vulnerability:** The login endpoint leaked account existence and type (password vs social) through specific error messages ("Please verify your email...", "This account was created with social login...").
 **Learning:** Returning specific errors before password verification or based on account state allows attackers to enumerate registered emails and identify authentication methods.
