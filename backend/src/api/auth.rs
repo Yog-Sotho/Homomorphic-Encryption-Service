@@ -335,6 +335,11 @@ pub async fn login(
     let req = req.into_inner();
     let email = req.email.trim().to_lowercase();
 
+    // Prevent SQL/bcrypt resource abuse with overly long inputs
+    if email.len() > 254 || req.password.len() > 128 {
+        return Err(AppError::unauthorized("Invalid credentials"));
+    }
+
     let user: Option<User> = sqlx::query_as(
         "SELECT id, email, password_hash, created_at, email_verified, email_verify_token, \
          password_reset_token, password_reset_expires_at \
@@ -458,6 +463,9 @@ pub async fn resend_verification(
     req: web::Json<ResendRequest>,
 ) -> HttpResponse {
     let email = req.email.trim().to_lowercase();
+    if email.len() > 254 || !is_valid_email(&email) {
+        return resend_ok();
+    }
 
     let user: Option<User> = match sqlx::query_as(
         "SELECT id, email, password_hash, created_at, email_verified, email_verify_token, \
@@ -508,6 +516,11 @@ pub async fn forgot_password(
     req: web::Json<ForgotPasswordRequest>,
 ) -> Result<impl Responder, AppError> {
     let email = req.email.trim().to_lowercase();
+    if email.len() > 254 || !is_valid_email(&email) {
+        return Ok(HttpResponse::Ok().json(serde_json::json!({
+            "message": "If an account with that email exists, a reset link has been sent."
+        })));
+    }
 
     let user: Option<User> = sqlx::query_as(
         "SELECT id, email, password_hash, created_at, email_verified, email_verify_token, \
@@ -1265,5 +1278,54 @@ mod tests {
         assert!(verified);
         assert_eq!(current_hash, "");
         assert_eq!(current_verify_token, None);
+    }
+
+    #[tokio::test]
+    async fn test_login_length_validation() {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        let config = Arc::new(Config {
+            database_url: "sqlite::memory:".to_string(),
+            jwt_secret: "test_secret_key_at_least_32_bytes_long".to_string(),
+            server_addr: "127.0.0.1:8080".to_string(),
+            he_pool_size: 1,
+            app_base_url: "http://localhost:3000".to_string(),
+            google_client_id: None,
+            google_client_secret: None,
+            github_client_id: None,
+            github_client_secret: None,
+            smtp_host: None,
+            smtp_port: 587,
+            smtp_user: None,
+            smtp_pass: None,
+            from_email: "noreply@heaas.local".to_string(),
+            daily_compute_quota: 100,
+        });
+
+        let pool_data = web::Data::new(pool);
+        let config_data = web::Data::new(config);
+
+        // 1. Password too long
+        let req = web::Json(LoginRequest {
+            email: "user@example.com".to_string(),
+            password: "a".repeat(129),
+        });
+        let res = login(pool_data.clone(), config_data.clone(), req).await;
+        assert!(res.is_err());
+        match res.err().unwrap() {
+            AppError::Unauthorized(msg) => assert_eq!(msg, "Invalid credentials"),
+            _ => panic!("Expected Unauthorized"),
+        }
+
+        // 2. Email too long
+        let req = web::Json(LoginRequest {
+            email: format!("{}@example.com", "a".repeat(243)),
+            password: "Password123!".to_string(),
+        });
+        let res = login(pool_data, config_data, req).await;
+        assert!(res.is_err());
+        match res.err().unwrap() {
+            AppError::Unauthorized(msg) => assert_eq!(msg, "Invalid credentials"),
+            _ => panic!("Expected Unauthorized"),
+        }
     }
 }
