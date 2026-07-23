@@ -1,3 +1,8 @@
+## 2026-06-07 - Input Length CPU-Exhaustion DoS on Token Hashing
+**Vulnerability:** Unconstrained token lengths (e.g., verification tokens, password reset tokens, refresh tokens) on authentication, refresh, and logout endpoints allowed potential Denial of Service (DoS) attacks via CPU exhaustion by forcing SHA-256 hashing over arbitrarily large request payloads.
+**Learning:** Checking the length of user-supplied token parameters early in the request handler prevents downstream CPU-heavy hashing operations and database load.
+**Prevention:** Enforce generous but strict length limits (<= 256 characters) on all input tokens before any cryptographic hashing or database lookups are initiated.
+
 ## 2026-06-06 - Input Length CPU-Exhaustion DoS on BCrypt and DB
 **Vulnerability:** Unconstrained email and password input lengths on authentication, password change, and account deletion endpoints allowed potential Denial of Service (DoS) attacks via CPU exhaustion on expensive cryptographic hashing (bcrypt) or database server resources.
 **Learning:** Centralized validation logic must enforce maximum payload limits in addition to format and strength requirements before any downstream CPU-heavy cryptographic operations or complex DB queries are performed.

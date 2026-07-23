@@ -67,6 +67,10 @@ pub async fn submit_job(
         return Err(AppError::bad_request("Unsupported operation. Use 'add' or 'multiply'."));
     }
 
+    if req.input_data_b64.len() > 2_000_000 {
+        return Err(AppError::bad_request("Input payload size limit exceeded."));
+    }
+
     sqlx::query(
         "INSERT INTO jobs (id, user_id, status, input_data_b64, operation) VALUES (?, ?, 'pending', ?, ?)",
     )
