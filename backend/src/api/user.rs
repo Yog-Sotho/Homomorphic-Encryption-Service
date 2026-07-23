@@ -47,37 +47,46 @@ pub async fn get_me(
         .cloned()
         .ok_or_else(|| AppError::unauthorized("Not authenticated"))?;
 
-    let row: Option<(String, String, bool, String, chrono::NaiveDateTime)> = sqlx::query_as(
-        "SELECT id, email, email_verified, password_hash, created_at FROM users WHERE id = ?",
+    let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+
+    // Optimized: Combined fetching of user profile, OAuth providers, and daily usage
+    // into a single SQL query using LEFT JOINs and GROUP_CONCAT.
+    // This reduces database roundtrips from 3 to 1, significantly decreasing database latency and load.
+    let row: Option<(
+        String,
+        String,
+        bool,
+        String,
+        chrono::NaiveDateTime,
+        Option<String>,
+        Option<i64>,
+    )> = sqlx::query_as(
+        "SELECT \
+            u.id, u.email, u.email_verified, u.password_hash, u.created_at, \
+            GROUP_CONCAT(o.provider) AS providers, \
+            d.count AS daily_count \
+         FROM users u \
+         LEFT JOIN oauth_accounts o ON u.id = o.user_id \
+         LEFT JOIN daily_compute_usage d ON u.id = d.user_id AND d.date = ? \
+         WHERE u.id = ? \
+         GROUP BY u.id",
     )
+    .bind(&today)
     .bind(&user_id)
     .fetch_optional(pool.get_ref())
     .await?;
 
-    let (id, email, email_verified, password_hash, created_at) = match row {
+    let (id, email, email_verified, password_hash, created_at, providers_str, daily_count) = match row {
         None => return Err(AppError::not_found("User not found")),
         Some(r) => r,
     };
 
-    let providers: Vec<(String,)> = sqlx::query_as(
-        "SELECT provider FROM oauth_accounts WHERE user_id = ?",
-    )
-    .bind(&user_id)
-    .fetch_all(pool.get_ref())
-    .await?;
+    let oauth_providers: Vec<String> = match providers_str {
+        Some(s) if !s.is_empty() => s.split(',').map(|s| s.to_string()).collect(),
+        _ => vec![],
+    };
 
-    let oauth_providers: Vec<String> = providers.into_iter().map(|(p,)| p).collect();
-
-    let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
-    let usage_row: Option<(i64,)> = sqlx::query_as(
-        "SELECT count FROM daily_compute_usage WHERE user_id = ? AND date = ?",
-    )
-    .bind(&user_id)
-    .bind(&today)
-    .fetch_optional(pool.get_ref())
-    .await?;
-
-    let count = usage_row.map(|(c,)| c).unwrap_or(0);
+    let count = daily_count.unwrap_or(0);
 
     Ok(HttpResponse::Ok().json(MeResponse {
         id,
@@ -231,4 +240,79 @@ pub async fn delete_account(
     Ok(HttpResponse::Ok().json(serde_json::json!({
         "message": "Account deleted successfully."
     })))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use actix_web::test::TestRequest;
+    use sqlx::SqlitePool;
+
+    #[tokio::test]
+    async fn test_get_me_optimized_query() {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+
+        // 1. Insert test user
+        let user_id = "test-user-id".to_string();
+        sqlx::query(
+            "INSERT INTO users (id, email, password_hash, email_verified) VALUES (?, ?, ?, 1)"
+        )
+        .bind(&user_id)
+        .bind("test@example.com")
+        .bind("hashed_password")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // 2. Insert test OAuth account
+        sqlx::query(
+            "INSERT INTO oauth_accounts (id, user_id, provider, provider_id) VALUES (?, ?, 'google', 'g123')"
+        )
+        .bind("oauth-id")
+        .bind(&user_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // 3. Insert daily usage count
+        let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+        sqlx::query(
+            "INSERT INTO daily_compute_usage (user_id, date, count) VALUES (?, ?, 5)"
+        )
+        .bind(&user_id)
+        .bind(&today)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // 4. Construct request with extensions
+        let req = TestRequest::default().to_http_request();
+        req.extensions_mut().insert(user_id.clone());
+
+        let config = Arc::new(Config {
+            database_url: "sqlite::memory:".to_string(),
+            jwt_secret: "test_secret_key_at_least_32_bytes_long".to_string(),
+            server_addr: "127.0.0.1:8080".to_string(),
+            he_pool_size: 1,
+            app_base_url: "http://localhost:3000".to_string(),
+            google_client_id: None,
+            google_client_secret: None,
+            github_client_id: None,
+            github_client_secret: None,
+            smtp_host: None,
+            smtp_port: 587,
+            smtp_user: None,
+            smtp_pass: None,
+            from_email: "noreply@heaas.local".to_string(),
+            daily_compute_quota: 100,
+        });
+
+        let pool_data = web::Data::new(pool);
+        let config_data = web::Data::new(config);
+
+        let resp = get_me(pool_data, config_data, req).await.unwrap();
+        let http_resp = resp.respond_to(&TestRequest::default().to_http_request());
+        assert_eq!(http_resp.status(), actix_web::http::StatusCode::OK);
+    }
 }

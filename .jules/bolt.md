@@ -16,3 +16,7 @@
 ## 2026-07-14 - Offloading Bcrypt to Blocking Threads
 **Learning:** Bcrypt hashing/verification is a CPU-bound operation taking ~100ms+. Running it directly in an async handler blocks the entire Actix-web worker thread, preventing it from processing other requests and leading to high tail latency under load.
 **Action:** Always wrap `bcrypt::hash` and `bcrypt::verify` (including timing-attack dummy calls) in `tokio::task::spawn_blocking`.
+
+## 2026-07-15 - Merging Sequential Database Queries with Joins
+**Learning:** Performing multiple sequential database queries to populate a single response model (e.g. user details, OAuth connections, and daily usage counters) incurs substantial SQLite roundtrip, pool lock, and async context switching overhead. Using relational features like `LEFT JOIN` and aggregators like `GROUP_CONCAT` allows fetching all related entities atomically.
+**Action:** Consolidate multi-query lookups into a single SQL statement using JOINs and split-aggregated values when populating compound models.
