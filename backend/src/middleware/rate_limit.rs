@@ -1,9 +1,9 @@
+use actix_web::middleware::Next;
 use actix_web::{
     body::BoxBody,
     dev::{ServiceRequest, ServiceResponse},
     Error, HttpResponse,
 };
-use actix_web::middleware::Next;
 use dashmap::DashMap;
 use std::{
     sync::Arc,
@@ -47,9 +47,7 @@ pub async fn rate_limit_middleware<B: actix_web::body::MessageBody + 'static>(
         .to_string();
 
     // Retrieve the shared rate limiter stored in app data.
-    let limiter = req
-        .app_data::<actix_web::web::Data<RateLimiter>>()
-        .cloned();
+    let limiter = req.app_data::<actix_web::web::Data<RateLimiter>>().cloned();
 
     if let Some(limiter) = limiter {
         let window = Duration::from_secs(WINDOW_SECS);

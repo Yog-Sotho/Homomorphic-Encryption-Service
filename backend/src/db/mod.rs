@@ -1,6 +1,6 @@
 pub mod models;
-use sqlx::SqlitePool;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqliteSynchronous};
+use sqlx::SqlitePool;
 use std::str::FromStr;
 
 pub async fn connect(database_url: &str) -> Result<SqlitePool, sqlx::Error> {

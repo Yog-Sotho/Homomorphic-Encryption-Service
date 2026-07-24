@@ -5,11 +5,11 @@ mod db;
 mod errors;
 mod middleware;
 
-use actix_web::{web, App, HttpResponse, HttpServer};
-use actix_web::middleware::from_fn;
-use actix_cors::Cors;
 use crate::crypto::engine::{AppState, HeContextPool};
 use crate::middleware::rate_limit::RateLimiter;
+use actix_cors::Cors;
+use actix_web::middleware::from_fn;
+use actix_web::{web, App, HttpResponse, HttpServer};
 use std::sync::Arc;
 
 async fn health() -> HttpResponse {
@@ -25,9 +25,12 @@ async fn main() -> std::io::Result<()> {
     let config = config::Config::init();
     let config = Arc::new(config);
 
-    let pool = db::connect(&config.database_url).await.expect("Failed to connect to DB");
+    let pool = db::connect(&config.database_url)
+        .await
+        .expect("Failed to connect to DB");
 
-    let he_pool = HeContextPool::new(config.he_pool_size).await
+    let he_pool = HeContextPool::new(config.he_pool_size)
+        .await
         .expect("Failed to initialize HE Context pool");
     let app_state = web::Data::new(AppState {
         he_pool: Arc::new(he_pool),
@@ -56,23 +59,41 @@ async fn main() -> std::io::Result<()> {
                             .route("/register", web::post().to(api::auth::register))
                             .route("/login", web::post().to(api::auth::login))
                             .route("/verify", web::get().to(api::auth::verify_email))
-                            .route("/resend-verification", web::post().to(api::auth::resend_verification))
+                            .route(
+                                "/resend-verification",
+                                web::post().to(api::auth::resend_verification),
+                            )
                             .route("/google", web::get().to(api::auth::google_redirect))
-                            .route("/google/callback", web::get().to(api::auth::google_callback))
+                            .route(
+                                "/google/callback",
+                                web::get().to(api::auth::google_callback),
+                            )
                             .route("/github", web::get().to(api::auth::github_redirect))
-                            .route("/github/callback", web::get().to(api::auth::github_callback))
-                            .route("/forgot-password", web::post().to(api::auth::forgot_password))
-                            .route("/forgot-password/redirect", web::get().to(api::auth::forgot_password_redirect))
+                            .route(
+                                "/github/callback",
+                                web::get().to(api::auth::github_callback),
+                            )
+                            .route(
+                                "/forgot-password",
+                                web::post().to(api::auth::forgot_password),
+                            )
+                            .route(
+                                "/forgot-password/redirect",
+                                web::get().to(api::auth::forgot_password_redirect),
+                            )
                             .route("/reset-password", web::post().to(api::auth::reset_password))
-                            .route("/refresh", web::post().to(api::auth::refresh_token_endpoint))
-                            .route("/logout", web::post().to(api::auth::logout))
+                            .route(
+                                "/refresh",
+                                web::post().to(api::auth::refresh_token_endpoint),
+                            )
+                            .route("/logout", web::post().to(api::auth::logout)),
                     )
                     .service(
                         web::scope("/user")
                             .wrap(from_fn(middleware::jwt::jwt_validator))
                             .route("/me", web::get().to(api::user::get_me))
                             .route("/password", web::put().to(api::user::change_password))
-                            .route("/account", web::delete().to(api::user::delete_account))
+                            .route("/account", web::delete().to(api::user::delete_account)),
                     )
                     .service(
                         web::scope("/compute")
@@ -81,8 +102,8 @@ async fn main() -> std::io::Result<()> {
                             .route("/sandbox", web::post().to(api::compute::sandbox_compute))
                             .route("/jobs", web::post().to(api::compute::submit_job))
                             .route("/jobs", web::get().to(api::compute::list_jobs))
-                            .route("/jobs/{id}", web::get().to(api::compute::get_job_status))
-                    )
+                            .route("/jobs/{id}", web::get().to(api::compute::get_job_status)),
+                    ),
             )
     })
     .bind(&config.server_addr)?
