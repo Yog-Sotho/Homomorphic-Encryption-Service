@@ -15,3 +15,6 @@ backend/he_saas.db
 
 # Claude Code internal
 .claude/
+
+# Logs
+*.log

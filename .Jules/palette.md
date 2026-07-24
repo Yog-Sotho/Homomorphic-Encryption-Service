@@ -29,3 +29,7 @@
 ## 2026-07-22 - Aligning Interactive Password Criteria Lists
 **Learning:** Providing a real-time list of password complexity requirements on the frontend that perfectly mirrors the backend security guidelines significantly improves interactive confidence. Highlighting met/unmet requirements prevents frustrating form rejects.
 **Action:** Always verify local form rules against the centralized backend validation patterns (e.g. `validation.rs`), and supply dynamic UI checklist states to assist users in selecting correct credentials.
+
+## 2026-08-05 - Dynamic Copy State Accessibility and Non-Spamming Live Regions
+**Learning:** When elements change state dynamically (e.g., a 'Copy' button updating to '✓ Copied'), screen readers won't announce the state change unless it's explicitly wired with a dynamic `aria-label`. Additionally, having `aria-live="polite"` on a preview block that updates on every keystroke/randomize is extremely intrusive for keyboard/screen reader users.
+**Action:** Use dynamic `aria-label` for copy/feedback buttons to ensure clear announcement of success states, and restrict `aria-live="polite"` to final result containers rather than real-time input preview areas.

@@ -130,7 +130,7 @@
         <div class="op-glyph" aria-hidden="true">=</div>
         <div class="field-block expected-block">
           <div class="label-like">Expected</div>
-          <div class="expected-val" aria-live="polite">{expectedResult}</div>
+          <div class="expected-val">{expectedResult}</div>
         </div>
       </div>
 
@@ -145,7 +145,7 @@
   </div>
 
   {#if errorMessage}
-    <div class="card result-card error-card">
+    <div class="card result-card error-card" aria-live="polite">
       <div class="result-header">
         <span class="badge badge-red">Error</span>
         <button class="btn-ghost dismiss-btn" on:click={clearResults} type="button">Dismiss</button>
@@ -155,7 +155,7 @@
   {/if}
 
   {#if plaintextResult !== null}
-    <div class="card result-card success-card">
+    <div class="card result-card success-card" aria-live="polite">
       <div class="result-header">
         <div class="badge-group">
           <span class="badge badge-green">Result</span>
@@ -186,7 +186,7 @@
             <button class="btn-secondary" type="button" on:click={() => showFullCiphertext = !showFullCiphertext}>
               {showFullCiphertext ? 'Collapse' : 'Expand'}
             </button>
-            <button class="btn-secondary" type="button" on:click={() => copyToClipboard(resultB64)}>
+            <button class="btn-secondary" type="button" on:click={() => copyToClipboard(resultB64)} aria-label={copied ? 'Ciphertext copied to clipboard' : 'Copy ciphertext to clipboard'}>
               {copied ? '✓ Copied' : 'Copy'}
             </button>
           </div>
