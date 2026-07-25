@@ -63,6 +63,12 @@ pub async fn submit_job(
     let job_id = Uuid::new_v4().to_string();
     let user_id_str = user_id.into_inner();
 
+    if req.input_data_b64.len() > 2_000_000 {
+        return Err(AppError::bad_request(
+            "Input data payload exceeds maximum allowed length of 2,000,000 characters"
+        ));
+    }
+
     if req.operation != "add" && req.operation != "multiply" {
         return Err(AppError::bad_request("Unsupported operation. Use 'add' or 'multiply'."));
     }
@@ -220,4 +226,44 @@ pub async fn list_jobs(
     .await?;
 
     Ok(HttpResponse::Ok().json(jobs))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use actix_web::web::ReqData;
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn test_submit_job_length_validation() {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+
+        let he_pool = crate::crypto::engine::HeContextPool::new(1).await.unwrap();
+        let app_state = web::Data::new(AppState {
+            he_pool: Arc::new(he_pool),
+        });
+        let pool_data = web::Data::new(pool);
+
+        let long_payload = "a".repeat(2_000_001);
+        let req = web::Json(CreateJobRequest {
+            input_data_b64: long_payload,
+            operation: "add".to_string(),
+        });
+
+        use actix_web::{HttpMessage, FromRequest};
+
+        let http_request = actix_web::test::TestRequest::default().to_http_request();
+        http_request.extensions_mut().insert("user-123".to_string());
+        let user_id = <ReqData<String> as FromRequest>::extract(&http_request).await.unwrap();
+
+        let res = submit_job(pool_data, app_state, req, user_id).await;
+        assert!(res.is_err());
+        match res.err().unwrap() {
+            AppError::BadRequest(msg) => {
+                assert_eq!(msg, "Input data payload exceeds maximum allowed length of 2,000,000 characters");
+            }
+            _ => panic!("Expected BadRequest error"),
+        }
+    }
 }

@@ -20,3 +20,8 @@
 **Vulnerability:** Account enumeration via database unique constraint errors and account takeover of unverified accounts during OAuth linking.
 **Learning:** Returning specific "Email already registered" messages from the database layer allows enumeration. OAuth linking to unverified accounts can leave attacker-controlled passwords active.
 **Prevention:** Catch unique constraint violations and return generic success or error messages. Clear password hashes and verification tokens when taking over unverified accounts via OAuth.
+
+## 2026-06-07 - Compute Job Submission Payload Memory/CPU Exhaustion DoS
+**Vulnerability:** Unconstrained payload sizes on the `submit_job` endpoint could lead to CPU and memory exhaustion during JSON or bincode deserialization, and database storage exhaustion upon insertion.
+**Learning:** Early length checks must be performed on complex structured payloads (like list of Base64-encoded ciphertexts) before any parsing or DB operations take place to prevent memory or CPU Denial of Service.
+**Prevention:** Enforce a maximum length limit of 2,000,000 characters on `input_data_b64` parameter of job requests.
