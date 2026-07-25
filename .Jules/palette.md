@@ -29,3 +29,7 @@
 ## 2026-07-22 - Aligning Interactive Password Criteria Lists
 **Learning:** Providing a real-time list of password complexity requirements on the frontend that perfectly mirrors the backend security guidelines significantly improves interactive confidence. Highlighting met/unmet requirements prevents frustrating form rejects.
 **Action:** Always verify local form rules against the centralized backend validation patterns (e.g. `validation.rs`), and supply dynamic UI checklist states to assist users in selecting correct credentials.
+
+## 2026-07-25 - Polite Live Region Management for Complex Calculator UIs
+**Learning:** Placing `aria-live="polite"` directly on dynamic calculation output boxes (like "Expected Result") that update reactively with every user keystroke causes highly intrusive and disruptive screen reader spam. Moving `aria-live` to final action results containers (such as success or error cards) and managing transient dynamic states with localized `aria-expanded` or dynamic button `aria-label` tags creates a quiet, predictable, and fully accessible environment.
+**Action:** Avoid placing `aria-live` on live-updating raw value containers linked to quick input events. Instead, bind it to finalized output blocks triggered by explicit actions, and use dynamic, state-aware button ARIA labels to announce intermediate UI transitions.

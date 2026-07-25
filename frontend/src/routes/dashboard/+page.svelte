@@ -86,7 +86,7 @@
       <div class="card-icon">⚡</div>
       <div class="card-title">New Computation</div>
       <p class="card-subtitle">Encrypted arithmetic performed on the server without decryption.</p>
-      <button type="button" class="btn-secondary btn-sm" on:click={randomizeValues} style="margin-left: auto;">Randomize</button>
+      <button type="button" class="btn-secondary btn-sm" on:click={randomizeValues} style="margin-left: auto;" aria-label="Randomize input values">Randomize</button>
     </div>
 
     <form on:submit|preventDefault={submitJob} class="compute-form">
@@ -130,7 +130,7 @@
         <div class="op-glyph" aria-hidden="true">=</div>
         <div class="field-block expected-block">
           <div class="label-like">Expected</div>
-          <div class="expected-val" aria-live="polite">{expectedResult}</div>
+          <div class="expected-val">{expectedResult}</div>
         </div>
       </div>
 
@@ -145,7 +145,7 @@
   </div>
 
   {#if errorMessage}
-    <div class="card result-card error-card">
+    <div class="card result-card error-card" aria-live="polite">
       <div class="result-header">
         <span class="badge badge-red">Error</span>
         <button class="btn-ghost dismiss-btn" on:click={clearResults} type="button">Dismiss</button>
@@ -155,7 +155,7 @@
   {/if}
 
   {#if plaintextResult !== null}
-    <div class="card result-card success-card">
+    <div class="card result-card success-card" aria-live="polite">
       <div class="result-header">
         <div class="badge-group">
           <span class="badge badge-green">Result</span>
@@ -183,10 +183,21 @@
           <span class="result-label">Ciphertext</span>
           <span class="ct-meta">{resultB64.length} chars · TFHE-rs BFV</span>
           <div class="ciphertext-actions">
-            <button class="btn-secondary" type="button" on:click={() => showFullCiphertext = !showFullCiphertext}>
+            <button
+              class="btn-secondary"
+              type="button"
+              on:click={() => showFullCiphertext = !showFullCiphertext}
+              aria-expanded={showFullCiphertext}
+              aria-label={showFullCiphertext ? 'Collapse ciphertext view' : 'Expand ciphertext view'}
+            >
               {showFullCiphertext ? 'Collapse' : 'Expand'}
             </button>
-            <button class="btn-secondary" type="button" on:click={() => copyToClipboard(resultB64)}>
+            <button
+              class="btn-secondary"
+              type="button"
+              on:click={() => copyToClipboard(resultB64)}
+              aria-label={copied ? 'Ciphertext copied to clipboard' : 'Copy ciphertext to clipboard'}
+            >
               {copied ? '✓ Copied' : 'Copy'}
             </button>
           </div>
