@@ -1,6 +1,6 @@
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use tfhe::integer::{gen_keys_radix, RadixClientKey, ServerKey, RadixCiphertext};
+use std::sync::Arc;
+use tfhe::integer::{gen_keys_radix, RadixCiphertext, RadixClientKey, ServerKey};
 use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
 
 pub const NUM_BLOCKS: usize = 8;
@@ -14,7 +14,10 @@ pub struct HeContext {
 impl HeContext {
     pub fn new() -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let (client_key, server_key) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS, NUM_BLOCKS);
-        Ok(HeContext { client_key, server_key })
+        Ok(HeContext {
+            client_key,
+            server_key,
+        })
     }
 
     #[allow(dead_code)]
@@ -82,7 +85,10 @@ pub struct HeContextPool {
 
 impl HeContextPool {
     pub async fn new(size: usize) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        log::info!("Generating {} TFHE-rs key pair(s) in parallel — this takes 10-60 s…", size);
+        log::info!(
+            "Generating {} TFHE-rs key pair(s) in parallel — this takes 10-60 s…",
+            size
+        );
 
         let mut handles = Vec::with_capacity(size);
         for i in 0..size {
@@ -99,7 +105,10 @@ impl HeContextPool {
         }
 
         log::info!("TFHE-rs key pool ready ({} slot(s))", size);
-        Ok(HeContextPool { contexts, counter: AtomicUsize::new(0) })
+        Ok(HeContextPool {
+            contexts,
+            counter: AtomicUsize::new(0),
+        })
     }
 
     pub fn acquire(&self) -> Arc<HeContext> {

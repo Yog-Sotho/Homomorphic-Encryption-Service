@@ -1,11 +1,11 @@
+use crate::crypto::engine::{AppState, PLAIN_MODULUS};
+use crate::db::models::{CreateJobRequest, Job, JobResponse};
+use crate::errors::AppError;
 use actix_web::{web, HttpResponse, Responder};
+use base64::{engine::general_purpose, Engine as _};
+use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 use uuid::Uuid;
-use serde::{Deserialize, Serialize};
-use crate::db::models::{CreateJobRequest, Job, JobResponse};
-use crate::crypto::engine::{AppState, PLAIN_MODULUS};
-use base64::{Engine as _, engine::general_purpose};
-use crate::errors::AppError;
 
 #[derive(Deserialize)]
 pub struct SandboxRequest {
@@ -25,12 +25,15 @@ pub async fn sandbox_compute(
     req: web::Json<SandboxRequest>,
 ) -> Result<impl Responder, AppError> {
     if req.operation != "add" && req.operation != "multiply" {
-        return Err(AppError::bad_request("Unsupported operation. Use 'add' or 'multiply'."));
+        return Err(AppError::bad_request(
+            "Unsupported operation. Use 'add' or 'multiply'.",
+        ));
     }
     if req.value1 >= PLAIN_MODULUS || req.value2 >= PLAIN_MODULUS {
-        return Err(AppError::bad_request(
-            format!("Values must be in the range 0–{}.", PLAIN_MODULUS - 1)
-        ));
+        return Err(AppError::bad_request(format!(
+            "Values must be in the range 0–{}.",
+            PLAIN_MODULUS - 1
+        )));
     }
 
     let ctx = state.he_pool.acquire();
@@ -39,12 +42,11 @@ pub async fn sandbox_compute(
     let op = req.operation.clone();
 
     // Offload CPU-heavy HE operations to a blocking thread to keep the async executor responsive.
-    let (plaintext_result, result_ct) = tokio::task::spawn_blocking(move || {
-        ctx.sandbox_compute_optimized(v1, v2, &op)
-    })
-    .await
-    .map_err(|e| AppError::internal(format!("Task join error: {}", e)))?
-    .map_err(|e| AppError::internal(format!("HE operation failed: {}", e)))?;
+    let (plaintext_result, result_ct) =
+        tokio::task::spawn_blocking(move || ctx.sandbox_compute_optimized(v1, v2, &op))
+            .await
+            .map_err(|e| AppError::internal(format!("Task join error: {}", e)))?
+            .map_err(|e| AppError::internal(format!("HE operation failed: {}", e)))?;
 
     let result_b64 = general_purpose::STANDARD.encode(&result_ct);
 
@@ -64,7 +66,9 @@ pub async fn submit_job(
     let user_id_str = user_id.into_inner();
 
     if req.operation != "add" && req.operation != "multiply" {
-        return Err(AppError::bad_request("Unsupported operation. Use 'add' or 'multiply'."));
+        return Err(AppError::bad_request(
+            "Unsupported operation. Use 'add' or 'multiply'.",
+        ));
     }
 
     sqlx::query(
@@ -84,12 +88,26 @@ pub async fn submit_job(
     let op = req.operation.clone();
 
     tokio::spawn(async move {
-        match try_process_job(pool_clone.clone(), state_clone, job_id_clone.clone(), input_b64, op).await {
+        match try_process_job(
+            pool_clone.clone(),
+            state_clone,
+            job_id_clone.clone(),
+            input_b64,
+            op,
+        )
+        .await
+        {
             Ok(()) => {}
             Err(e) => {
                 log::error!("Job {} failed: {}", job_id_clone, e);
-                update_job_status(&pool_clone, &job_id_clone, "failed", None,
-                    Some(format!("Internal error: {}", e))).await;
+                update_job_status(
+                    &pool_clone,
+                    &job_id_clone,
+                    "failed",
+                    None,
+                    Some(format!("Internal error: {}", e)),
+                )
+                .await;
             }
         }
     });
@@ -116,18 +134,32 @@ async fn try_process_job(
     .execute(pool.get_ref())
     .await?;
 
-    let inputs: Vec<String> = serde_json::from_str(&input_b64)
-        .map_err(|_| "Invalid input format")?;
+    let inputs: Vec<String> =
+        serde_json::from_str(&input_b64).map_err(|_| "Invalid input format")?;
 
     if inputs.len() != 2 {
-        update_job_status(&pool, &job_id, "failed", None, Some("Expected 2 inputs".to_string())).await;
+        update_job_status(
+            &pool,
+            &job_id,
+            "failed",
+            None,
+            Some("Expected 2 inputs".to_string()),
+        )
+        .await;
         return Ok(());
     }
 
     let ct1_data = match general_purpose::STANDARD.decode(&inputs[0]) {
         Ok(d) => d,
         Err(_) => {
-            update_job_status(&pool, &job_id, "failed", None, Some("Invalid Base64 for input 1".to_string())).await;
+            update_job_status(
+                &pool,
+                &job_id,
+                "failed",
+                None,
+                Some("Invalid Base64 for input 1".to_string()),
+            )
+            .await;
             return Ok(());
         }
     };
@@ -135,7 +167,14 @@ async fn try_process_job(
     let ct2_data = match general_purpose::STANDARD.decode(&inputs[1]) {
         Ok(d) => d,
         Err(_) => {
-            update_job_status(&pool, &job_id, "failed", None, Some("Invalid Base64 for input 2".to_string())).await;
+            update_job_status(
+                &pool,
+                &job_id,
+                "failed",
+                None,
+                Some("Invalid Base64 for input 2".to_string()),
+            )
+            .await;
             return Ok(());
         }
     };
@@ -158,7 +197,14 @@ async fn try_process_job(
             update_job_status(&pool, &job_id, "completed", Some(result_b64), None).await;
         }
         Err(e) => {
-            update_job_status(&pool, &job_id, "failed", None, Some(format!("HE Error: {}", e))).await;
+            update_job_status(
+                &pool,
+                &job_id,
+                "failed",
+                None,
+                Some(format!("HE Error: {}", e)),
+            )
+            .await;
         }
     }
 

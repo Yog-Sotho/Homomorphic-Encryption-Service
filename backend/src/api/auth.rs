@@ -1,21 +1,21 @@
-use actix_web::{web, HttpResponse, Responder};
-use serde::{Deserialize, Serialize};
-use jsonwebtoken::{encode, decode, Header, EncodingKey, DecodingKey, Validation};
-use bcrypt::{hash, verify, DEFAULT_COST};
-use uuid::Uuid;
-use sqlx::SqlitePool;
-use std::sync::Arc;
-use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
-use lettre::transport::smtp::authentication::Credentials;
+use crate::api::validation::{is_strong_password, is_valid_email, PASSWORD_REQUIREMENTS};
 use crate::config::Config;
 use crate::db::models::User;
 use crate::errors::AppError;
-use crate::api::validation::{is_valid_email, is_strong_password, PASSWORD_REQUIREMENTS};
+use actix_web::{web, HttpResponse, Responder};
+use bcrypt::{hash, verify, DEFAULT_COST};
+use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
+use lettre::transport::smtp::authentication::Credentials;
+use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
+use serde::{Deserialize, Serialize};
+use sqlx::SqlitePool;
+use std::sync::Arc;
+use uuid::Uuid;
 
 const DUMMY_HASH: &str = "$2b$12$WXQEq5YBFxVkx2j5bVBNNOLIGgWS0DVOvt0gp8b2ioY6O3S9XEi/6";
 
 fn hash_token(token: &str) -> String {
-    use sha2::{Sha256, Digest};
+    use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
     hasher.update(token.as_bytes());
     format!("{:x}", hasher.finalize())
@@ -75,7 +75,11 @@ pub struct UserPublic {
 
 impl From<User> for UserPublic {
     fn from(u: User) -> Self {
-        UserPublic { id: u.id, email: u.email, created_at: u.created_at }
+        UserPublic {
+            id: u.id,
+            email: u.email,
+            created_at: u.created_at,
+        }
     }
 }
 
@@ -109,7 +113,7 @@ async fn create_refresh_token(pool: &SqlitePool, user_id: &str) -> Result<String
     let id = Uuid::new_v4().to_string();
     let expires_at = chrono::Utc::now().naive_utc() + chrono::Duration::days(30);
     sqlx::query(
-        "INSERT INTO refresh_tokens (id, user_id, token_hash, expires_at) VALUES (?, ?, ?, ?)"
+        "INSERT INTO refresh_tokens (id, user_id, token_hash, expires_at) VALUES (?, ?, ?, ?)",
     )
     .bind(&id)
     .bind(user_id)
@@ -198,11 +202,7 @@ async fn send_verification_email(
     Ok(())
 }
 
-async fn send_reset_email(
-    config: &Config,
-    to_email: &str,
-    token: &str,
-) -> Result<(), AppError> {
+async fn send_reset_email(config: &Config, to_email: &str, token: &str) -> Result<(), AppError> {
     let reset_url = format!(
         "{}/api/auth/forgot-password/redirect?token={}",
         config.app_base_url, token
@@ -352,7 +352,11 @@ pub async fn login(
     match user {
         Some(u) => {
             let has_password = !u.password_hash.is_empty();
-            let target_hash = if has_password { u.password_hash.clone() } else { DUMMY_HASH.to_string() };
+            let target_hash = if has_password {
+                u.password_hash.clone()
+            } else {
+                DUMMY_HASH.to_string()
+            };
             let password = req.password;
 
             // Offload CPU-intensive bcrypt verification to a blocking thread.
@@ -414,10 +418,9 @@ pub async fn verify_email(
             &config.app_base_url,
             "Invalid or already used verification link",
         ),
-        Some(u) if u.email_verified => oauth_error_redirect(
-            &config.app_base_url,
-            "This account is already verified",
-        ),
+        Some(u) if u.email_verified => {
+            oauth_error_redirect(&config.app_base_url, "This account is already verified")
+        }
         Some(u) => {
             if let Err(e) = sqlx::query(
                 "UPDATE users SET email_verified = 1, email_verify_token = NULL WHERE id = ?",
@@ -634,10 +637,7 @@ pub async fn forgot_password_redirect(
                 HttpResponse::Found()
                     .insert_header((
                         "Location",
-                        format!(
-                            "{}/heaas/login#reset_token={}",
-                            config.app_base_url, token
-                        ),
+                        format!("{}/heaas/login#reset_token={}", config.app_base_url, token),
                     ))
                     .finish()
             }
@@ -715,12 +715,11 @@ pub async fn refresh_token_endpoint(
 ) -> Result<impl Responder, AppError> {
     let hash_val = hash_token(&req.refresh_token);
 
-    let row: Option<(String, String, chrono::NaiveDateTime)> = sqlx::query_as(
-        "SELECT id, user_id, expires_at FROM refresh_tokens WHERE token_hash = ?",
-    )
-    .bind(&hash_val)
-    .fetch_optional(pool.get_ref())
-    .await?;
+    let row: Option<(String, String, chrono::NaiveDateTime)> =
+        sqlx::query_as("SELECT id, user_id, expires_at FROM refresh_tokens WHERE token_hash = ?")
+            .bind(&hash_val)
+            .fetch_optional(pool.get_ref())
+            .await?;
 
     let (token_id, user_id, expires_at) = match row {
         None => return Err(AppError::unauthorized("Invalid refresh token")),
@@ -808,13 +807,12 @@ async fn find_or_create_oauth_user(
     provider_id: &str,
     email: &str,
 ) -> Result<String, AppError> {
-    let existing: Option<(String,)> = sqlx::query_as(
-        "SELECT user_id FROM oauth_accounts WHERE provider = ? AND provider_id = ?",
-    )
-    .bind(provider)
-    .bind(provider_id)
-    .fetch_optional(pool)
-    .await?;
+    let existing: Option<(String,)> =
+        sqlx::query_as("SELECT user_id FROM oauth_accounts WHERE provider = ? AND provider_id = ?")
+            .bind(provider)
+            .bind(provider_id)
+            .fetch_optional(pool)
+            .await?;
 
     if let Some((uid,)) = existing {
         return Ok(uid);
@@ -888,11 +886,19 @@ fn oauth_error_redirect(base_url: &str, msg: &str) -> HttpResponse {
         .collect::<String>()
         .replace(' ', "+");
     HttpResponse::Found()
-        .insert_header(("Location", format!("{}/heaas/login#error={}", base_url, encoded)))
+        .insert_header((
+            "Location",
+            format!("{}/heaas/login#error={}", base_url, encoded),
+        ))
         .finish()
 }
 
-fn oauth_success_redirect(base_url: &str, token: &str, refresh_token: &str, email: &str) -> HttpResponse {
+fn oauth_success_redirect(
+    base_url: &str,
+    token: &str,
+    refresh_token: &str,
+    email: &str,
+) -> HttpResponse {
     HttpResponse::Found()
         .insert_header((
             "Location",
@@ -906,9 +912,7 @@ fn oauth_success_redirect(base_url: &str, token: &str, refresh_token: &str, emai
 
 // ── Google OAuth ──────────────────────────────────────────────────────────────
 
-pub async fn google_redirect(
-    config: web::Data<Arc<Config>>,
-) -> Result<impl Responder, AppError> {
+pub async fn google_redirect(config: web::Data<Arc<Config>>) -> Result<impl Responder, AppError> {
     let client_id = config
         .google_client_id
         .as_deref()
@@ -917,8 +921,7 @@ pub async fn google_redirect(
     let state = make_oauth_state("google", &config)?;
     let redirect_uri = format!("{}/api/auth/google/callback", config.app_base_url);
 
-    let mut auth_url =
-        url::Url::parse("https://accounts.google.com/o/oauth2/v2/auth").unwrap();
+    let mut auth_url = url::Url::parse("https://accounts.google.com/o/oauth2/v2/auth").unwrap();
     auth_url
         .query_pairs_mut()
         .append_pair("client_id", client_id)
@@ -966,7 +969,10 @@ pub async fn google_callback(
     };
 
     if verify_oauth_state(state, "google", &config).is_err() {
-        return oauth_error_redirect(&config.app_base_url, "Invalid OAuth state. Please try again.");
+        return oauth_error_redirect(
+            &config.app_base_url,
+            "Invalid OAuth state. Please try again.",
+        );
     }
 
     let (client_id, client_secret) = match (
@@ -1017,7 +1023,10 @@ pub async fn google_callback(
             Ok(u) => u,
             Err(e) => {
                 log::error!("Google userinfo parse: {}", e);
-                return oauth_error_redirect(&config.app_base_url, "Failed to retrieve Google profile");
+                return oauth_error_redirect(
+                    &config.app_base_url,
+                    "Failed to retrieve Google profile",
+                );
             }
         },
         Err(e) => {
@@ -1026,17 +1035,16 @@ pub async fn google_callback(
         }
     };
 
-    let user_id = match find_or_create_oauth_user(
-        pool.get_ref(), "google", &user_info.id, &user_info.email,
-    )
-    .await
-    {
-        Ok(id) => id,
-        Err(e) => {
-            log::error!("OAuth user creation: {:?}", e);
-            return oauth_error_redirect(&config.app_base_url, "Account creation failed");
-        }
-    };
+    let user_id =
+        match find_or_create_oauth_user(pool.get_ref(), "google", &user_info.id, &user_info.email)
+            .await
+        {
+            Ok(id) => id,
+            Err(e) => {
+                log::error!("OAuth user creation: {:?}", e);
+                return oauth_error_redirect(&config.app_base_url, "Account creation failed");
+            }
+        };
 
     let jwt = match make_jwt(&user_id, &config) {
         Ok(t) => t,
@@ -1059,9 +1067,7 @@ pub async fn google_callback(
 
 // ── GitHub OAuth ──────────────────────────────────────────────────────────────
 
-pub async fn github_redirect(
-    config: web::Data<Arc<Config>>,
-) -> Result<impl Responder, AppError> {
+pub async fn github_redirect(config: web::Data<Arc<Config>>) -> Result<impl Responder, AppError> {
     let client_id = config
         .github_client_id
         .as_deref()
@@ -1070,8 +1076,7 @@ pub async fn github_redirect(
     let state = make_oauth_state("github", &config)?;
     let redirect_uri = format!("{}/api/auth/github/callback", config.app_base_url);
 
-    let mut auth_url =
-        url::Url::parse("https://github.com/login/oauth/authorize").unwrap();
+    let mut auth_url = url::Url::parse("https://github.com/login/oauth/authorize").unwrap();
     auth_url
         .query_pairs_mut()
         .append_pair("client_id", client_id)
@@ -1117,7 +1122,10 @@ pub async fn github_callback(
     };
 
     if verify_oauth_state(state, "github", &config).is_err() {
-        return oauth_error_redirect(&config.app_base_url, "Invalid OAuth state. Please try again.");
+        return oauth_error_redirect(
+            &config.app_base_url,
+            "Invalid OAuth state. Please try again.",
+        );
     }
 
     let (client_id, client_secret) = match (
@@ -1169,7 +1177,10 @@ pub async fn github_callback(
             Ok(u) => u,
             Err(e) => {
                 log::error!("GitHub user parse: {}", e);
-                return oauth_error_redirect(&config.app_base_url, "Failed to retrieve GitHub profile");
+                return oauth_error_redirect(
+                    &config.app_base_url,
+                    "Failed to retrieve GitHub profile",
+                );
             }
         },
         Err(e) => {
@@ -1267,13 +1278,14 @@ mod tests {
         assert_eq!(user_id, oauth_user_id);
 
         // 4. Verify that the account is now verified, and password_hash and email_verify_token are cleared
-        let (verified, current_hash, current_verify_token): (bool, String, Option<String>) = sqlx::query_as(
-            "SELECT email_verified, password_hash, email_verify_token FROM users WHERE id = ?"
-        )
-        .bind(&user_id)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+        let (verified, current_hash, current_verify_token): (bool, String, Option<String>) =
+            sqlx::query_as(
+                "SELECT email_verified, password_hash, email_verify_token FROM users WHERE id = ?",
+            )
+            .bind(&user_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
 
         assert!(verified);
         assert_eq!(current_hash, "");
