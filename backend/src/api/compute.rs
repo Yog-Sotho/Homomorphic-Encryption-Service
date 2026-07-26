@@ -67,6 +67,12 @@ pub async fn submit_job(
         return Err(AppError::bad_request("Unsupported operation. Use 'add' or 'multiply'."));
     }
 
+    if req.input_data_b64.len() > 2_000_000 {
+        return Err(AppError::bad_request(
+            "Input payload exceeds maximum limit of 2,000,000 characters",
+        ));
+    }
+
     sqlx::query(
         "INSERT INTO jobs (id, user_id, status, input_data_b64, operation) VALUES (?, ?, 'pending', ?, ?)",
     )
@@ -220,4 +226,60 @@ pub async fn list_jobs(
     .await?;
 
     Ok(HttpResponse::Ok().json(jobs))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use actix_web::{FromRequest, HttpMessage};
+    use sqlx::SqlitePool;
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn test_submit_job_length_validation() {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+
+        // Insert a mock user to satisfy foreign key constraint on user_id
+        sqlx::query("INSERT INTO users (id, email, password_hash) VALUES (?, ?, ?)")
+            .bind("user-123")
+            .bind("user@example.com")
+            .bind("some_hash")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let he_pool = Arc::new(crate::crypto::engine::HeContextPool {
+            contexts: vec![],
+            counter: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let state = web::Data::new(AppState { he_pool });
+        let pool_data = web::Data::new(pool);
+
+        let http_req = actix_web::test::TestRequest::default().to_http_request();
+        http_req.extensions_mut().insert("user-123".to_string());
+        let user_id = web::ReqData::<String>::extract(&http_req).await.unwrap();
+
+        // 1. Valid payload length under limit should proceed successfully
+        let req_valid = web::Json(CreateJobRequest {
+            input_data_b64: "[\"ct1\", \"ct2\"]".to_string(),
+            operation: "add".to_string(),
+        });
+        let res_valid = submit_job(pool_data.clone(), state.clone(), req_valid, user_id.clone()).await;
+        assert!(res_valid.is_ok());
+
+        // 2. Too-long payload exceeds 2,000,000 limit
+        let req_large = web::Json(CreateJobRequest {
+            input_data_b64: "a".repeat(2_000_001),
+            operation: "add".to_string(),
+        });
+        let res_large = submit_job(pool_data, state, req_large, user_id).await;
+        assert!(res_large.is_err());
+        match res_large.err().unwrap() {
+            AppError::BadRequest(msg) => {
+                assert_eq!(msg, "Input payload exceeds maximum limit of 2,000,000 characters");
+            }
+            _ => panic!("Expected BadRequest error"),
+        }
+    }
 }

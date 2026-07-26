@@ -76,8 +76,8 @@ impl HeContext {
 }
 
 pub struct HeContextPool {
-    contexts: Vec<Arc<HeContext>>,
-    counter: AtomicUsize,
+    pub(crate) contexts: Vec<Arc<HeContext>>,
+    pub(crate) counter: AtomicUsize,
 }
 
 impl HeContextPool {
