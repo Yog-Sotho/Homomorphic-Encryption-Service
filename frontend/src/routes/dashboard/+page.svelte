@@ -186,7 +186,12 @@
             <button class="btn-secondary" type="button" on:click={() => showFullCiphertext = !showFullCiphertext}>
               {showFullCiphertext ? 'Collapse' : 'Expand'}
             </button>
-            <button class="btn-secondary" type="button" on:click={() => copyToClipboard(resultB64)}>
+            <button
+              class="btn-secondary"
+              type="button"
+              on:click={() => copyToClipboard(resultB64)}
+              aria-label={copied ? 'Ciphertext copied to clipboard' : 'Copy ciphertext to clipboard'}
+            >
               {copied ? '✓ Copied' : 'Copy'}
             </button>
           </div>
