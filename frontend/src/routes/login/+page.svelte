@@ -6,6 +6,12 @@
 
   let email = '', password = '', error = '', loading = false, isLogin = true, showPassword = false;
 
+  $: passwordHint = !isLogin && password.length > 0 && !isValidPassword(password);
+
+  function isValidPassword(p: string): boolean {
+    return p.length >= 10 && p.length <= 128 && /[A-Z]/.test(p) && /[a-z]/.test(p) && /[0-9]/.test(p) && /[^A-Za-z0-9]/.test(p);
+  }
+
   async function handleSubmit() {
     loading = true; error = '';
     try {
@@ -61,7 +67,17 @@
       </button>
     </div>
 
-    <button type="submit" disabled={loading} class="btn-primary">
+    {#if passwordHint}
+      <ul class="hint" aria-live="polite">
+        <li class:ok={password.length >= 10 && password.length <= 128}>Between 10 and 128 characters</li>
+        <li class:ok={/[A-Z]/.test(password)}>One uppercase letter</li>
+        <li class:ok={/[a-z]/.test(password)}>One lowercase letter</li>
+        <li class:ok={/[0-9]/.test(password)}>One digit</li>
+        <li class:ok={/[^A-Za-z0-9]/.test(password)}>One special character</li>
+      </ul>
+    {/if}
+
+    <button type="submit" disabled={loading || (!isLogin && !isValidPassword(password))} class="btn-primary">
       {loading ? 'Processing...' : (isLogin ? 'Login' : 'Register')}
     </button>
   </form>
@@ -79,4 +95,14 @@
   .toggle-text { margin-top: 1.5rem; text-align: center; font-size: 0.875rem; color: var(--text-secondary); }
   .btn-link { background: none; border: none; color: var(--accent); cursor: pointer; text-decoration: underline; padding: 0; font-size: inherit; }
 
+  /* ── Hint ── */
+  .hint {
+    list-style: none; padding: 0.5rem 0.75rem; margin: 0.25rem 0 0.75rem;
+    background: var(--bg-secondary); border-radius: 6px; font-size: 0.8rem;
+    display: flex; flex-direction: column; gap: 0.2rem;
+  }
+  .hint li { color: var(--text-secondary); }
+  .hint li::before { content: '✗ '; color: #ef4444; }
+  .hint li.ok { color: #22c55e; }
+  .hint li.ok::before { content: '✓ '; }
 </style>
