@@ -1,3 +1,8 @@
+## 2026-06-07 - Compute Input Length Memory/Storage DoS on Job Submission
+**Vulnerability:** Unconstrained Base64-encoded homomorphic encryption input data (`input_data_b64`) allowed potential database storage exhaustion, memory allocation exhaustion, and CPU Denial of Service (DoS) during JSON deserialization and base64 decoding on compute endpoints.
+**Learning:** Submitting arbitrarily large encrypted compute payloads can degrade backend availability even before cryptographic operations are executed.
+**Prevention:** Enforce a strict maximum length limit (<= 2,000,000 characters) on the input payload string early in the job submission handler and reject large payloads immediately.
+
 ## 2026-06-06 - Input Length CPU-Exhaustion DoS on BCrypt and DB
 **Vulnerability:** Unconstrained email and password input lengths on authentication, password change, and account deletion endpoints allowed potential Denial of Service (DoS) attacks via CPU exhaustion on expensive cryptographic hashing (bcrypt) or database server resources.
 **Learning:** Centralized validation logic must enforce maximum payload limits in addition to format and strength requirements before any downstream CPU-heavy cryptographic operations or complex DB queries are performed.
