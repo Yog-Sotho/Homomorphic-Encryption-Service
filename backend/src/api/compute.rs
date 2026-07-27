@@ -63,6 +63,12 @@ pub async fn submit_job(
     let job_id = Uuid::new_v4().to_string();
     let user_id_str = user_id.into_inner();
 
+    if req.input_data_b64.len() > 2_000_000 {
+        return Err(AppError::bad_request(
+            "Input payload too large. Maximum length is 2,000,000 characters."
+        ));
+    }
+
     if req.operation != "add" && req.operation != "multiply" {
         return Err(AppError::bad_request("Unsupported operation. Use 'add' or 'multiply'."));
     }
@@ -220,4 +226,72 @@ pub async fn list_jobs(
     .await?;
 
     Ok(HttpResponse::Ok().json(jobs))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use actix_web::HttpMessage;
+    use actix_web::test::TestRequest;
+    use actix_web::FromRequest;
+    use actix_web::web::ReqData;
+    use crate::crypto::engine::HeContextPool;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn test_submit_job_length_validation() {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+
+        // Insert a mock user to satisfy foreign key constraint in the jobs table
+        sqlx::query(
+            "INSERT INTO users (id, email, password_hash, email_verified) VALUES (?, 'user@example.com', '', 1)"
+        )
+        .bind("user_id_123")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let he_pool = Arc::new(HeContextPool {
+            contexts: vec![],
+            counter: AtomicUsize::new(0),
+        });
+        let state = web::Data::new(AppState { he_pool });
+
+        let pool_data = web::Data::new(pool);
+
+        // 1. Valid input
+        let req_valid = web::Json(CreateJobRequest {
+            input_data_b64: "[\"ct1\", \"ct2\"]".to_string(),
+            operation: "add".to_string(),
+        });
+
+        // Create http request and mock ReqData
+        let http_req = TestRequest::default().to_http_request();
+        http_req.extensions_mut().insert("user_id_123".to_string());
+        let user_id = ReqData::<String>::extract(&http_req).await.unwrap();
+
+        let res_valid = submit_job(pool_data.clone(), state.clone(), req_valid, user_id).await;
+        assert!(res_valid.is_ok());
+
+        // 2. Too long input (2,000,001 characters)
+        let req_too_long = web::Json(CreateJobRequest {
+            input_data_b64: "a".repeat(2_000_001),
+            operation: "add".to_string(),
+        });
+
+        let http_req2 = TestRequest::default().to_http_request();
+        http_req2.extensions_mut().insert("user_id_123".to_string());
+        let user_id2 = ReqData::<String>::extract(&http_req2).await.unwrap();
+
+        let res_too_long = submit_job(pool_data, state, req_too_long, user_id2).await;
+        assert!(res_too_long.is_err());
+        match res_too_long.err().unwrap() {
+            AppError::BadRequest(msg) => {
+                assert_eq!(msg, "Input payload too large. Maximum length is 2,000,000 characters.");
+            }
+            other => panic!("Expected BadRequest error, got {:?}", other),
+        }
+    }
 }
