@@ -390,6 +390,9 @@ pub async fn verify_email(
         Some(t) if !t.is_empty() => t,
         _ => return oauth_error_redirect(&config.app_base_url, "Missing verification token"),
     };
+    if token.len() > 256 {
+        return oauth_error_redirect(&config.app_base_url, "Invalid verification token");
+    }
     let token_hash = hash_token(token);
 
     let user: Option<User> = match sqlx::query_as(
@@ -576,6 +579,17 @@ pub async fn forgot_password_redirect(
                 .finish()
         }
     };
+    if token.len() > 256 {
+        return HttpResponse::Found()
+            .insert_header((
+                "Location",
+                format!(
+                    "{}/heaas/login#error=Invalid+or+expired+reset+link",
+                    config.app_base_url
+                ),
+            ))
+            .finish();
+    }
     let token_hash = hash_token(token);
 
     let user: Option<User> = match sqlx::query_as(
@@ -649,6 +663,9 @@ pub async fn reset_password(
     pool: web::Data<SqlitePool>,
     req: web::Json<ResetPasswordRequest>,
 ) -> Result<impl Responder, AppError> {
+    if req.token.len() > 256 {
+        return Err(AppError::bad_request("Invalid or expired reset link"));
+    }
     let token_hash = hash_token(&req.token);
 
     let user: Option<User> = sqlx::query_as(
@@ -713,6 +730,9 @@ pub async fn refresh_token_endpoint(
     config: web::Data<Arc<Config>>,
     req: web::Json<RefreshRequest>,
 ) -> Result<impl Responder, AppError> {
+    if req.refresh_token.len() > 256 {
+        return Err(AppError::unauthorized("Invalid refresh token"));
+    }
     let hash_val = hash_token(&req.refresh_token);
 
     let row: Option<(String, String, chrono::NaiveDateTime)> = sqlx::query_as(
@@ -755,6 +775,9 @@ pub async fn logout(
     pool: web::Data<SqlitePool>,
     req: web::Json<LogoutRequest>,
 ) -> Result<impl Responder, AppError> {
+    if req.refresh_token.len() > 256 {
+        return Err(AppError::bad_request("Invalid refresh token"));
+    }
     let hash_val = hash_token(&req.refresh_token);
     sqlx::query("DELETE FROM refresh_tokens WHERE token_hash = ?")
         .bind(&hash_val)
@@ -1326,6 +1349,65 @@ mod tests {
         match res.err().unwrap() {
             AppError::Unauthorized(msg) => assert_eq!(msg, "Invalid credentials"),
             _ => panic!("Expected Unauthorized"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_token_length_validation() {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        let config = Arc::new(Config {
+            database_url: "sqlite::memory:".to_string(),
+            jwt_secret: "test_secret_key_at_least_32_bytes_long".to_string(),
+            server_addr: "127.0.0.1:8080".to_string(),
+            he_pool_size: 1,
+            app_base_url: "http://localhost:3000".to_string(),
+            google_client_id: None,
+            google_client_secret: None,
+            github_client_id: None,
+            github_client_secret: None,
+            smtp_host: None,
+            smtp_port: 587,
+            smtp_user: None,
+            smtp_pass: None,
+            from_email: "noreply@heaas.local".to_string(),
+            daily_compute_quota: 100,
+        });
+
+        let pool_data = web::Data::new(pool);
+        let config_data = web::Data::new(config);
+
+        // Test reset_password token length constraint
+        let reset_req = web::Json(ResetPasswordRequest {
+            token: "a".repeat(257),
+            new_password: "Password123!".to_string(),
+        });
+        let res = reset_password(pool_data.clone(), reset_req).await;
+        assert!(res.is_err());
+        match res.err().unwrap() {
+            AppError::BadRequest(msg) => assert_eq!(msg, "Invalid or expired reset link"),
+            _ => panic!("Expected BadRequest"),
+        }
+
+        // Test refresh_token_endpoint token length constraint
+        let refresh_req = web::Json(RefreshRequest {
+            refresh_token: "a".repeat(257),
+        });
+        let res = refresh_token_endpoint(pool_data.clone(), config_data.clone(), refresh_req).await;
+        assert!(res.is_err());
+        match res.err().unwrap() {
+            AppError::Unauthorized(msg) => assert_eq!(msg, "Invalid refresh token"),
+            _ => panic!("Expected Unauthorized"),
+        }
+
+        // Test logout token length constraint
+        let logout_req = web::Json(LogoutRequest {
+            refresh_token: "a".repeat(257),
+        });
+        let res = logout(pool_data, logout_req).await;
+        assert!(res.is_err());
+        match res.err().unwrap() {
+            AppError::BadRequest(msg) => assert_eq!(msg, "Invalid refresh token"),
+            _ => panic!("Expected BadRequest"),
         }
     }
 }
