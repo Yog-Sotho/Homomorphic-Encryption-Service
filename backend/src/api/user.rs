@@ -284,10 +284,7 @@ mod tests {
         .respond_to(&req)
         .map_into_boxed_body();
         assert_eq!(resp.status(), 200);
-        let body = to_bytes(resp.into_body())
-            .await
-            .ok()
-            .expect("readable body");
+        let body = to_bytes(resp.into_body()).await.expect("readable body");
         serde_json::from_slice(&body).unwrap()
     }
 
