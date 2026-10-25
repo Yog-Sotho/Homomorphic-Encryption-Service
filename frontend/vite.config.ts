@@ -1,3 +1,4 @@
+/// <reference types="vitest/config" />
 import { sveltekit } from '@sveltejs/kit/vite';
 import adapter from '@sveltejs/adapter-node';
 import { defineConfig } from 'vite';
@@ -47,5 +48,9 @@ export default defineConfig({
   },
   build: {
     target: 'es2022'
+  },
+  test: {
+    // Playwright specs live in e2e/ and run under `pnpm test:e2e`.
+    include: ['src/**/*.test.ts']
   }
 });
