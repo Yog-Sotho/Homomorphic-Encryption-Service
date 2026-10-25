@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
-  import { compute } from '$lib/api';
+  import { compute, errorMessage as messageOf } from '#lib/api.js';
 
   let val1 = 10;
   let val2 = 5;
@@ -55,11 +55,11 @@
     clearResults();
     try {
       const res = await compute.sandboxCompute(val1Clamped, val2Clamped, operation);
-      plaintextResult = res.data.plaintext_result;
+      plaintextResult = res.plaintext_result;
       lastExpected = currentExpected;
-      resultB64 = res.data.result_b64;
-    } catch (e: any) {
-      errorMessage = e?.response?.data?.message ?? e?.message ?? 'Computation failed';
+      resultB64 = res.result_b64;
+    } catch (e) {
+      errorMessage = messageOf(e, 'Computation failed');
     } finally {
       loading = false;
     }
@@ -382,6 +382,7 @@
     overflow: hidden;
     display: -webkit-box;
     -webkit-line-clamp: 2;
+    line-clamp: 2;
     -webkit-box-orient: vertical;
   }
 

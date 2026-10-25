@@ -26,14 +26,15 @@ services:
     volumes:
       - ./data:/usr/src/he-backend/data
   frontend:
-    image: node:20-alpine
+    image: node:22-alpine
     working_dir: /app
     volumes:
       - ./frontend:/app
+      - /app/node_modules
     ports:
       - "3000:3000"
     environment:
       - BACKEND_URL=http://backend:8080
-    command: sh -c "npm install && npm run dev -- --host"
+    command: sh -c "corepack enable && pnpm install --frozen-lockfile && pnpm dev --host"
     depends_on:
       - backend

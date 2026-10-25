@@ -1,8 +1,8 @@
 <script lang="ts">
   import { goto } from '$app/navigation';
-  import { base } from '$app/paths';
-  import { auth } from '$lib/api';
-  import { userStore } from '$lib/stores';
+  import { resolve } from '$app/paths';
+  import { auth, errorMessage } from '#lib/api.js';
+  import { userStore } from '#lib/stores.js';
 
   let email = '', password = '', error = '', loading = false, isLogin = true, showPassword = false;
 
@@ -17,17 +17,17 @@
     try {
       if (isLogin) {
         const res = await auth.login(email, password);
-        localStorage.setItem('token', res.data.token);
-        if (res.data.refresh_token) localStorage.setItem('refresh_token', res.data.refresh_token);
-        userStore.set(res.data.user);
-        goto(`${base}/dashboard`);
+        localStorage.setItem('token', res.token);
+        localStorage.setItem('refresh_token', res.refresh_token);
+        userStore.set(res.user);
+        goto(resolve('/dashboard'));
       } else {
         await auth.register(email, password);
         isLogin = true;
         error = 'Account created! Please sign in.';
       }
-    } catch (e: any) {
-      error = e.response?.data?.message || (isLogin ? 'Login failed' : 'Registration failed');
+    } catch (e) {
+      error = errorMessage(e, isLogin ? 'Login failed' : 'Registration failed');
     } finally { loading = false; }
   }
 </script>

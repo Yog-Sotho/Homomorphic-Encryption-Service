@@ -1,0 +1,82 @@
+# cargo-deny configuration: https://embarkstudios.github.io/cargo-deny/
+# Run locally with `cargo deny check` from backend/.
+
+[graph]
+all-features = false
+
+[advisories]
+# Vulnerabilities always fail. Unmaintained/unsound notices fail unless listed below
+# with a reason and the dependency path that pulls them in.
+yanked = "deny"
+ignore = [
+  # bincode 1.x is unmaintained. We no longer depend on it directly; it is pulled
+  # in by tfhe-safe-serialize (TFHE-rs' own versioned format). Remove once TFHE-rs
+  # migrates off bincode 1.
+  { id = "RUSTSEC-2025-0141", reason = "transitive via tfhe-safe-serialize; no direct use" },
+  # paste is unmaintained but is a compile-time proc-macro only (no runtime code),
+  # pulled in by pulp (TFHE-rs' SIMD layer).
+  { id = "RUSTSEC-2024-0436", reason = "build-time proc-macro via tfhe -> pulp" },
+]
+
+[licenses]
+confidence-threshold = 0.9
+allow = [
+  "0BSD",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "BSL-1.0",
+  "CC0-1.0",
+  "CDLA-Permissive-2.0",
+  "ISC",
+  "MIT",
+  "MIT-0",
+  "Unicode-3.0",
+  "Unlicense",
+  "Zlib",
+]
+
+# TFHE-rs is BSD-3-Clause-Clear, which grants no patent rights. Zama states that
+# commercial use requires purchasing its patent licence (see the tfhe crate README,
+# "Is Zama's technology free to use?"). Allowed here so the build works, but any
+# paid deployment of this service needs that licence first.
+[[licenses.exceptions]]
+allow = ["BSD-3-Clause-Clear"]
+crate = "tfhe"
+[[licenses.exceptions]]
+allow = ["BSD-3-Clause-Clear"]
+crate = "tfhe-csprng"
+[[licenses.exceptions]]
+allow = ["BSD-3-Clause-Clear"]
+crate = "tfhe-fft"
+[[licenses.exceptions]]
+allow = ["BSD-3-Clause-Clear"]
+crate = "tfhe-ntt"
+[[licenses.exceptions]]
+allow = ["BSD-3-Clause-Clear"]
+crate = "tfhe-safe-serialize"
+[[licenses.exceptions]]
+allow = ["BSD-3-Clause-Clear"]
+crate = "tfhe-versionable"
+[[licenses.exceptions]]
+allow = ["BSD-3-Clause-Clear"]
+crate = "tfhe-versionable-derive"
+
+[licenses.private]
+# he-backend itself is not published.
+ignore = true
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+# OpenSSL is not wanted: all TLS goes through rustls.
+deny = [
+  { crate = "openssl-sys", reason = "use rustls" },
+  { crate = "native-tls", reason = "use rustls" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

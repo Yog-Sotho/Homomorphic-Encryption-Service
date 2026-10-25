@@ -1,11 +1,11 @@
 <script lang="ts">
   import '../app.css';
   import { onMount } from 'svelte';
-  import { base } from '$app/paths';
-  import { userStore } from '$lib/stores';
+  import { asset, resolve } from '$app/paths';
+  import { userStore } from '#lib/stores.js';
   import { goto } from '$app/navigation';
-  import { page } from '$app/stores';
-  import { auth } from '$lib/api';
+  import { page } from '$app/state';
+  import { auth } from '#lib/api.js';
 
   function isTokenExpired(token: string): boolean {
     try {
@@ -16,12 +16,15 @@
   }
 
   onMount(() => {
+    // An expired access token is fine while a refresh token exists: the API client
+    // refreshes it on the first 401.
     const token = localStorage.getItem('token');
-    if (!token || isTokenExpired(token)) {
+    const hasSession = (token && !isTokenExpired(token)) || localStorage.getItem('refresh_token');
+    if (!hasSession) {
       localStorage.removeItem('token');
       localStorage.removeItem('refresh_token');
       userStore.set(null);
-      if ($page.url.pathname !== `${base}/login`) goto(`${base}/login`);
+      if (page.url.pathname !== resolve('/login')) goto(resolve('/login'));
     }
   });
 
@@ -33,27 +36,27 @@
     localStorage.removeItem('token');
     localStorage.removeItem('refresh_token');
     userStore.set(null);
-    goto(`${base}/login`);
+    goto(resolve('/login'));
   }
-
-  $: isAuthPage = $page.url.pathname === `${base}/login`;
 </script>
 
-{#if isAuthPage}
+<!-- Read `page` in the template, not in a `$:` statement: legacy reactive
+     statements do not track `$app/state`, so the shell would never update. -->
+{#if page.url.pathname === resolve('/login')}
   <slot />
 {:else}
   <div class="app">
     <header class="topbar">
-      <a class="brand" href="{base}/dashboard">
-        <img src="{base}/logo.svg" alt="HEaaS" class="brand-logo" />
+      <a class="brand" href={resolve('/dashboard')}>
+        <img src={asset('logo.svg')} alt="HEaaS" class="brand-logo" />
       </a>
       <nav class="topbar-right">
         {#if $userStore}
           <span class="user-chip">{$userStore.email}</span>
-          <a class="btn-ghost" href="{base}/account">Account</a>
+          <a class="btn-ghost" href={resolve('/account')}>Account</a>
           <button class="btn-ghost" on:click={logout}>Sign out</button>
         {:else}
-          <a class="btn-ghost" href="{base}/login">Sign in</a>
+          <a class="btn-ghost" href={resolve('/login')}>Sign in</a>
         {/if}
       </nav>
     </header>
