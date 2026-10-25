@@ -1,8 +1,12 @@
-use actix_web::{body::BoxBody, dev::{ServiceRequest, ServiceResponse}, Error, HttpMessage, HttpResponse};
+use crate::config::Config;
 use actix_web::middleware::Next;
+use actix_web::{
+    body::BoxBody,
+    dev::{ServiceRequest, ServiceResponse},
+    Error, HttpMessage, HttpResponse,
+};
 use sqlx::SqlitePool;
 use std::sync::Arc;
-use crate::config::Config;
 
 pub async fn quota_middleware<B: actix_web::body::MessageBody + 'static>(
     req: ServiceRequest,
@@ -26,7 +30,7 @@ pub async fn quota_middleware<B: actix_web::body::MessageBody + 'static>(
         let result = sqlx::query_as::<_, (i64,)>(
             "INSERT INTO daily_compute_usage (user_id, date, count) VALUES (?, ?, 1)
              ON CONFLICT(user_id, date) DO UPDATE SET count = count + 1
-             RETURNING count"
+             RETURNING count",
         )
         .bind(&user_id)
         .bind(&today)

@@ -32,7 +32,11 @@ impl HeContext {
     pub fn new() -> HeResult<Self> {
         let (client_key, server_key) = generate_keys(ConfigBuilder::default());
         let conformance = FheUint16ConformanceParams::from(&server_key);
-        Ok(HeContext { client_key, server_key, conformance })
+        Ok(HeContext {
+            client_key,
+            server_key,
+            conformance,
+        })
     }
 
     /// Deserializes untrusted bytes, rejecting oversized input and ciphertexts whose
@@ -87,7 +91,11 @@ impl HeContext {
         let ct2 = FheUint16::try_encrypt(u16::try_from(v2)?, &self.client_key)?;
 
         self.install_server_key();
-        let result_ct = if op == "add" { &ct1 + &ct2 } else { &ct1 * &ct2 };
+        let result_ct = if op == "add" {
+            &ct1 + &ct2
+        } else {
+            &ct1 * &ct2
+        };
 
         let plaintext: u16 = result_ct.decrypt(&self.client_key);
         let result_bytes = serialize_ct(&result_ct)?;
@@ -103,7 +111,10 @@ pub struct HeContextPool {
 
 impl HeContextPool {
     pub async fn new(size: usize) -> HeResult<Self> {
-        log::info!("Generating {} TFHE-rs key pair(s) in parallel — this takes 10-60 s…", size);
+        log::info!(
+            "Generating {} TFHE-rs key pair(s) in parallel — this takes 10-60 s…",
+            size
+        );
 
         let mut handles = Vec::with_capacity(size);
         for i in 0..size {
@@ -120,7 +131,10 @@ impl HeContextPool {
         }
 
         log::info!("TFHE-rs key pool ready ({} slot(s))", size);
-        Ok(HeContextPool { contexts, counter: AtomicUsize::new(0) })
+        Ok(HeContextPool {
+            contexts,
+            counter: AtomicUsize::new(0),
+        })
     }
 
     pub fn acquire(&self) -> Arc<HeContext> {
@@ -145,13 +159,23 @@ mod tests {
 
         let a = ctx.encrypt(40_000).unwrap();
         let b = ctx.encrypt(30_000).unwrap();
-        assert!(a.len() as u64 <= MAX_CIPHERTEXT_BYTES, "ciphertext is {} bytes", a.len());
+        assert!(
+            a.len() as u64 <= MAX_CIPHERTEXT_BYTES,
+            "ciphertext is {} bytes",
+            a.len()
+        );
 
         // Addition and multiplication wrap modulo 2^16 with carries propagated.
         let sum = ctx.add_ciphertexts(&a, &b).unwrap();
-        assert_eq!(ctx.decrypt(&sum).unwrap(), (40_000 + 30_000) % PLAIN_MODULUS);
+        assert_eq!(
+            ctx.decrypt(&sum).unwrap(),
+            (40_000 + 30_000) % PLAIN_MODULUS
+        );
         let prod = ctx.multiply_ciphertexts(&a, &b).unwrap();
-        assert_eq!(ctx.decrypt(&prod).unwrap(), (40_000u64 * 30_000) % PLAIN_MODULUS);
+        assert_eq!(
+            ctx.decrypt(&prod).unwrap(),
+            (40_000u64 * 30_000) % PLAIN_MODULUS
+        );
 
         // Results can be fed back in: chained operations stay correct.
         let chained = ctx.add_ciphertexts(&sum, &prod).unwrap();

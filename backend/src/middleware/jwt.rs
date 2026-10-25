@@ -1,9 +1,9 @@
-use actix_web::{dev::ServiceRequest, Error, HttpMessage};
+use crate::config::Config;
 use actix_web::middleware::Next;
+use actix_web::{dev::ServiceRequest, Error, HttpMessage};
 use jsonwebtoken::{decode, DecodingKey, Validation};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use crate::config::Config;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Claims {
@@ -37,5 +37,7 @@ pub async fn jwt_validator<B: actix_web::body::MessageBody>(
         }
     }
 
-    Err(actix_web::error::ErrorUnauthorized("Invalid or missing token"))
+    Err(actix_web::error::ErrorUnauthorized(
+        "Invalid or missing token",
+    ))
 }

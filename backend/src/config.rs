@@ -23,8 +23,8 @@ impl Config {
     pub fn init() -> Self {
         dotenv().ok();
 
-        let jwt_secret = env::var("JWT_SECRET")
-            .expect("FATAL: JWT_SECRET environment variable must be set.");
+        let jwt_secret =
+            env::var("JWT_SECRET").expect("FATAL: JWT_SECRET environment variable must be set.");
 
         let he_pool_size = env::var("HE_POOL_SIZE")
             .ok()
@@ -46,8 +46,7 @@ impl Config {
             database_url: env::var("DATABASE_URL")
                 .unwrap_or_else(|_| "sqlite://./he_saas.db".to_string()),
             jwt_secret,
-            server_addr: env::var("SERVER_ADDR")
-                .unwrap_or_else(|_| "127.0.0.1:8080".to_string()),
+            server_addr: env::var("SERVER_ADDR").unwrap_or_else(|_| "127.0.0.1:8080".to_string()),
             he_pool_size,
             app_base_url: env::var("APP_BASE_URL")
                 .unwrap_or_else(|_| "http://localhost:3000".to_string()),

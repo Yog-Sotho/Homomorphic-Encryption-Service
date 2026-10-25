@@ -1,11 +1,11 @@
-use actix_web::{web, HttpMessage, HttpRequest, HttpResponse, Responder};
-use sqlx::SqlitePool;
-use serde::{Deserialize, Serialize};
-use bcrypt::{hash, verify, DEFAULT_COST};
-use std::sync::Arc;
+use crate::api::validation::{is_strong_password, PASSWORD_REQUIREMENTS};
 use crate::config::Config;
 use crate::errors::AppError;
-use crate::api::validation::{is_strong_password, PASSWORD_REQUIREMENTS};
+use actix_web::{web, HttpMessage, HttpRequest, HttpResponse, Responder};
+use bcrypt::{hash, verify, DEFAULT_COST};
+use serde::{Deserialize, Serialize};
+use sqlx::SqlitePool;
+use std::sync::Arc;
 
 #[derive(Serialize)]
 pub struct MeResponse {
@@ -86,7 +86,11 @@ pub async fn get_me(
     let row = row.ok_or_else(|| AppError::not_found("User not found"))?;
 
     let oauth_providers = match row.oauth_providers {
-        Some(s) => s.split(',').map(|p| p.to_string()).filter(|p| !p.is_empty()).collect(),
+        Some(s) => s
+            .split(',')
+            .map(|p| p.to_string())
+            .filter(|p| !p.is_empty())
+            .collect(),
         None => vec![],
     };
 
@@ -111,7 +115,9 @@ pub async fn change_password(
     req: HttpRequest,
 ) -> Result<impl Responder, AppError> {
     if body.current_password.len() > 128 || body.new_password.len() > 128 {
-        return Err(AppError::bad_request("Password exceeds maximum allowed length of 128 characters"));
+        return Err(AppError::bad_request(
+            "Password exceeds maximum allowed length of 128 characters",
+        ));
     }
 
     let user_id = req
@@ -120,12 +126,10 @@ pub async fn change_password(
         .cloned()
         .ok_or_else(|| AppError::unauthorized("Not authenticated"))?;
 
-    let row: Option<(String,)> = sqlx::query_as(
-        "SELECT password_hash FROM users WHERE id = ?",
-    )
-    .bind(&user_id)
-    .fetch_optional(pool.get_ref())
-    .await?;
+    let row: Option<(String,)> = sqlx::query_as("SELECT password_hash FROM users WHERE id = ?")
+        .bind(&user_id)
+        .fetch_optional(pool.get_ref())
+        .await?;
 
     let (password_hash,) = match row {
         None => return Err(AppError::not_found("User not found")),
@@ -186,12 +190,10 @@ pub async fn delete_account(
         .cloned()
         .ok_or_else(|| AppError::unauthorized("Not authenticated"))?;
 
-    let row: Option<(String,)> = sqlx::query_as(
-        "SELECT password_hash FROM users WHERE id = ?",
-    )
-    .bind(&user_id)
-    .fetch_optional(pool.get_ref())
-    .await?;
+    let row: Option<(String,)> = sqlx::query_as("SELECT password_hash FROM users WHERE id = ?")
+        .bind(&user_id)
+        .fetch_optional(pool.get_ref())
+        .await?;
 
     let (password_hash,) = match row {
         None => return Err(AppError::not_found("User not found")),
@@ -272,13 +274,20 @@ mod tests {
     async fn me_json(pool: &SqlitePool, user_id: &str) -> serde_json::Value {
         let req = TestRequest::default().to_http_request();
         req.extensions_mut().insert(user_id.to_string());
-        let resp = get_me(web::Data::new(pool.clone()), web::Data::new(test_config()), req.clone())
-            .await
-            .unwrap()
-            .respond_to(&req)
-            .map_into_boxed_body();
+        let resp = get_me(
+            web::Data::new(pool.clone()),
+            web::Data::new(test_config()),
+            req.clone(),
+        )
+        .await
+        .unwrap()
+        .respond_to(&req)
+        .map_into_boxed_body();
         assert_eq!(resp.status(), 200);
-        let body = to_bytes(resp.into_body()).await.ok().expect("readable body");
+        let body = to_bytes(resp.into_body())
+            .await
+            .ok()
+            .expect("readable body");
         serde_json::from_slice(&body).unwrap()
     }
 
