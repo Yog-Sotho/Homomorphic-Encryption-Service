@@ -1,69 +1,169 @@
 <script lang="ts">
-  import { onDestroy } from 'svelte';
-  import { compute, errorMessage as messageOf } from '#lib/api.js';
+  import { onDestroy, onMount } from 'svelte';
+  import {
+    compute,
+    errorMessage as messageOf,
+    keys,
+    type JobResponse,
+    type Operation,
+    type ServerKeyInfo
+  } from '#lib/api.js';
+  import { FheClient } from '#lib/fhe/client.js';
+  import { base64ToBytes, bytesToBase64 } from '#lib/fhe/encoding.js';
+  import { deleteClientKey, getClientKey, saveClientKey } from '#lib/fhe/keystore.js';
+  import { OPERATIONS, UINT16_MAX, expectedResult, isUint16 } from '#lib/fhe/operations.js';
+
+  const POLL_INTERVAL_MS = 750;
+  const JOB_TIMEOUT_MS = 120_000;
+
+  type KeyState = 'loading' | 'unsupported' | 'none' | 'generating' | 'uploading' | 'ready' | 'error';
+  type Step = 'encrypting' | 'submitting' | 'computing' | 'decrypting';
+
+  let fhe: FheClient | null = null;
+  let keyState: KeyState = 'loading';
+  let activeKey: ServerKeyInfo | null = null;
+  /** Server keys this browser has no client key for (e.g. made on another device). */
+  let foreignKeys: ServerKeyInfo[] = [];
+  let keyError = '';
 
   let val1 = 10;
   let val2 = 5;
-  let operation = 'add' as 'add' | 'multiply';
-  let loading = false;
+  let operation: Operation = 'add';
+  let step: Step | null = null;
+  let result: { value: number; expected: number; jobId: string; ciphertextBytes: number } | null = null;
+  let inputBytes = 0;
+  let computeError = '';
+  let destroyed = false;
 
-  let plaintextResult: number | null = null;
-  let lastExpected: number | null = null;
-  let resultB64 = '';
-  let errorMessage = '';
-  let showFullCiphertext = false;
-  let copied = false;
+  $: opInfo = OPERATIONS.find((o) => o.id === operation) ?? OPERATIONS[0];
+  $: valid = isUint16(val1) && isUint16(val2);
+  $: expected = valid ? expectedResult(operation, val1, val2) : null;
+  $: busy = step !== null;
 
-  let _intervalHandle: ReturnType<typeof setInterval> | null = null;
-  onDestroy(() => { if (_intervalHandle !== null) clearInterval(_intervalHandle); });
+  onMount(async () => {
+    if (!FheClient.isSupported()) {
+      keyState = 'unsupported';
+      return;
+    }
+    fhe = new FheClient();
+    try {
+      const serverKeys = await keys.list();
+      for (const key of serverKeys) {
+        const local = await getClientKey(key.id);
+        if (local) {
+          await fhe.loadClientKey(local.clientKey);
+          activeKey = key;
+          break;
+        }
+      }
+      foreignKeys = serverKeys.filter((k) => k.id !== activeKey?.id);
+      keyState = activeKey ? 'ready' : 'none';
+    } catch (e) {
+      keyError = messageOf(e, 'Could not load your keys');
+      keyState = 'error';
+    }
+  });
 
-  $: maxVal = operation === 'multiply' ? 255 : 65535;
-  $: if (val1 !== null && val1 > maxVal) val1 = maxVal;
-  $: if (val2 !== null && val2 > maxVal) val2 = maxVal;
-  $: if (val1 !== null && val1 < 0) val1 = 0;
-  $: if (val2 !== null && val2 < 0) val2 = 0;
-  $: val1Clamped = Math.min(val1 || 0, maxVal);
-  $: val2Clamped = Math.min(val2 || 0, maxVal);
-  $: expectedResult = operation === 'add'
-    ? (val1Clamped + val2Clamped) % 65536
-    : (val1Clamped * val2Clamped) % 65536;
+  onDestroy(() => {
+    destroyed = true;
+    fhe?.terminate();
+  });
 
-  function clearResults() {
-    plaintextResult = null;
-    lastExpected = null;
-    resultB64 = '';
-    errorMessage = '';
-    showFullCiphertext = false;
+  async function generateKey() {
+    if (!fhe) return;
+    keyError = '';
+    try {
+      keyState = 'generating';
+      const generated = await fhe.generateKeys();
+      keyState = 'uploading';
+      const info = await keys.upload(new Uint8Array(generated.compressedServerKey));
+      try {
+        await saveClientKey(info.id, generated.clientKey);
+      } catch (e) {
+        // Without the client key the server key is useless; don't leave it behind.
+        await keys.remove(info.id).catch(() => {});
+        throw e;
+      }
+      activeKey = info;
+      keyState = 'ready';
+    } catch (e) {
+      keyError = messageOf(e, 'Key generation failed');
+      keyState = activeKey ? 'ready' : 'none';
+    }
   }
 
-  async function copyToClipboard(text: string) {
+  async function forgetKey(key: ServerKeyInfo) {
+    keyError = '';
     try {
-      await navigator.clipboard.writeText(text);
-      copied = true;
-      setTimeout(() => copied = false, 2000);
-    } catch {}
+      await keys.remove(key.id);
+      await deleteClientKey(key.id);
+      foreignKeys = foreignKeys.filter((k) => k.id !== key.id);
+      if (activeKey?.id === key.id) {
+        activeKey = null;
+        result = null;
+        keyState = 'none';
+      }
+    } catch (e) {
+      keyError = messageOf(e, 'Could not delete the key');
+    }
+  }
+
+  async function waitForJob(jobId: string): Promise<JobResponse> {
+    const deadline = Date.now() + JOB_TIMEOUT_MS;
+    for (;;) {
+      const job = await compute.getJobStatus(jobId);
+      if (job.status === 'completed' || job.status === 'failed') return job;
+      if (destroyed) throw new Error('Cancelled');
+      if (Date.now() > deadline) throw new Error('The computation timed out');
+      await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+    }
+  }
+
+  async function run() {
+    if (!fhe || !activeKey || !valid || expected === null) return;
+    const want = expected;
+    computeError = '';
+    result = null;
+    try {
+      step = 'encrypting';
+      const [a, b] = await fhe.encrypt([val1, val2]);
+      inputBytes = a.length + b.length;
+
+      step = 'submitting';
+      const job = await compute.submitJob(activeKey.id, operation, [bytesToBase64(a), bytesToBase64(b)]);
+
+      step = 'computing';
+      const done = await waitForJob(job.id);
+      if (done.status === 'failed' || !done.result_b64) {
+        throw new Error(done.error_message ?? 'The computation failed');
+      }
+
+      step = 'decrypting';
+      const ciphertext = base64ToBytes(done.result_b64);
+      const value = await fhe.decrypt(ciphertext);
+      result = { value, expected: want, jobId: job.id, ciphertextBytes: ciphertext.length };
+    } catch (e) {
+      computeError = messageOf(e, 'Computation failed');
+    } finally {
+      step = null;
+    }
   }
 
   function randomizeValues() {
-    val1 = Math.floor(Math.random() * (operation === 'multiply' ? 256 : 1024));
-    val2 = Math.floor(Math.random() * (operation === 'multiply' ? 256 : 1024));
+    val1 = Math.floor(Math.random() * (UINT16_MAX + 1));
+    val2 = Math.floor(Math.random() * (UINT16_MAX + 1));
   }
 
-  async function submitJob() {
-    loading = true;
-    const currentExpected = expectedResult;
-    clearResults();
-    try {
-      const res = await compute.sandboxCompute(val1Clamped, val2Clamped, operation);
-      plaintextResult = res.plaintext_result;
-      lastExpected = currentExpected;
-      resultB64 = res.result_b64;
-    } catch (e) {
-      errorMessage = messageOf(e, 'Computation failed');
-    } finally {
-      loading = false;
-    }
+  function formatBytes(n: number): string {
+    return n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)} MB` : `${(n / 1000).toFixed(1)} KB`;
   }
+
+  const STEP_LABELS: Record<Step, string> = {
+    encrypting: 'Encrypting in your browser…',
+    submitting: 'Sending ciphertexts…',
+    computing: 'Server computing on encrypted data…',
+    decrypting: 'Decrypting in your browser…'
+  };
 </script>
 
 <div class="dashboard">
@@ -73,137 +173,168 @@
       <h1>Homomorphic Compute Dashboard</h1>
     </div>
     <div class="spec-row">
-      <span class="spec">TFHE-rs BFV</span>
+      <span class="spec">TFHE (CGGI) · TFHE-rs</span>
       <span class="spec-sep">•</span>
-      <span class="spec">Radix64</span>
+      <span class="spec">FheUint16</span>
       <span class="spec-sep">•</span>
-      <span class="spec">Zero-Knowledge Sandbox</span>
+      <span class="spec">Client-side keys</span>
     </div>
   </div>
 
-  <div class="card compute-card">
+  <div class="card key-card" aria-live="polite">
     <div class="card-header">
-      <div class="card-icon">⚡</div>
-      <div class="card-title">New Computation</div>
-      <p class="card-subtitle">Encrypted arithmetic performed on the server without decryption.</p>
-      <button type="button" class="btn-secondary btn-sm" on:click={randomizeValues} style="margin-left: auto;" aria-label="Randomize input values">Randomize</button>
+      <div class="card-icon">🔑</div>
+      <div class="card-title">Your encryption key</div>
     </div>
+    <p class="card-subtitle key-explainer">
+      Your secret key is generated in this browser and never leaves it. The server only receives an
+      evaluation key, which lets it compute on your ciphertexts but not decrypt them.
+    </p>
 
-    <form on:submit|preventDefault={submitJob} class="compute-form">
-      <div class="field-block">
-        <div id="op-label" class="label-like">Operation</div>
-        <div class="op-tabs" role="group" aria-labelledby="op-label">
-          <button
-            type="button"
-            class="op-tab"
-            class:active={operation === 'add'}
-            aria-pressed={operation === 'add'}
-            on:click={() => { operation = 'add'; clearResults(); }}
-          >
-            <span class="op-sym">+</span> Add
-          </button>
-          <button
-            type="button"
-            class="op-tab"
-            class:active={operation === 'multiply'}
-            aria-pressed={operation === 'multiply'}
-            on:click={() => { operation = 'multiply'; clearResults(); }}
-          >
-            <span class="op-sym">×</span> Multiply
-          </button>
-        </div>
-        {#if operation === 'multiply'}
-          <p class="field-hint">Values capped at 255 — multiplying larger integers wraps around mod 65536.</p>
-        {/if}
+    {#if keyState === 'loading'}
+      <p class="key-status"><span class="spinner"></span> Loading keys…</p>
+    {:else if keyState === 'unsupported'}
+      <p class="error-text">
+        In-browser encryption needs a cross-origin isolated page (and Web Workers), which this
+        browser or deployment does not provide.
+      </p>
+    {:else if keyState === 'error'}
+      <p class="error-text">{keyError}</p>
+    {:else if keyState === 'generating'}
+      <p class="key-status"><span class="spinner"></span> Generating your key pair (a few seconds)…</p>
+    {:else if keyState === 'uploading'}
+      <p class="key-status"><span class="spinner"></span> Uploading the evaluation key (~60 MB)…</p>
+    {:else if keyState === 'none'}
+      <button type="button" class="btn-primary" on:click={generateKey}>Generate encryption key</button>
+    {:else if activeKey}
+      <div class="key-row">
+        <span class="badge badge-green">Ready</span>
+        <code class="key-id" title={activeKey.id}>{activeKey.id}</code>
+        <span class="ct-meta">evaluation key {formatBytes(activeKey.size_bytes)}</span>
+        <button type="button" class="btn-ghost btn-sm" on:click={() => activeKey && forgetKey(activeKey)}>
+          Delete key
+        </button>
       </div>
+      <p class="field-hint">
+        Stored only in this browser. Clearing site data loses it, and results encrypted under it can
+        no longer be decrypted.
+      </p>
+    {/if}
 
-      <div class="inputs-row">
-        <div class="field-block">
-          <label for="val1">Value A <span class="required" aria-hidden="true">*</span></label>
-          <input id="val1" type="number" bind:value={val1} min="0" max={maxVal} required />
-        </div>
-        <div class="op-glyph" aria-hidden="true">{operation === 'add' ? '+' : '×'}</div>
-        <div class="field-block">
-          <label for="val2">Value B <span class="required" aria-hidden="true">*</span></label>
-          <input id="val2" type="number" bind:value={val2} min="0" max={maxVal} required />
-        </div>
-        <div class="op-glyph" aria-hidden="true">=</div>
-        <div class="field-block expected-block">
-          <div class="label-like">Expected</div>
-          <div class="expected-val">{expectedResult}</div>
-        </div>
-      </div>
+    {#if keyError && keyState !== 'error'}
+      <p class="error-text" role="alert">{keyError}</p>
+    {/if}
 
-      <button type="submit" class="btn-primary" disabled={loading}>
-        {#if loading}
-          <span class="spinner"></span> Computing…
-        {:else}
-          Run
-        {/if}
-      </button>
-    </form>
+    {#if foreignKeys.length > 0 && keyState !== 'loading'}
+      <details class="foreign-keys">
+        <summary>{foreignKeys.length} key(s) registered from another browser</summary>
+        <p class="field-hint">This browser does not have their secret keys, so it cannot use them.</p>
+        <ul>
+          {#each foreignKeys as key (key.id)}
+            <li>
+              <code class="key-id">{key.id}</code>
+              <button type="button" class="btn-ghost btn-sm" on:click={() => forgetKey(key)}>Delete</button>
+            </li>
+          {/each}
+        </ul>
+      </details>
+    {/if}
   </div>
 
-  {#if errorMessage}
-    <div class="card result-card error-card" aria-live="polite">
-      <div class="result-header">
-        <span class="badge badge-red">Error</span>
-        <button class="btn-ghost dismiss-btn" on:click={clearResults} type="button">Dismiss</button>
+  {#if keyState === 'ready'}
+    <div class="card compute-card">
+      <div class="card-header">
+        <div class="card-icon">⚡</div>
+        <div class="card-title">New Computation</div>
+        <p class="card-subtitle">Encrypted locally, computed on ciphertext, decrypted locally.</p>
+        <button type="button" class="btn-secondary btn-sm" on:click={randomizeValues} style="margin-left: auto;" aria-label="Randomize input values">Randomize</button>
       </div>
-      <p class="error-text">{errorMessage}</p>
+
+      <form on:submit|preventDefault={run} class="compute-form">
+        <div class="field-block">
+          <div id="op-label" class="label-like">Operation</div>
+          <div class="op-tabs" role="group" aria-labelledby="op-label">
+            {#each OPERATIONS as op (op.id)}
+              <button
+                type="button"
+                class="op-tab"
+                class:active={operation === op.id}
+                aria-pressed={operation === op.id}
+                on:click={() => { operation = op.id; result = null; computeError = ''; }}
+              >
+                {op.label}
+              </button>
+            {/each}
+          </div>
+          <p class="field-hint">Unsigned 16-bit integers (0–65535); arithmetic wraps around modulo 65536.</p>
+        </div>
+
+        <div class="inputs-row">
+          <div class="field-block">
+            <label for="val1">Value A <span class="required" aria-hidden="true">*</span></label>
+            <input id="val1" type="number" bind:value={val1} min="0" max={UINT16_MAX} step="1" required />
+          </div>
+          <div class="op-glyph" aria-hidden="true">{opInfo.symbol}</div>
+          <div class="field-block">
+            <label for="val2">Value B <span class="required" aria-hidden="true">*</span></label>
+            <input id="val2" type="number" bind:value={val2} min="0" max={UINT16_MAX} step="1" required />
+          </div>
+          <div class="op-glyph" aria-hidden="true">=</div>
+          <div class="field-block expected-block">
+            <div class="label-like">Expected</div>
+            <div class="expected-val">{expected ?? '—'}</div>
+          </div>
+        </div>
+
+        <button type="submit" class="btn-primary" disabled={busy || !valid}>
+          {#if step}
+            <span class="spinner"></span> {STEP_LABELS[step]}
+          {:else}
+            Run
+          {/if}
+        </button>
+      </form>
     </div>
   {/if}
 
-  {#if plaintextResult !== null}
+  {#if computeError}
+    <div class="card result-card error-card" aria-live="polite">
+      <div class="result-header">
+        <span class="badge badge-red">Error</span>
+        <button class="btn-ghost dismiss-btn" on:click={() => (computeError = '')} type="button">Dismiss</button>
+      </div>
+      <p class="error-text">{computeError}</p>
+    </div>
+  {/if}
+
+  {#if result}
     <div class="card result-card success-card" aria-live="polite">
       <div class="result-header">
         <div class="badge-group">
-          <span class="badge badge-green">Result</span>
-          {#if plaintextResult === lastExpected}
-            <span class="badge badge-green">Verified Match</span>
+          <span class="badge badge-green">Decrypted locally</span>
+          {#if result.value === result.expected}
+            <span class="badge badge-green badge-match">Matches expected</span>
+          {:else}
+            <span class="badge badge-red">Does not match {result.expected}</span>
           {/if}
         </div>
-        <button class="btn-ghost dismiss-btn" on:click={clearResults} type="button">Clear</button>
+        <button class="btn-ghost dismiss-btn" on:click={() => (result = null)} type="button">Clear</button>
       </div>
 
       <div class="result-plaintext">
         <div class="result-label-row">
-          <span class="result-label">Plaintext</span>
-          {#if plaintextResult === expectedResult}
-            <span class="badge badge-green badge-match">Matches Expected</span>
-          {/if}
+          <span class="result-label">Result</span>
         </div>
-        <span class="result-number">{plaintextResult}</span>
+        <span class="result-number" data-testid="result-value">{result.value}</span>
       </div>
 
       <div class="divider"></div>
 
-      <div class="ciphertext-section">
-        <div class="ciphertext-header">
-          <span class="result-label">Ciphertext</span>
-          <span class="ct-meta">{resultB64.length} chars · TFHE-rs BFV</span>
-          <div class="ciphertext-actions">
-            <button
-              class="btn-secondary"
-              type="button"
-              on:click={() => showFullCiphertext = !showFullCiphertext}
-              aria-expanded={showFullCiphertext}
-              aria-label={showFullCiphertext ? 'Collapse ciphertext view' : 'Expand ciphertext view'}
-            >
-              {showFullCiphertext ? 'Collapse' : 'Expand'}
-            </button>
-            <button
-              class="btn-secondary"
-              type="button"
-              on:click={() => copyToClipboard(resultB64)}
-              aria-label={copied ? 'Ciphertext copied to clipboard' : 'Copy ciphertext to clipboard'}
-            >
-              {copied ? '✓ Copied' : 'Copy'}
-            </button>
-          </div>
-        </div>
-        <code class="ciphertext-value" class:collapsed={!showFullCiphertext}>{resultB64}</code>
-      </div>
+      <dl class="result-facts">
+        <div><dt>Sent to the server</dt><dd>2 ciphertexts, {formatBytes(inputBytes)}</dd></div>
+        <div><dt>Received</dt><dd>1 ciphertext, {formatBytes(result.ciphertextBytes)}</dd></div>
+        <div><dt>Job</dt><dd><code>{result.jobId}</code></dd></div>
+      </dl>
     </div>
   {/if}
 </div>
@@ -293,7 +424,6 @@
     color: var(--text-primary);
     box-shadow: 0 1px 3px rgba(0,0,0,0.35);
   }
-  .op-sym { font-family: var(--font-mono); font-size: 0.95rem; color: var(--accent); }
 
   .field-hint { font-size: 0.7375rem; color: var(--text-muted); margin-top: -0.625rem; margin-bottom: 1rem; }
 
@@ -355,35 +485,10 @@
     letter-spacing: -0.03em;
     line-height: 1;
   }
-
-  .ciphertext-section { display: flex; flex-direction: column; gap: 0.5rem; }
-  .ciphertext-header {
-    display: flex; align-items: center; gap: 0.625rem; flex-wrap: wrap;
-  }
   .ct-meta {
     font-family: var(--font-mono);
     font-size: 0.7rem; color: var(--text-muted);
     margin-right: auto;
-  }
-  .ciphertext-actions { display: flex; gap: 0.3rem; }
-  .ciphertext-value {
-    font-family: var(--font-mono);
-    font-size: 0.7rem;
-    color: var(--text-muted);
-    background: var(--bg-secondary);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    padding: 0.625rem 0.75rem;
-    word-break: break-all;
-    line-height: 1.7;
-  }
-  .ciphertext-value.collapsed {
-    max-height: 3.4rem;
-    overflow: hidden;
-    display: -webkit-box;
-    -webkit-line-clamp: 2;
-    line-clamp: 2;
-    -webkit-box-orient: vertical;
   }
 
   @media (max-width: 600px) {
@@ -393,4 +498,20 @@
     .op-glyph { display: none; }
     .expected-block { grid-column: span 2; }
   }
+  /* ── Key card ───────────────────────────────────── */
+  .key-explainer { margin: 0.25rem 0 0.75rem; }
+  .key-status { display: flex; align-items: center; gap: 0.5rem; color: var(--text-secondary); }
+  .key-row { display: flex; align-items: center; flex-wrap: wrap; gap: 0.5rem; }
+  .key-id {
+    font-family: var(--font-mono); font-size: 0.75rem; color: var(--text-secondary);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 22ch;
+  }
+  .foreign-keys { margin-top: 0.75rem; font-size: 0.85rem; color: var(--text-secondary); }
+  .foreign-keys ul { list-style: none; padding: 0; margin: 0.5rem 0 0; display: grid; gap: 0.35rem; }
+  .foreign-keys li { display: flex; align-items: center; gap: 0.5rem; }
+
+  .result-facts { display: grid; gap: 0.35rem; margin: 0; font-size: 0.85rem; }
+  .result-facts div { display: flex; gap: 0.75rem; }
+  .result-facts dt { color: var(--text-muted); min-width: 10rem; }
+  .result-facts dd { margin: 0; color: var(--text-secondary); font-family: var(--font-mono); overflow-wrap: anywhere; }
 </style>

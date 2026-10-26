@@ -7,6 +7,14 @@ import { defineConfig } from 'vite';
 // When running natively (pnpm dev on the host) it falls back to localhost:8080.
 const backendUrl = process.env.BACKEND_URL ?? 'http://localhost:8080';
 
+// TFHE's WASM build uses shared memory, which browsers only allow on cross-origin
+// isolated pages. Every response (pages, assets, workers) must carry these headers;
+// production sets them in server.js.
+const isolationHeaders = {
+  'Cross-Origin-Opener-Policy': 'same-origin',
+  'Cross-Origin-Embedder-Policy': 'require-corp'
+};
+
 export default defineConfig({
   plugins: [
     sveltekit({
@@ -19,7 +27,9 @@ export default defineConfig({
         mode: 'hash',
         directives: {
           'default-src': ['self'],
-          'script-src': ['self'],
+          // WebAssembly compilation needs 'wasm-unsafe-eval' (not 'unsafe-eval').
+          'script-src': ['self', 'wasm-unsafe-eval'],
+          'worker-src': ['self'],
           'style-src': ['self', 'unsafe-inline'],
           'img-src': ['self', 'data:'],
           'font-src': ['self'],
@@ -35,6 +45,7 @@ export default defineConfig({
   server: {
     port: 3000,
     strictPort: true,
+    headers: isolationHeaders,
     proxy: {
       '/api': { target: backendUrl, changeOrigin: true, secure: false }
     }
@@ -42,6 +53,7 @@ export default defineConfig({
   preview: {
     port: 4173,
     strictPort: true,
+    headers: isolationHeaders,
     proxy: {
       '/api': { target: backendUrl, changeOrigin: true, secure: false }
     }
@@ -49,6 +61,10 @@ export default defineConfig({
   build: {
     target: 'es2022'
   },
+  // The TFHE worker spawns rayon sub-workers with `new Worker(new URL(...))`,
+  // which needs ES-module workers; pre-bundling would break its relative imports.
+  worker: { format: 'es' },
+  optimizeDeps: { exclude: ['tfhe'] },
   test: {
     // Playwright specs live in e2e/ and run under `pnpm test:e2e`.
     include: ['src/**/*.test.ts']
