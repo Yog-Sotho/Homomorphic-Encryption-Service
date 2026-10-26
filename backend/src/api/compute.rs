@@ -1,238 +1,174 @@
-use crate::crypto::engine::{AppState, PLAIN_MODULUS};
+//! `/api/compute/jobs`: homomorphic jobs evaluated under the caller's own key.
+//!
+//! The server never sees plaintext: inputs arrive encrypted under the caller's
+//! client key, are evaluated with the caller's uploaded server key, and the
+//! encrypted result is returned for the caller to decrypt.
+
+use crate::config::Config;
+use crate::crypto::eval::{evaluate, EvalError, Operation};
+use crate::crypto::keys::{KeyStore, KeyStoreError};
+use crate::crypto::params::MAX_CIPHERTEXT_BYTES;
 use crate::db::models::{CreateJobRequest, Job, JobResponse};
 use crate::errors::AppError;
+use crate::middleware::quota::consume_compute_quota;
 use actix_web::{web, HttpResponse, Responder};
 use base64::{engine::general_purpose, Engine as _};
-use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
+use std::sync::Arc;
 use uuid::Uuid;
 
-#[derive(Deserialize)]
-pub struct SandboxRequest {
-    pub value1: u64,
-    pub value2: u64,
-    pub operation: String,
-}
+/// Each job takes exactly two operands.
+const INPUT_COUNT: usize = 2;
+/// Base64 length of the largest accepted ciphertext.
+const MAX_INPUT_B64_LEN: usize = (MAX_CIPHERTEXT_BYTES as usize).div_ceil(3) * 4;
 
-#[derive(Serialize)]
-pub struct SandboxResponse {
-    pub plaintext_result: u64,
-    pub result_b64: String,
-}
+const JOB_COLUMNS: &str =
+    "id, user_id, status, input_data_b64, operation, key_id, result_b64, error_message, created_at, updated_at";
 
-pub async fn sandbox_compute(
-    state: web::Data<AppState>,
-    req: web::Json<SandboxRequest>,
-) -> Result<impl Responder, AppError> {
-    if req.operation != "add" && req.operation != "multiply" {
-        return Err(AppError::bad_request(
-            "Unsupported operation. Use 'add' or 'multiply'.",
-        ));
-    }
-    if req.value1 >= PLAIN_MODULUS || req.value2 >= PLAIN_MODULUS {
+/// Checks the request shape and decodes the inputs (ciphertext validity is
+/// checked later against the caller's key).
+fn decode_inputs(inputs: &[String]) -> Result<Vec<Vec<u8>>, AppError> {
+    if inputs.len() != INPUT_COUNT {
         return Err(AppError::bad_request(format!(
-            "Values must be in the range 0–{}.",
-            PLAIN_MODULUS - 1
+            "Expected exactly {INPUT_COUNT} inputs, got {}",
+            inputs.len()
         )));
     }
-
-    let ctx = state.he_pool.acquire();
-    let v1 = req.value1;
-    let v2 = req.value2;
-    let op = req.operation.clone();
-
-    // Offload CPU-heavy HE operations to a blocking thread to keep the async executor responsive.
-    let (plaintext_result, result_ct) =
-        tokio::task::spawn_blocking(move || ctx.sandbox_compute_optimized(v1, v2, &op))
-            .await
-            .map_err(|e| AppError::internal(format!("Task join error: {}", e)))?
-            .map_err(|e| AppError::internal(format!("HE operation failed: {}", e)))?;
-
-    let result_b64 = general_purpose::STANDARD.encode(&result_ct);
-
-    Ok(HttpResponse::Ok().json(SandboxResponse {
-        plaintext_result,
-        result_b64,
-    }))
+    inputs
+        .iter()
+        .enumerate()
+        .map(|(i, input)| {
+            if input.len() > MAX_INPUT_B64_LEN {
+                return Err(AppError::bad_request(format!(
+                    "Input {} is larger than the {MAX_CIPHERTEXT_BYTES}-byte ciphertext limit",
+                    i + 1
+                )));
+            }
+            general_purpose::STANDARD
+                .decode(input)
+                .map_err(|_| AppError::bad_request(format!("Input {} is not valid base64", i + 1)))
+        })
+        .collect()
 }
 
+/// `POST /api/compute/jobs` — queue `operation(inputs[0], inputs[1])`.
 pub async fn submit_job(
     pool: web::Data<SqlitePool>,
-    state: web::Data<AppState>,
+    config: web::Data<Arc<Config>>,
+    store: web::Data<KeyStore>,
     req: web::Json<CreateJobRequest>,
     user_id: web::ReqData<String>,
 ) -> Result<impl Responder, AppError> {
+    let req = req.into_inner();
+    let user_id = user_id.into_inner();
+    let inputs = decode_inputs(&req.inputs)?;
+
+    let owns_key: Option<(String,)> =
+        sqlx::query_as("SELECT id FROM server_keys WHERE id = ? AND user_id = ?")
+            .bind(&req.key_id)
+            .bind(&user_id)
+            .fetch_optional(pool.get_ref())
+            .await?;
+    if owns_key.is_none() {
+        return Err(AppError::not_found("Server key not found"));
+    }
+
+    // Only accepted submissions are charged; polling and listing are free.
+    consume_compute_quota(pool.get_ref(), &user_id, config.daily_compute_quota).await?;
+
     let job_id = Uuid::new_v4().to_string();
-    let user_id_str = user_id.into_inner();
-
-    if req.input_data_b64.len() > 2_000_000 {
-        return Err(AppError::bad_request(
-            "Input payload too large. Maximum length is 2,000,000 characters.",
-        ));
-    }
-
-    if req.operation != "add" && req.operation != "multiply" {
-        return Err(AppError::bad_request(
-            "Unsupported operation. Use 'add' or 'multiply'.",
-        ));
-    }
-
     sqlx::query(
-        "INSERT INTO jobs (id, user_id, status, input_data_b64, operation) VALUES (?, ?, 'pending', ?, ?)",
+        "INSERT INTO jobs (id, user_id, status, input_data_b64, operation, key_id)
+         VALUES (?, ?, 'pending', ?, ?, ?)",
     )
     .bind(&job_id)
-    .bind(&user_id_str)
-    .bind(&req.input_data_b64)
-    .bind(&req.operation)
+    .bind(&user_id)
+    .bind(serde_json::to_string(&req.inputs).map_err(|e| AppError::internal(e.to_string()))?)
+    .bind(req.operation.as_str())
+    .bind(&req.key_id)
     .execute(pool.get_ref())
     .await?;
 
-    let pool_clone = pool.clone();
-    let state_clone = state.clone();
-    let job_id_clone = job_id.clone();
-    let input_b64 = req.input_data_b64.clone();
-    let op = req.operation.clone();
-
+    let pool = pool.get_ref().clone();
+    let id = job_id.clone();
     tokio::spawn(async move {
-        match try_process_job(
-            pool_clone.clone(),
-            state_clone,
-            job_id_clone.clone(),
-            input_b64,
-            op,
-        )
-        .await
-        {
-            Ok(()) => {}
-            Err(e) => {
-                log::error!("Job {} failed: {}", job_id_clone, e);
-                update_job_status(
-                    &pool_clone,
-                    &job_id_clone,
-                    "failed",
-                    None,
-                    Some(format!("Internal error: {}", e)),
-                )
-                .await;
-            }
-        }
+        run_job(&pool, store, &id, &req.key_id, req.operation, inputs).await;
     });
 
-    Ok(HttpResponse::Accepted().json(JobResponse {
-        id: job_id,
-        status: "pending".to_string(),
-        result_b64: None,
-        error_message: None,
-    }))
+    Ok(HttpResponse::Accepted()
+        .insert_header(("Location", format!("/api/compute/jobs/{job_id}")))
+        .json(JobResponse {
+            id: job_id,
+            status: "pending".to_string(),
+            result_b64: None,
+            error_message: None,
+        }))
 }
 
-async fn try_process_job(
-    pool: web::Data<SqlitePool>,
-    state: web::Data<AppState>,
-    job_id: String,
-    input_b64: String,
-    operation: String,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    sqlx::query(
-        "UPDATE jobs SET status = 'processing', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-    )
-    .bind(&job_id)
-    .execute(pool.get_ref())
-    .await?;
+/// Evaluates a job and records the outcome. Never panics the caller: every
+/// failure ends as a `failed` job with a user-safe message.
+async fn run_job(
+    pool: &SqlitePool,
+    store: web::Data<KeyStore>,
+    job_id: &str,
+    key_id: &str,
+    operation: Operation,
+    inputs: Vec<Vec<u8>>,
+) {
+    set_status(pool, job_id, "processing", None, None).await;
 
-    let inputs: Vec<String> =
-        serde_json::from_str(&input_b64).map_err(|_| "Invalid input format")?;
-
-    if inputs.len() != 2 {
-        update_job_status(
-            &pool,
-            &job_id,
-            "failed",
-            None,
-            Some("Expected 2 inputs".to_string()),
-        )
-        .await;
-        return Ok(());
-    }
-
-    let ct1_data = match general_purpose::STANDARD.decode(&inputs[0]) {
-        Ok(d) => d,
-        Err(_) => {
-            update_job_status(
-                &pool,
-                &job_id,
-                "failed",
-                None,
-                Some("Invalid Base64 for input 1".to_string()),
-            )
-            .await;
-            return Ok(());
-        }
-    };
-
-    let ct2_data = match general_purpose::STANDARD.decode(&inputs[1]) {
-        Ok(d) => d,
-        Err(_) => {
-            update_job_status(
-                &pool,
-                &job_id,
-                "failed",
-                None,
-                Some("Invalid Base64 for input 2".to_string()),
-            )
-            .await;
-            return Ok(());
-        }
-    };
-
-    let ctx = state.he_pool.acquire();
-
-    let result_data = tokio::task::spawn_blocking(move || {
-        if operation == "add" {
-            ctx.add_ciphertexts(&ct1_data, &ct2_data)
-        } else {
-            ctx.multiply_ciphertexts(&ct1_data, &ct2_data)
-        }
+    let key_id = key_id.to_string();
+    let outcome = web::block(move || -> Result<Vec<u8>, EvalError> {
+        let key = store.load(&key_id).map_err(|e| match e {
+            KeyStoreError::NotFound => {
+                EvalError::InvalidInput("Server key no longer exists".into())
+            }
+            KeyStoreError::Invalid(m) => EvalError::Internal(format!("stored key is invalid: {m}")),
+            KeyStoreError::Io(e) => EvalError::Internal(format!("key store: {e}")),
+        })?;
+        evaluate(&key, operation, &inputs[0], &inputs[1])
     })
-    .await
-    .map_err(|e| format!("Task join error: {}", e))?;
+    .await;
 
-    match result_data {
-        Ok(data) => {
-            let result_b64 = general_purpose::STANDARD.encode(&data);
-            update_job_status(&pool, &job_id, "completed", Some(result_b64), None).await;
+    match outcome {
+        Ok(Ok(result)) => {
+            let encoded = general_purpose::STANDARD.encode(result);
+            set_status(pool, job_id, "completed", Some(encoded), None).await;
         }
-        Err(e) => {
-            update_job_status(
-                &pool,
-                &job_id,
-                "failed",
-                None,
-                Some(format!("HE Error: {}", e)),
-            )
-            .await;
+        Ok(Err(EvalError::InvalidInput(message))) => {
+            set_status(pool, job_id, "failed", None, Some(message)).await;
+        }
+        Ok(Err(EvalError::Internal(detail))) => {
+            log::error!("Job {job_id} failed: {detail}");
+            set_status(pool, job_id, "failed", None, Some("Internal error".into())).await;
+        }
+        Err(join_error) => {
+            log::error!("Job {job_id} worker failed: {join_error}");
+            set_status(pool, job_id, "failed", None, Some("Internal error".into())).await;
         }
     }
-
-    Ok(())
 }
 
-async fn update_job_status(
-    pool: &web::Data<SqlitePool>,
+async fn set_status(
+    pool: &SqlitePool,
     job_id: &str,
     status: &str,
     result: Option<String>,
     error: Option<String>,
 ) {
-    let _ = sqlx::query(
-        "UPDATE jobs SET status = ?, result_b64 = ?, error_message = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+    let updated = sqlx::query(
+        "UPDATE jobs SET status = ?, result_b64 = ?, error_message = ?, updated_at = CURRENT_TIMESTAMP
+         WHERE id = ?",
     )
     .bind(status)
     .bind(result)
     .bind(error)
     .bind(job_id)
-    .execute(pool.get_ref())
+    .execute(pool)
     .await;
+    if let Err(e) = updated {
+        log::error!("Failed to set job {job_id} to {status}: {e}");
+    }
 }
 
 pub async fn get_job_status(
@@ -240,15 +176,11 @@ pub async fn get_job_status(
     job_id: web::Path<String>,
     user_id: web::ReqData<String>,
 ) -> Result<impl Responder, AppError> {
-    let jid = job_id.into_inner();
-    let uid = user_id.into_inner();
-
-    let job: Option<Job> = sqlx::query_as(
-        "SELECT id, user_id, status, input_data_b64, operation, result_b64, error_message, created_at, updated_at \
-         FROM jobs WHERE id = ? AND user_id = ?",
-    )
-    .bind(&jid)
-    .bind(&uid)
+    let job: Option<Job> = sqlx::query_as(&format!(
+        "SELECT {JOB_COLUMNS} FROM jobs WHERE id = ? AND user_id = ?"
+    ))
+    .bind(job_id.into_inner())
+    .bind(user_id.into_inner())
     .fetch_optional(pool.get_ref())
     .await?;
 
@@ -262,12 +194,10 @@ pub async fn list_jobs(
     pool: web::Data<SqlitePool>,
     user_id: web::ReqData<String>,
 ) -> Result<impl Responder, AppError> {
-    let uid = user_id.into_inner();
-    let jobs: Vec<Job> = sqlx::query_as(
-        "SELECT id, user_id, status, input_data_b64, operation, result_b64, error_message, created_at, updated_at \
-         FROM jobs WHERE user_id = ? ORDER BY created_at DESC LIMIT 50",
-    )
-    .bind(&uid)
+    let jobs: Vec<Job> = sqlx::query_as(&format!(
+        "SELECT {JOB_COLUMNS} FROM jobs WHERE user_id = ? ORDER BY created_at DESC LIMIT 50"
+    ))
+    .bind(user_id.into_inner())
     .fetch_all(pool.get_ref())
     .await?;
 
@@ -277,70 +207,15 @@ pub async fn list_jobs(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::crypto::engine::HeContextPool;
-    use actix_web::test::TestRequest;
-    use actix_web::web::ReqData;
-    use actix_web::FromRequest;
-    use actix_web::HttpMessage;
-    use std::sync::atomic::AtomicUsize;
-    use std::sync::Arc;
 
-    #[tokio::test]
-    async fn test_submit_job_length_validation() {
-        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
-        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+    #[test]
+    fn decode_inputs_enforces_count_size_and_encoding() {
+        let ok = general_purpose::STANDARD.encode(b"ciphertext");
+        assert_eq!(decode_inputs(&[ok.clone(), ok.clone()]).unwrap().len(), 2);
 
-        // Insert a mock user to satisfy foreign key constraint in the jobs table
-        sqlx::query(
-            "INSERT INTO users (id, email, password_hash, email_verified) VALUES (?, 'user@example.com', '', 1)"
-        )
-        .bind("user_id_123")
-        .execute(&pool)
-        .await
-        .unwrap();
-
-        let he_pool = Arc::new(HeContextPool {
-            contexts: vec![],
-            counter: AtomicUsize::new(0),
-        });
-        let state = web::Data::new(AppState { he_pool });
-
-        let pool_data = web::Data::new(pool);
-
-        // 1. Valid input
-        let req_valid = web::Json(CreateJobRequest {
-            input_data_b64: "[\"ct1\", \"ct2\"]".to_string(),
-            operation: "add".to_string(),
-        });
-
-        // Create http request and mock ReqData
-        let http_req = TestRequest::default().to_http_request();
-        http_req.extensions_mut().insert("user_id_123".to_string());
-        let user_id = ReqData::<String>::extract(&http_req).await.unwrap();
-
-        let res_valid = submit_job(pool_data.clone(), state.clone(), req_valid, user_id).await;
-        assert!(res_valid.is_ok());
-
-        // 2. Too long input (2,000,001 characters)
-        let req_too_long = web::Json(CreateJobRequest {
-            input_data_b64: "a".repeat(2_000_001),
-            operation: "add".to_string(),
-        });
-
-        let http_req2 = TestRequest::default().to_http_request();
-        http_req2.extensions_mut().insert("user_id_123".to_string());
-        let user_id2 = ReqData::<String>::extract(&http_req2).await.unwrap();
-
-        let res_too_long = submit_job(pool_data, state, req_too_long, user_id2).await;
-        assert!(res_too_long.is_err());
-        match res_too_long.err().unwrap() {
-            AppError::BadRequest(msg) => {
-                assert_eq!(
-                    msg,
-                    "Input payload too large. Maximum length is 2,000,000 characters."
-                );
-            }
-            other => panic!("Expected BadRequest error, got {:?}", other),
-        }
+        assert!(decode_inputs(std::slice::from_ref(&ok)).is_err());
+        assert!(decode_inputs(&[ok.clone(), ok.clone(), ok.clone()]).is_err());
+        assert!(decode_inputs(&[ok.clone(), "not base64!".into()]).is_err());
+        assert!(decode_inputs(&[ok, "A".repeat(MAX_INPUT_B64_LEN + 4)]).is_err());
     }
 }

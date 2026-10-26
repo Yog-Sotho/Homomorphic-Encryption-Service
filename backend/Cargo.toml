@@ -32,6 +32,10 @@ url = "2"
 lettre = { version = "0.11", default-features = false, features = ["smtp-transport", "tokio1-rustls-tls", "builder", "hostname", "pool"] }
 sha2 = "0.10"
 
+[dev-dependencies]
+# Already in the tree via actix-web; named here for the test service request type.
+actix-http = "3"
+
 # TFHE-rs is unusably slow without optimisation, so dependencies are built
 # release-like in dev/test while our own crate stays fast to compile. Debuginfo,
 # debug assertions and overflow checks in tfhe-fft's SIMD code turn a <1 min

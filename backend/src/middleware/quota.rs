@@ -1,62 +1,53 @@
-use crate::config::Config;
-use actix_web::middleware::Next;
-use actix_web::{
-    body::BoxBody,
-    dev::{ServiceRequest, ServiceResponse},
-    Error, HttpMessage, HttpResponse,
-};
+use crate::errors::AppError;
 use sqlx::SqlitePool;
-use std::sync::Arc;
 
-pub async fn quota_middleware<B: actix_web::body::MessageBody + 'static>(
-    req: ServiceRequest,
-    next: Next<B>,
-) -> Result<ServiceResponse<BoxBody>, Error> {
-    let user_id = req.extensions().get::<String>().cloned();
-    let user_id = match user_id {
-        Some(id) => id,
-        None => return next.call(req).await.map(|r| r.map_into_boxed_body()),
-    };
+/// Charges one computation against the user's daily quota (UTC days).
+///
+/// Called by job submission only, so polling a job's status or listing jobs never
+/// uses up quota. Check and increment happen in one atomic statement.
+pub async fn consume_compute_quota(
+    pool: &SqlitePool,
+    user_id: &str,
+    daily_quota: usize,
+) -> Result<(), AppError> {
+    let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+    let (count,): (i64,) = sqlx::query_as(
+        "INSERT INTO daily_compute_usage (user_id, date, count) VALUES (?, ?, 1)
+         ON CONFLICT(user_id, date) DO UPDATE SET count = count + 1
+         RETURNING count",
+    )
+    .bind(user_id)
+    .bind(&today)
+    .fetch_one(pool)
+    .await?;
 
-    let pool = req.app_data::<actix_web::web::Data<SqlitePool>>().cloned();
-    let config = req.app_data::<actix_web::web::Data<Arc<Config>>>().cloned();
-
-    if let (Some(pool), Some(config)) = (pool, config) {
-        let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
-        let quota = config.daily_compute_quota as i64;
-
-        // Optimized: Combined quota check and increment into a single atomic DB roundtrip using RETURNING.
-        // This reduces database latency and load by 50% for every computation request.
-        let result = sqlx::query_as::<_, (i64,)>(
-            "INSERT INTO daily_compute_usage (user_id, date, count) VALUES (?, ?, 1)
-             ON CONFLICT(user_id, date) DO UPDATE SET count = count + 1
-             RETURNING count",
-        )
-        .bind(&user_id)
-        .bind(&today)
-        .fetch_one(pool.get_ref())
-        .await;
-
-        match result {
-            Ok((count,)) => {
-                if count > quota {
-                    let resp = HttpResponse::TooManyRequests().json(serde_json::json!({
-                        "message": format!("Daily compute quota of {} operations reached. Resets at midnight UTC.", quota)
-                    }));
-                    let (parts, _) = req.into_parts();
-                    return Ok(ServiceResponse::new(parts, resp).map_into_boxed_body());
-                }
-            }
-            Err(e) => {
-                log::error!("Quota DB error for user {}: {}", user_id, e);
-                let resp = HttpResponse::TooManyRequests().json(serde_json::json!({
-                    "message": "Service temporarily unavailable. Please try again."
-                }));
-                let (parts, _) = req.into_parts();
-                return Ok(ServiceResponse::new(parts, resp).map_into_boxed_body());
-            }
-        }
+    if count > daily_quota as i64 {
+        return Err(AppError::too_many_requests(format!(
+            "Daily compute quota of {daily_quota} operations reached. Resets at midnight UTC."
+        )));
     }
+    Ok(())
+}
 
-    next.call(req).await.map(|r| r.map_into_boxed_body())
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn allows_up_to_the_quota_then_rejects() {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+        sqlx::query(
+            "INSERT INTO users (id, email, password_hash) VALUES ('u1', 'a@example.com', '')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        for _ in 0..3 {
+            consume_compute_quota(&pool, "u1", 3).await.unwrap();
+        }
+        let err = consume_compute_quota(&pool, "u1", 3).await.unwrap_err();
+        assert!(matches!(err, AppError::TooManyRequests(_)));
+    }
 }

@@ -8,7 +8,8 @@
     "preview": "vite preview",
     "check": "svelte-kit sync && svelte-check --fail-on-warnings",
     "test": "vitest run",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "start": "node server.js"
   },
   "devDependencies": {
     "@playwright/test": "1.63.0",
@@ -25,5 +26,8 @@
   "type": "module",
   "imports": {
     "#lib/*": "./src/lib/*"
+  },
+  "dependencies": {
+    "tfhe": "1.8.2"
   }
 }

@@ -7,6 +7,10 @@ settings:
 importers:
 
   .:
+    dependencies:
+      tfhe:
+        specifier: 1.8.2
+        version: 1.8.2
     devDependencies:
       '@playwright/test':
         specifier: 1.63.0
@@ -468,6 +472,9 @@ packages:
   svelte@5.57.2:
     resolution: {integrity: sha512-1YiPCAXT0Ct6g1vOMmSLa0Nsc3QRMvtDF32ihgglGVrugIuIK38RyDiFNXVDhtQ81TJjSO57NdMw6DyYLqSGDQ==}
     engines: {node: '>=18'}
+
+  tfhe@1.8.2:
+    resolution: {integrity: sha512-4uuJDE6OIu43E3HGbSl55erbWZ0ATiWNNyB3Z9RRzZt/DpEbgIZctrxnTGOomKj57NSOuAPt5aM8McojJgi+mw==}
 
   tinybench@6.2.2:
     resolution: {integrity: sha512-nIZ2N2dFpjBsg2hgitKu7mA+FvsIJuGJOwysRngmVRRmWgR/UyPjwJj8c/fT/dhm8EkHnF5EOogRf+0Z2qrimA==}
@@ -935,6 +942,8 @@ snapshots:
       zimmerframe: 1.1.4
     transitivePeerDependencies:
       - '@typescript-eslint/types'
+
+  tfhe@1.8.2: {}
 
   tinybench@6.2.2: {}
 
