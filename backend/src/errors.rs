@@ -1,4 +1,7 @@
-use actix_web::{http::StatusCode, HttpResponse, ResponseError};
+use actix_web::{
+    http::{header, StatusCode},
+    HttpResponse, ResponseError,
+};
 use serde::Serialize;
 use std::fmt;
 
@@ -9,7 +12,19 @@ pub enum AppError {
     NotFound(String),
     BadRequest(String),
     Conflict(String),
-    TooManyRequests(String),
+    /// The request is well formed but cannot be applied (e.g. an
+    /// `Idempotency-Key` reused for a different request).
+    Unprocessable(String),
+    /// 429. `retry_after` (seconds) becomes a `Retry-After` header.
+    TooManyRequests {
+        message: String,
+        retry_after: Option<u64>,
+    },
+    /// 503: temporarily unable to accept work; retry after `retry_after` seconds.
+    ServiceUnavailable {
+        message: String,
+        retry_after: u64,
+    },
     Internal(String),
 }
 
@@ -29,8 +44,20 @@ impl AppError {
     pub fn conflict(msg: impl Into<String>) -> Self {
         AppError::Conflict(msg.into())
     }
-    pub fn too_many_requests(msg: impl Into<String>) -> Self {
-        AppError::TooManyRequests(msg.into())
+    pub fn unprocessable(msg: impl Into<String>) -> Self {
+        AppError::Unprocessable(msg.into())
+    }
+    pub fn too_many_requests(msg: impl Into<String>, retry_after: Option<u64>) -> Self {
+        AppError::TooManyRequests {
+            message: msg.into(),
+            retry_after,
+        }
+    }
+    pub fn service_unavailable(msg: impl Into<String>, retry_after: u64) -> Self {
+        AppError::ServiceUnavailable {
+            message: msg.into(),
+            retry_after,
+        }
     }
     pub fn internal(msg: impl Into<String>) -> Self {
         AppError::Internal(msg.into())
@@ -50,7 +77,9 @@ impl fmt::Display for AppError {
             AppError::NotFound(m) => write!(f, "{}", m),
             AppError::BadRequest(m) => write!(f, "{}", m),
             AppError::Conflict(m) => write!(f, "{}", m),
-            AppError::TooManyRequests(m) => write!(f, "{}", m),
+            AppError::Unprocessable(m) => write!(f, "{}", m),
+            AppError::TooManyRequests { message, .. } => write!(f, "{}", message),
+            AppError::ServiceUnavailable { message, .. } => write!(f, "{}", message),
             AppError::Internal(_) => write!(f, "Internal server error"),
         }
     }
@@ -64,7 +93,9 @@ impl ResponseError for AppError {
             AppError::NotFound(_) => StatusCode::NOT_FOUND,
             AppError::BadRequest(_) => StatusCode::BAD_REQUEST,
             AppError::Conflict(_) => StatusCode::CONFLICT,
-            AppError::TooManyRequests(_) => StatusCode::TOO_MANY_REQUESTS,
+            AppError::Unprocessable(_) => StatusCode::UNPROCESSABLE_ENTITY,
+            AppError::TooManyRequests { .. } => StatusCode::TOO_MANY_REQUESTS,
+            AppError::ServiceUnavailable { .. } => StatusCode::SERVICE_UNAVAILABLE,
             AppError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -73,7 +104,16 @@ impl ResponseError for AppError {
         if let AppError::Internal(msg) = self {
             log::error!("Internal error: {}", msg);
         }
-        HttpResponse::build(self.status_code()).json(ErrorBody {
+        let mut response = HttpResponse::build(self.status_code());
+        let retry_after = match self {
+            AppError::TooManyRequests { retry_after, .. } => *retry_after,
+            AppError::ServiceUnavailable { retry_after, .. } => Some(*retry_after),
+            _ => None,
+        };
+        if let Some(seconds) = retry_after {
+            response.insert_header((header::RETRY_AFTER, seconds.to_string()));
+        }
+        response.json(ErrorBody {
             message: self.to_string(),
         })
     }

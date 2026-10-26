@@ -11,10 +11,11 @@ interface Captured {
   keyUpload: Buffer | null;
   bodies: Buffer[];
   jobs: { key_id: string; operation: string; inputs: string[] }[];
+  idempotencyKeys: (string | undefined)[];
 }
 
 async function mockFheApi(page: Page): Promise<Captured> {
-  const captured: Captured = { keyUpload: null, bodies: [], jobs: [] };
+  const captured: Captured = { keyUpload: null, bodies: [], jobs: [], idempotencyKeys: [] };
   let registered = false;
   let polls = 0;
 
@@ -52,20 +53,24 @@ async function mockFheApi(page: Page): Promise<Captured> {
   await page.route('**/api/compute/jobs', async (route) => {
     const job = route.request().postDataJSON() as Captured['jobs'][number];
     captured.jobs.push(job);
+    captured.idempotencyKeys.push(route.request().headers()['idempotency-key']);
     polls = 0;
     await route.fulfill({
       status: 202,
-      json: { id: `job-${captured.jobs.length}`, status: 'pending', result_b64: null, error_message: null }
+      json: { id: `job-${captured.jobs.length}`, status: 'pending', error_message: null }
+    });
+  });
+  await page.route('**/api/compute/jobs/job-*/result', async (route) => {
+    // "Compute" by echoing the first input back: it decrypts to the first operand.
+    await route.fulfill({
+      contentType: 'application/octet-stream',
+      body: Buffer.from(captured.jobs.at(-1)!.inputs[0], 'base64')
     });
   });
   await page.route('**/api/compute/jobs/job-*', async (route) => {
-    const last = captured.jobs.at(-1)!;
     polls += 1;
     await route.fulfill({
-      json:
-        polls < 2
-          ? { id: 'job', status: 'processing', result_b64: null, error_message: null }
-          : { id: 'job', status: 'completed', result_b64: last.inputs[0], error_message: null }
+      json: { id: 'job', status: polls < 2 ? 'processing' : 'completed', error_message: null }
     });
   });
   return captured;
@@ -121,6 +126,7 @@ test('keys are generated and used in the browser; only the evaluation key is upl
   expect(job.key_id).toBe(KEY_ID);
   expect(job.operation).toBe('max');
   expect(job.inputs).toHaveLength(2);
+  expect(captured.idempotencyKeys[0]).toMatch(/^[0-9a-f-]{36}$/);
   for (const input of job.inputs) {
     const bytes = Buffer.from(input, 'base64');
     expect(bytes.length).toBeGreaterThan(100_000); // a ciphertext, not a plaintext number

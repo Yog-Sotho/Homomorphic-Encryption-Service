@@ -89,26 +89,50 @@ Content-Type: application/octet-stream
 
 ```
 POST /api/compute/jobs
+Idempotency-Key: 5b0c…            (optional, recommended)
 { "key_id": "8e521fee-…", "operation": "multiply", "inputs": ["<base64>", "<base64>"] }
 
 202 Accepted
-{ "id": "…", "status": "pending", "result_b64": null, "error_message": null }
+Location: /api/compute/jobs/3f2a…
+{ "id": "3f2a…", "status": "pending", "operation": "multiply", "key_id": "8e521fee-…",
+  "attempts": 0, "error_message": null, "input_bytes": 264202, "result_bytes": null,
+  "created_at": "…", "started_at": null, "finished_at": null }
 ```
 
 Each input is the standard base64 of a `safe_serialize`d `FheUint16` encrypted with
 the client key that belongs to `key_id`. `operation` is one of `add`, `subtract`,
 `multiply`, `min` or `max`.
 
+**Idempotency.** If a submission fails with a network error, resend it with the same
+`Idempotency-Key` (any unique string of up to 255 visible ASCII characters, such as a
+UUID). You get the original job back, marked `Idempotent-Replayed: true`, instead of
+a second job, and you are not charged twice.
+
 ### Get the result
 
-`GET /api/compute/jobs/{id}` returns the job. Poll until `status` is `completed`, then
-base64-decode `result_b64`, `safe_deserialize` it as `FheUint16` and decrypt it with
+Poll `GET /api/compute/jobs/{id}` until `status` is `completed` or `failed`. Then
+`GET /api/compute/jobs/{id}/result` returns the encrypted result as raw bytes
+(`application/octet-stream`): `safe_deserialize` it as `FheUint16` and decrypt it with
 your client key. If `status` is `failed`, `error_message` says why.
 
-### Quotas
+Jobs survive server restarts, and the server retries a job itself if it hits an
+internal error. `attempts` shows how many times it has been started.
 
-Each submitted job counts against a daily quota (100 by default, reset at midnight
-UTC). Checking status and listing jobs do not count.
+### List and delete jobs
+
+`GET /api/compute/jobs` lists your jobs, newest first, 20 at a time (`?limit=` up to
+100). When `next_cursor` is not null, pass it as `?cursor=` for the next page.
+`DELETE /api/compute/jobs/{id}` deletes a finished or waiting job and its ciphertexts.
+Finished jobs are deleted automatically after 7 days (the operator can change this),
+so fetch results before then.
+
+### Quotas and limits
+
+Each accepted job counts against a daily quota (100 by default, reset at midnight
+UTC). Checking status, listing jobs and fetching results do not count. You can have
+up to 10 jobs waiting or running at once. Responses that ask you to slow down carry a
+`Retry-After` header with the number of seconds to wait, and refused submissions are
+not charged.
 
 ## 4. Troubleshooting
 
@@ -120,7 +144,12 @@ UTC). Checking status and listing jobs do not count.
 | `413 Payload Too Large` | The upload is over the size limit | Upload only the compressed server key, never the full server key |
 | Job `failed`: "Input 1 is not a valid FheUint16 ciphertext for this key" | The input is not an `FheUint16`, is corrupted, or was made with other parameters | Encrypt with the client key that belongs to `key_id` and `safe_serialize` the result |
 | `404` "Server key not found" | The key id is wrong, deleted, or belongs to another account | List your keys with `GET /api/keys` |
-| `429` "Daily compute quota … reached" | You submitted the maximum number of jobs today | Wait until midnight UTC |
+| `429` "Daily compute quota … reached" | You submitted the maximum number of jobs today | Wait until midnight UTC (`Retry-After` says how long) |
+| `429` "You have N jobs waiting or running" | Too many of your jobs are unfinished | Wait for some to finish, then resubmit |
+| `503` "The job queue is full" | The service is busy | Retry after the `Retry-After` seconds |
+| `422` "This Idempotency-Key was already used for a different request" | You reused a key for a new request | Use a new key for each new job |
+| `409` on `…/result` | The job has not completed | Poll the job until `status` is `completed` |
+| Job `failed`: "Timed out after N seconds" | The computation took longer than the server allows | Contact the operator |
 | The decrypted value is meaningless | You decrypted with a different client key than the one the inputs were encrypted with | Use the client key that matches the job's `key_id` |
 
 ## 5. FAQ

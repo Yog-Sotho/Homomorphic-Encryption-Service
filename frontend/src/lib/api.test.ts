@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { ApiError, auth, errorMessage, user } from './api.js';
+import { ApiError, auth, compute, errorMessage, user } from './api.js';
 
 function jsonResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {
@@ -118,5 +118,56 @@ describe('api client', () => {
       message: 'Invalid credentials'
     });
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries a submission once after a network error with the same idempotency key', async () => {
+    fetchMock
+      .mockRejectedValueOnce(new TypeError('fetch failed'))
+      .mockResolvedValueOnce(jsonResponse(202, { id: 'job-1', status: 'pending' }));
+
+    await expect(compute.submitJob('key-1', 'add', ['YQ==', 'Yg=='])).resolves.toMatchObject({
+      id: 'job-1'
+    });
+
+    const keys = fetchMock.mock.calls.map(
+      ([, init]) => (init?.headers as Record<string, string>)['Idempotency-Key']
+    );
+    expect(keys).toHaveLength(2);
+    expect(keys[0]).toMatch(/^[0-9a-f-]{36}$/);
+    expect(keys[1]).toBe(keys[0]);
+  });
+
+  it('does not retry submissions the server refused', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(503, { message: 'The job queue is full' }));
+
+    await expect(compute.submitJob('key-1', 'add', ['YQ==', 'Yg=='])).rejects.toMatchObject({
+      status: 503,
+      message: 'The job queue is full'
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns job results as bytes and reports errors from the result endpoint', async () => {
+    fetchMock
+      .mockResolvedValueOnce(new Response(new Uint8Array([1, 2, 3]), { status: 200 }))
+      .mockResolvedValueOnce(jsonResponse(409, { message: 'Job is pending' }));
+
+    await expect(compute.getJobResult('job/1')).resolves.toEqual(new Uint8Array([1, 2, 3]));
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/compute/jobs/job%2F1/result');
+    await expect(compute.getJobResult('job-2')).rejects.toMatchObject({
+      status: 409,
+      message: 'Job is pending'
+    });
+  });
+
+  it('pages through jobs with a cursor', async () => {
+    fetchMock.mockImplementation(async () => jsonResponse(200, { data: [], next_cursor: null }));
+
+    await compute.listJobs();
+    await compute.listJobs('abc', 50);
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      '/api/compute/jobs',
+      '/api/compute/jobs?cursor=abc&limit=50'
+    ]);
   });
 });

@@ -42,6 +42,11 @@ impl Operation {
         }
     }
 
+    /// The inverse of [`as_str`](Self::as_str).
+    pub fn parse(name: &str) -> Option<Operation> {
+        Self::ALL.into_iter().find(|op| op.as_str() == name)
+    }
+
     /// Plaintext reference semantics, used by tests and clients to check results.
     #[cfg(test)]
     pub fn apply_plain(self, a: u16, b: u16) -> u16 {

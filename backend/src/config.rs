@@ -1,6 +1,7 @@
 use dotenvy::dotenv;
 use std::env;
 use std::path::PathBuf;
+use std::time::Duration;
 
 /// Compressed TFHE server keys are ~60 MB with the default parameters.
 const DEFAULT_MAX_SERVER_KEY_BYTES: u64 = 80 * 1024 * 1024;
@@ -17,6 +18,21 @@ pub struct Config {
     pub max_keys_per_user: i64,
     /// Decompressed server keys kept in memory (~180 MB each).
     pub key_cache_capacity: usize,
+    /// Directory holding job inputs and results (`<id>/{in0,in1,out}`).
+    pub job_store_dir: PathBuf,
+    /// Jobs evaluated concurrently. TFHE already parallelises each operation
+    /// across cores, so a small number keeps the CPU busy without thrashing.
+    pub he_workers: usize,
+    /// A job running longer than this is failed.
+    pub job_timeout: Duration,
+    /// Attempts per job before an internal error becomes final.
+    pub max_job_attempts: i64,
+    /// Pending + running jobs across all users before submissions get 503.
+    pub max_queued_jobs: i64,
+    /// Pending + running jobs per user before submissions get 429.
+    pub max_active_jobs_per_user: i64,
+    /// Finished jobs (and their stored ciphertexts) are deleted after this many days.
+    pub job_retention_days: i64,
     pub app_base_url: String,
     pub google_client_id: Option<String>,
     pub google_client_secret: Option<String>,
@@ -48,6 +64,14 @@ impl Config {
             .unwrap_or(2)
             .max(1);
 
+        let job_number = |name: &str, default: i64| {
+            env::var(name)
+                .ok()
+                .and_then(|v| v.parse::<i64>().ok())
+                .unwrap_or(default)
+                .max(1)
+        };
+
         let key_cache_capacity = env::var("KEY_CACHE_CAPACITY")
             .ok()
             .and_then(|v| v.parse::<usize>().ok())
@@ -75,6 +99,15 @@ impl Config {
             max_server_key_bytes,
             max_keys_per_user,
             key_cache_capacity,
+            job_store_dir: env::var("JOB_STORE_DIR")
+                .unwrap_or_else(|_| "./data/jobs".to_string())
+                .into(),
+            he_workers: job_number("HE_WORKERS", 2) as usize,
+            job_timeout: Duration::from_secs(job_number("JOB_TIMEOUT_SECS", 300) as u64),
+            max_job_attempts: job_number("MAX_JOB_ATTEMPTS", 3),
+            max_queued_jobs: job_number("MAX_QUEUED_JOBS", 1000),
+            max_active_jobs_per_user: job_number("MAX_ACTIVE_JOBS_PER_USER", 10),
+            job_retention_days: job_number("JOB_RETENTION_DAYS", 7),
             app_base_url: env::var("APP_BASE_URL")
                 .unwrap_or_else(|_| "http://localhost:3000".to_string()),
             google_client_id: env::var("GOOGLE_CLIENT_ID").ok(),
@@ -94,17 +127,24 @@ impl Config {
 
 #[cfg(test)]
 impl Config {
-    /// Configuration for unit and integration tests; `key_store_dir` is the
-    /// caller's temporary directory.
-    pub fn for_tests(key_store_dir: PathBuf) -> Self {
+    /// Configuration for unit and integration tests. Keys and job data go in
+    /// `keys/` and `jobs/` under the caller's temporary directory.
+    pub fn for_tests(data_dir: PathBuf) -> Self {
         Config {
             database_url: "sqlite::memory:".to_string(),
             jwt_secret: "test_secret_key_at_least_32_bytes_long".to_string(),
             server_addr: "127.0.0.1:8080".to_string(),
-            key_store_dir,
+            key_store_dir: data_dir.join("keys"),
             max_server_key_bytes: DEFAULT_MAX_SERVER_KEY_BYTES,
             max_keys_per_user: 2,
             key_cache_capacity: 2,
+            job_store_dir: data_dir.join("jobs"),
+            he_workers: 2,
+            job_timeout: Duration::from_secs(120),
+            max_job_attempts: 3,
+            max_queued_jobs: 1000,
+            max_active_jobs_per_user: 10,
+            job_retention_days: 7,
             app_base_url: "http://localhost:3000".to_string(),
             google_client_id: None,
             google_client_secret: None,
