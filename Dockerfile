@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 # Builder: tfhe 1.8 requires Rust >= 1.91.1 (see backend/Cargo.toml rust-version).
-FROM rust:1.97-bookworm AS builder
+FROM rust:1.99-bookworm AS builder
 WORKDIR /usr/src/he-backend
 
 # Cache dependencies: compile a dummy binary first so the layer is reused
