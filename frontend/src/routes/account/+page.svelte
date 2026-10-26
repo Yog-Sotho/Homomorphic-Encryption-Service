@@ -1,19 +1,9 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
-  import { base } from '$app/paths';
-  import { user, auth } from '$lib/api';
-  import { userStore } from '$lib/stores';
-
-  interface UserProfile {
-    id: string;
-    email: string;
-    created_at: string;
-    email_verified: boolean;
-    has_password: boolean;
-    oauth_providers: string[];
-    daily_usage: { count: number; quota: number; date: string };
-  }
+  import { resolve } from '$app/paths';
+  import { ApiError, errorMessage, user, type UserProfile } from '#lib/api.js';
+  import { userStore } from '#lib/stores.js';
 
   let profile: UserProfile | null = null;
   let loadError = '';
@@ -55,13 +45,13 @@
   onMount(async () => {
     try {
       const res = await user.me();
-      profile = res.data;
+      profile = res;
       if (profile && $userStore) {
         userStore.set({ ...$userStore, email: profile.email });
       }
-    } catch (e: any) {
-      if (e.response?.status === 401) {
-        goto(`${base}/login`);
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 401) {
+        goto(resolve('/login'));
       } else {
         loadError = 'Failed to load account data.';
       }
@@ -74,8 +64,8 @@
       await user.changePassword(currentPassword, newPassword);
       passwordSuccess = true;
       currentPassword = ''; newPassword = ''; confirmPassword = '';
-    } catch (e: any) {
-      passwordError = e.response?.data?.message || 'Failed to change password.';
+    } catch (e) {
+      passwordError = errorMessage(e, 'Failed to change password.');
     } finally { passwordLoading = false; }
   }
 
@@ -87,9 +77,9 @@
       localStorage.removeItem('token');
       localStorage.removeItem('refresh_token');
       userStore.set(null);
-      goto(`${base}/login`);
-    } catch (e: any) {
-      deleteError = e.response?.data?.message || 'Failed to delete account.';
+      goto(resolve('/login'));
+    } catch (e) {
+      deleteError = errorMessage(e, 'Failed to delete account.');
       deleteLoading = false;
     }
   }

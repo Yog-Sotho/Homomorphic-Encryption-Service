@@ -1,0 +1,13 @@
+.git
+.github
+.claude
+**/node_modules
+frontend
+backend/target
+data
+*.db
+*.db-*
+.env
+.env.*
+docs
+*.md

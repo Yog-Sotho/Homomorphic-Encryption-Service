@@ -1,4 +1,4 @@
-use actix_web::{HttpResponse, ResponseError, http::StatusCode};
+use actix_web::{http::StatusCode, HttpResponse, ResponseError};
 use serde::Serialize;
 use std::fmt;
 
@@ -12,11 +12,21 @@ pub enum AppError {
 }
 
 impl AppError {
-    pub fn unauthorized(msg: impl Into<String>) -> Self { AppError::Unauthorized(msg.into()) }
-    pub fn forbidden(msg: impl Into<String>) -> Self { AppError::Forbidden(msg.into()) }
-    pub fn not_found(msg: impl Into<String>) -> Self { AppError::NotFound(msg.into()) }
-    pub fn bad_request(msg: impl Into<String>) -> Self { AppError::BadRequest(msg.into()) }
-    pub fn internal(msg: impl Into<String>) -> Self { AppError::Internal(msg.into()) }
+    pub fn unauthorized(msg: impl Into<String>) -> Self {
+        AppError::Unauthorized(msg.into())
+    }
+    pub fn forbidden(msg: impl Into<String>) -> Self {
+        AppError::Forbidden(msg.into())
+    }
+    pub fn not_found(msg: impl Into<String>) -> Self {
+        AppError::NotFound(msg.into())
+    }
+    pub fn bad_request(msg: impl Into<String>) -> Self {
+        AppError::BadRequest(msg.into())
+    }
+    pub fn internal(msg: impl Into<String>) -> Self {
+        AppError::Internal(msg.into())
+    }
 }
 
 #[derive(Serialize)]
@@ -61,7 +71,9 @@ impl From<sqlx::Error> for AppError {
     fn from(err: sqlx::Error) -> Self {
         if let sqlx::Error::Database(ref db_err) = err {
             if db_err.is_unique_violation() || db_err.message().contains("UNIQUE constraint") {
-                return AppError::BadRequest("An error occurred while processing the request".to_string());
+                return AppError::BadRequest(
+                    "An error occurred while processing the request".to_string(),
+                );
             }
         }
         log::error!("Database error: {}", err);

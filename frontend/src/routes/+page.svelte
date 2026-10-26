@@ -1,14 +1,13 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
-  import { userStore } from '$lib/stores';
+  import { resolve } from '$app/paths';
 
   onMount(() => {
-    const token = localStorage.getItem('token');
-    if (token) {
-      goto('/dashboard');
+    if (localStorage.getItem('token') || localStorage.getItem('refresh_token')) {
+      goto(resolve('/dashboard'));
     } else {
-      goto('/login');
+      goto(resolve('/login'));
     }
   });
 </script>

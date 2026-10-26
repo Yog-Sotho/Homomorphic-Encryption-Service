@@ -1,0 +1,5 @@
+ignored:
+  # Debian package versions rotate within a release; pinning them breaks rebuilds.
+  # The base image tag pins the release instead and Dependabot keeps it current.
+  - DL3008
+failure-threshold: warning
