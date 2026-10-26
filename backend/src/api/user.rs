@@ -1,5 +1,6 @@
 use crate::api::validation::{is_strong_password, PASSWORD_REQUIREMENTS};
 use crate::config::Config;
+use crate::crypto::keys::KeyStore;
 use crate::errors::AppError;
 use actix_web::{web, HttpMessage, HttpRequest, HttpResponse, Responder};
 use bcrypt::{hash, verify, DEFAULT_COST};
@@ -181,6 +182,7 @@ pub async fn change_password(
 
 pub async fn delete_account(
     pool: web::Data<SqlitePool>,
+    store: web::Data<KeyStore>,
     body: web::Json<DeleteAccountRequest>,
     req: HttpRequest,
 ) -> Result<impl Responder, AppError> {
@@ -215,6 +217,11 @@ pub async fn delete_account(
         }
     }
 
+    let key_ids: Vec<(String,)> = sqlx::query_as("SELECT id FROM server_keys WHERE user_id = ?")
+        .bind(&user_id)
+        .fetch_all(pool.get_ref())
+        .await?;
+
     // Revoke all sessions immediately (belt-and-suspenders alongside FK cascade)
     sqlx::query("DELETE FROM refresh_tokens WHERE user_id = ?")
         .bind(&user_id)
@@ -236,10 +243,23 @@ pub async fn delete_account(
         .execute(pool.get_ref())
         .await?;
 
+    sqlx::query("DELETE FROM server_keys WHERE user_id = ?")
+        .bind(&user_id)
+        .execute(pool.get_ref())
+        .await?;
+
     sqlx::query("DELETE FROM users WHERE id = ?")
         .bind(&user_id)
         .execute(pool.get_ref())
         .await?;
+
+    // Key files are removed once their rows are gone, so a failure here only
+    // leaves unreachable bytes on disk.
+    for (key_id,) in key_ids {
+        if let Err(e) = store.remove(&key_id) {
+            log::error!("Failed to delete key file {key_id} for deleted account: {e}");
+        }
+    }
 
     Ok(HttpResponse::Ok().json(serde_json::json!({
         "message": "Account deleted successfully."
@@ -252,23 +272,7 @@ mod tests {
     use actix_web::{body::to_bytes, test::TestRequest};
 
     fn test_config() -> Arc<Config> {
-        Arc::new(Config {
-            database_url: "sqlite::memory:".to_string(),
-            jwt_secret: "test_secret_key_at_least_32_bytes_long".to_string(),
-            server_addr: "127.0.0.1:8080".to_string(),
-            he_pool_size: 1,
-            app_base_url: "http://localhost:3000".to_string(),
-            google_client_id: None,
-            google_client_secret: None,
-            github_client_id: None,
-            github_client_secret: None,
-            smtp_host: None,
-            smtp_port: 587,
-            smtp_user: None,
-            smtp_pass: None,
-            from_email: "noreply@heaas.local".to_string(),
-            daily_compute_quota: 100,
-        })
+        Arc::new(Config::for_tests(std::env::temp_dir()))
     }
 
     async fn me_json(pool: &SqlitePool, user_id: &str) -> serde_json::Value {

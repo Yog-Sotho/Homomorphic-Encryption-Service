@@ -15,7 +15,7 @@ export default defineConfig({
   projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
   // Serve the production build (adapter-node) so CSP and hydration match deployment.
   webServer: {
-    command: `pnpm build && PORT=${PORT} node build`,
+    command: `pnpm build && PORT=${PORT} node server.js`,
     url: `http://localhost:${PORT}/heaas/login`,
     reuseExistingServer: !process.env.CI,
     timeout: 120_000

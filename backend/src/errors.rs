@@ -8,6 +8,8 @@ pub enum AppError {
     Forbidden(String),
     NotFound(String),
     BadRequest(String),
+    Conflict(String),
+    TooManyRequests(String),
     Internal(String),
 }
 
@@ -23,6 +25,12 @@ impl AppError {
     }
     pub fn bad_request(msg: impl Into<String>) -> Self {
         AppError::BadRequest(msg.into())
+    }
+    pub fn conflict(msg: impl Into<String>) -> Self {
+        AppError::Conflict(msg.into())
+    }
+    pub fn too_many_requests(msg: impl Into<String>) -> Self {
+        AppError::TooManyRequests(msg.into())
     }
     pub fn internal(msg: impl Into<String>) -> Self {
         AppError::Internal(msg.into())
@@ -41,6 +49,8 @@ impl fmt::Display for AppError {
             AppError::Forbidden(m) => write!(f, "{}", m),
             AppError::NotFound(m) => write!(f, "{}", m),
             AppError::BadRequest(m) => write!(f, "{}", m),
+            AppError::Conflict(m) => write!(f, "{}", m),
+            AppError::TooManyRequests(m) => write!(f, "{}", m),
             AppError::Internal(_) => write!(f, "Internal server error"),
         }
     }
@@ -53,6 +63,8 @@ impl ResponseError for AppError {
             AppError::Forbidden(_) => StatusCode::FORBIDDEN,
             AppError::NotFound(_) => StatusCode::NOT_FOUND,
             AppError::BadRequest(_) => StatusCode::BAD_REQUEST,
+            AppError::Conflict(_) => StatusCode::CONFLICT,
+            AppError::TooManyRequests(_) => StatusCode::TOO_MANY_REQUESTS,
             AppError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }

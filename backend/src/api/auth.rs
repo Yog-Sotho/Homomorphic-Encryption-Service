@@ -1318,23 +1318,7 @@ mod tests {
     #[tokio::test]
     async fn test_login_length_validation() {
         let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
-        let config = Arc::new(Config {
-            database_url: "sqlite::memory:".to_string(),
-            jwt_secret: "test_secret_key_at_least_32_bytes_long".to_string(),
-            server_addr: "127.0.0.1:8080".to_string(),
-            he_pool_size: 1,
-            app_base_url: "http://localhost:3000".to_string(),
-            google_client_id: None,
-            google_client_secret: None,
-            github_client_id: None,
-            github_client_secret: None,
-            smtp_host: None,
-            smtp_port: 587,
-            smtp_user: None,
-            smtp_pass: None,
-            from_email: "noreply@heaas.local".to_string(),
-            daily_compute_quota: 100,
-        });
+        let config = Arc::new(Config::for_tests(std::env::temp_dir()));
 
         let pool_data = web::Data::new(pool);
         let config_data = web::Data::new(config);
@@ -1367,23 +1351,7 @@ mod tests {
     #[tokio::test]
     async fn test_token_length_validation() {
         let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
-        let config = Arc::new(Config {
-            database_url: "sqlite::memory:".to_string(),
-            jwt_secret: "test_secret_key_at_least_32_bytes_long".to_string(),
-            server_addr: "127.0.0.1:8080".to_string(),
-            he_pool_size: 1,
-            app_base_url: "http://localhost:3000".to_string(),
-            google_client_id: None,
-            google_client_secret: None,
-            github_client_id: None,
-            github_client_secret: None,
-            smtp_host: None,
-            smtp_port: 587,
-            smtp_user: None,
-            smtp_pass: None,
-            from_email: "noreply@heaas.local".to_string(),
-            daily_compute_quota: 100,
-        });
+        let config = Arc::new(Config::for_tests(std::env::temp_dir()));
 
         let pool_data = web::Data::new(pool);
         let config_data = web::Data::new(config);

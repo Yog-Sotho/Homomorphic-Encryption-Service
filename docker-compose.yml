@@ -11,7 +11,11 @@ services:
       - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:3000}
       - SERVER_ADDR=0.0.0.0:8080
       - RUST_LOG=info
-      - HE_POOL_SIZE=${HE_POOL_SIZE:-2}
+      # Users' uploaded TFHE server keys (~60 MB each) live next to the database.
+      - KEY_STORE_DIR=/usr/src/he-backend/data/keys
+      - MAX_KEYS_PER_USER=${MAX_KEYS_PER_USER:-2}
+      # Decompressed keys kept in RAM, ~180 MB each.
+      - KEY_CACHE_CAPACITY=${KEY_CACHE_CAPACITY:-2}
       - APP_BASE_URL=${APP_BASE_URL:-https://gibliz.taile5d4a8.ts.net}
       - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}
       - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET:-}

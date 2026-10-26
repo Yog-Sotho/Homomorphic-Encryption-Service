@@ -1,14 +1,36 @@
 /// <reference types="vitest/config" />
 import { sveltekit } from '@sveltejs/kit/vite';
 import adapter from '@sveltejs/adapter-node';
-import { defineConfig } from 'vite';
+import { defineConfig, type Connect, type Plugin } from 'vite';
+import { ISOLATION_HEADERS } from './isolation-headers.js';
 
 // BACKEND_URL is set to http://backend:8080 when running inside Docker Compose.
 // When running natively (pnpm dev on the host) it falls back to localhost:8080.
 const backendUrl = process.env.BACKEND_URL ?? 'http://localhost:8080';
 
+const setIsolationHeaders: Connect.NextHandleFunction = (_req, res, next) => {
+  for (const [name, value] of Object.entries(ISOLATION_HEADERS)) res.setHeader(name, value);
+  next();
+};
+
+/**
+ * Cross-origin isolation in dev and preview (see isolation-headers.js). Vite's
+ * `server.headers`/`preview.headers` miss pages and assets SvelteKit serves itself,
+ * so the headers are set by the first middleware instead; production uses server.js.
+ */
+const crossOriginIsolation: Plugin = {
+  name: 'heaas:cross-origin-isolation',
+  configureServer(server) {
+    server.middlewares.use(setIsolationHeaders);
+  },
+  configurePreviewServer(server) {
+    server.middlewares.use(setIsolationHeaders);
+  }
+};
+
 export default defineConfig({
   plugins: [
+    crossOriginIsolation,
     sveltekit({
       adapter: adapter(),
       // nginx serves the app under /heaas/ and the backend redirects there.
@@ -19,7 +41,9 @@ export default defineConfig({
         mode: 'hash',
         directives: {
           'default-src': ['self'],
-          'script-src': ['self'],
+          // WebAssembly compilation needs 'wasm-unsafe-eval' (not 'unsafe-eval').
+          'script-src': ['self', 'wasm-unsafe-eval'],
+          'worker-src': ['self'],
           'style-src': ['self', 'unsafe-inline'],
           'img-src': ['self', 'data:'],
           'font-src': ['self'],
@@ -49,6 +73,10 @@ export default defineConfig({
   build: {
     target: 'es2022'
   },
+  // The TFHE worker spawns rayon sub-workers with `new Worker(new URL(...))`,
+  // which needs ES-module workers; pre-bundling would break its relative imports.
+  worker: { format: 'es' },
+  optimizeDeps: { exclude: ['tfhe'] },
   test: {
     // Playwright specs live in e2e/ and run under `pnpm test:e2e`.
     include: ['src/**/*.test.ts']

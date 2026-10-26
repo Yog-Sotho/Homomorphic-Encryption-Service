@@ -1269,6 +1269,7 @@ name = "he-backend"
 version = "0.3.0"
 dependencies = [
  "actix-cors",
+ "actix-http",
  "actix-web",
  "actix-web-lab",
  "base64 0.22.1",

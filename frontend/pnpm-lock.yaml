@@ -7,6 +7,10 @@ settings:
 importers:
 
   .:
+    dependencies:
+      tfhe:
+        specifier: 1.8.2
+        version: 1.8.2
     devDependencies:
       '@playwright/test':
         specifier: 1.64.1
@@ -23,6 +27,9 @@ importers:
       '@types/node':
         specifier: ^26.6.5
         version: 26.6.5
+      fake-indexeddb:
+        specifier: ^6.2.6
+        version: 6.2.6
       svelte:
         specifier: ^5.57.2
         version: 5.57.2
@@ -295,6 +302,10 @@ packages:
     resolution: {integrity: sha512-KfYbmpRm0VbLjEvVa9yGwCi9GI34xvi7A/HXYWQO65CSD2u3MczUJSuwXKFIxlGsgBQizV9q5J9NHj4VG0n+pA==}
     engines: {node: '>=12.0.0'}
 
+  fake-indexeddb@6.2.6:
+    resolution: {integrity: sha512-ihhmr0KoET51jT8R4YhbUYuLLvr1qqO6INISygtN16i8loR8kAxtAUr4+EKHTSMjL+lggaAn4OC7DRqzrNgnuQ==}
+    engines: {node: '>=18'}
+
   fdir@6.5.0:
     resolution: {integrity: sha512-tIbYtZbucOs0BRGqPJkshJUYdL+SDH7dVM8gjy+ERp3WAUjLEFJE+02kanyHtwjWOnwrKYBiwAmM0p4kLJAnXg==}
     engines: {node: '>=12.0.0'}
@@ -468,6 +479,9 @@ packages:
   svelte@5.57.2:
     resolution: {integrity: sha512-1YiPCAXT0Ct6g1vOMmSLa0Nsc3QRMvtDF32ihgglGVrugIuIK38RyDiFNXVDhtQ81TJjSO57NdMw6DyYLqSGDQ==}
     engines: {node: '>=18'}
+
+  tfhe@1.8.2:
+    resolution: {integrity: sha512-4uuJDE6OIu43E3HGbSl55erbWZ0ATiWNNyB3Z9RRzZt/DpEbgIZctrxnTGOomKj57NSOuAPt5aM8McojJgi+mw==}
 
   tinybench@6.2.2:
     resolution: {integrity: sha512-nIZ2N2dFpjBsg2hgitKu7mA+FvsIJuGJOwysRngmVRRmWgR/UyPjwJj8c/fT/dhm8EkHnF5EOogRf+0Z2qrimA==}
@@ -770,6 +784,8 @@ snapshots:
 
   expect-type@1.4.0: {}
 
+  fake-indexeddb@6.2.6: {}
+
   fdir@6.5.0(picomatch@4.0.7):
     optionalDependencies:
       picomatch: 4.0.7
@@ -935,6 +951,8 @@ snapshots:
       zimmerframe: 1.1.4
     transitivePeerDependencies:
       - '@typescript-eslint/types'
+
+  tfhe@1.8.2: {}
 
   tinybench@6.2.2: {}
 
