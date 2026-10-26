@@ -19,3 +19,4 @@ backend/he_saas.db
 # Playwright
 frontend/test-results/
 frontend/playwright-report/
+frontend/e2e-fullstack/.backend.log

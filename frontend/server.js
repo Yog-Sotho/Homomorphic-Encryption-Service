@@ -1,15 +1,15 @@
-// Production entry point: adapter-node's handler behind cross-origin isolation headers.
-// TFHE's WASM build needs SharedArrayBuffer, which browsers only expose when every
-// response (pages, assets and worker scripts) is sent with COOP + COEP.
+// Production entry point: adapter-node's handler behind cross-origin isolation
+// headers. Static assets bypass SvelteKit's hooks, so they are set here for every
+// response (see isolation-headers.js).
 import http from 'node:http';
 import { handler } from './build/handler.js';
+import { ISOLATION_HEADERS } from './isolation-headers.js';
 
 const port = Number(process.env.PORT ?? 3000);
 const host = process.env.HOST ?? '0.0.0.0';
 
 const server = http.createServer((req, res) => {
-  res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
-  res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp');
+  for (const [name, value] of Object.entries(ISOLATION_HEADERS)) res.setHeader(name, value);
   handler(req, res);
 });
 

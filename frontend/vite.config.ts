@@ -1,22 +1,36 @@
 /// <reference types="vitest/config" />
 import { sveltekit } from '@sveltejs/kit/vite';
 import adapter from '@sveltejs/adapter-node';
-import { defineConfig } from 'vite';
+import { defineConfig, type Connect, type Plugin } from 'vite';
+import { ISOLATION_HEADERS } from './isolation-headers.js';
 
 // BACKEND_URL is set to http://backend:8080 when running inside Docker Compose.
 // When running natively (pnpm dev on the host) it falls back to localhost:8080.
 const backendUrl = process.env.BACKEND_URL ?? 'http://localhost:8080';
 
-// TFHE's WASM build uses shared memory, which browsers only allow on cross-origin
-// isolated pages. Every response (pages, assets, workers) must carry these headers;
-// production sets them in server.js.
-const isolationHeaders = {
-  'Cross-Origin-Opener-Policy': 'same-origin',
-  'Cross-Origin-Embedder-Policy': 'require-corp'
+const setIsolationHeaders: Connect.NextHandleFunction = (_req, res, next) => {
+  for (const [name, value] of Object.entries(ISOLATION_HEADERS)) res.setHeader(name, value);
+  next();
+};
+
+/**
+ * Cross-origin isolation in dev and preview (see isolation-headers.js). Vite's
+ * `server.headers`/`preview.headers` miss pages and assets SvelteKit serves itself,
+ * so the headers are set by the first middleware instead; production uses server.js.
+ */
+const crossOriginIsolation: Plugin = {
+  name: 'heaas:cross-origin-isolation',
+  configureServer(server) {
+    server.middlewares.use(setIsolationHeaders);
+  },
+  configurePreviewServer(server) {
+    server.middlewares.use(setIsolationHeaders);
+  }
 };
 
 export default defineConfig({
   plugins: [
+    crossOriginIsolation,
     sveltekit({
       adapter: adapter(),
       // nginx serves the app under /heaas/ and the backend redirects there.
@@ -45,7 +59,6 @@ export default defineConfig({
   server: {
     port: 3000,
     strictPort: true,
-    headers: isolationHeaders,
     proxy: {
       '/api': { target: backendUrl, changeOrigin: true, secure: false }
     }
@@ -53,7 +66,6 @@ export default defineConfig({
   preview: {
     port: 4173,
     strictPort: true,
-    headers: isolationHeaders,
     proxy: {
       '/api': { target: backendUrl, changeOrigin: true, secure: false }
     }

@@ -2,212 +2,175 @@
 <img src="./he-saas-logo.svg" alt="HEaaS Logo" width="400"/>
 </div>
 
-# Homomorphic Encryption-as-a-Service
-## Official Customer Guide & Business Workflow Reference
+# HEaaS: Homomorphic Encryption as a Service
 
-**Version:** 2.0.0  
-**Last Updated:** May 2026  
-**Support:** support@yourdomain.com | [Insert Phone Number]
+HEaaS runs computations on encrypted integers. You encrypt on your own device, the
+server computes directly on the ciphertexts, and you decrypt the result locally. The
+server never has your secret key, so it cannot read your inputs or results.
 
----
+It is built on [TFHE-rs](https://github.com/zama-ai/tfhe-rs) (the TFHE/CGGI scheme)
+with a Rust backend (actix-web, SQLite) and a SvelteKit dashboard that does all
+key handling and encryption in the browser through TFHE-rs's WebAssembly build.
 
-## Table of Contents
-
-1. [What is HEaaS & Why You Need It](#1-what-is-heaas--why-you-need-it)
-2. [How It Works: The Zero-Knowledge Workflow](#2-how-it-works-the-zero-knowledge-workflow)
-3. [Real-World Use Cases](#3-real-world-use-cases)
-4. [Getting Started](#4-getting-started)
-5. [The Dashboard: A Testing Sandbox](#5-the-dashboard-a-testing-sandbox)
-6. [Production Workflow: API & SDK Integration](#6-production-workflow-api--sdk-integration)
-7. [Troubleshooting](#7-troubleshooting)
-8. [FAQs](#8-faqs)
-9. [Contact & Support](#9-contact--support)
+> **Status:** working end to end, under active hardening. See
+> [`docs/project/codebase_audit.md`](docs/project/codebase_audit.md) and the
+> [remediation plan](docs/project/remediation_plan.md) for what is still to come.
 
 ---
 
-## 1. What is HEaaS & Why You Need It
+## How it works
 
-### The Problem
-Your organization handles sensitive data: medical records, financial transactions, customer PII, or proprietary AI training sets. To analyze this data, you traditionally have to decrypt it. The moment data is decrypted, it becomes vulnerable to breaches, insider threats, and compliance violations (GDPR, HIPAA, SOC2). Cloud providers require you to trust them with your plaintext data, which is increasingly unacceptable for regulated industries.
+```
+ Your device                                      HEaaS server
+ ───────────                                      ────────────
+ 1. generate key pair  ──────────────────────────▶ (nothing)
+    client key (secret) stays here
+ 2. upload compressed server key  ──────────────▶ stores it; can compute,
+                                                   cannot decrypt
+ 3. encrypt inputs, submit job  ────────────────▶ evaluates op(a, b) on
+                                                   ciphertexts with your key
+ 4. fetch encrypted result  ◀───────────────────── returns a ciphertext
+ 5. decrypt locally
+```
 
-### The Solution
-**HEaaS (Homomorphic Encryption-as-a-Service)** allows you to run computations on **encrypted data without ever decrypting it**. 
+- **Client key** (~31 KB): generated on your device, used to encrypt and decrypt.
+  It is never uploaded. In the dashboard it stays in the browser's IndexedDB.
+- **Compressed server key** (~60 MB): an evaluation key derived from the client key.
+  It lets the server compute on your ciphertexts but not decrypt them. You register
+  it once with `POST /api/keys`; the server checks it against its parameters.
+- **Ciphertexts** (~132 KB each): `FheUint16` values. Arithmetic wraps modulo 2¹⁶.
 
-You send us ciphertext. Our servers perform mathematical operations directly on that ciphertext. We return an encrypted result. You decrypt it locally. **Your actual data is never visible to us, never stored in plaintext, and never exposed during processing.** This is not a policy promise; it is a mathematical guarantee.
+### Parameters
 
-### Why Pay For This?
-*   **Regulatory Compliance:** Process sensitive data while remaining fully compliant with GDPR, HIPAA, CCPA, and financial regulations.
-*   **Breach Immunity:** Even if our infrastructure is compromised, attackers only obtain mathematically useless ciphertext.
-*   **Secure Outsourcing:** Leverage cloud compute power for analytics, risk modeling, or AI training without exposing your raw data to third parties.
-*   **Zero-Trust Architecture:** Eliminate the need to trust cloud providers with decryption keys or plaintext data.
+| | |
+|---|---|
+| Scheme | TFHE (CGGI), TFHE-rs **1.8.2** (pinned; clients must use the same release) |
+| Configuration | `ConfigBuilder::default()`: TFHE-rs default parameters (`PARAM_MESSAGE_2_CARRY_2_KS_PBS_TUNIFORM_2M128`, failure probability ≤ 2⁻¹²⁸) |
+| Integer type | `FheUint16` (0–65535) |
+| Operations | `add`, `subtract`, `multiply` (mod 65536), `min`, `max` |
+| Live values | `GET /api/he/params` |
 
----
+Uploaded keys and ciphertexts are deserialized with TFHE-rs's size-limited,
+conformance-checked `safe_deserialize_conformant`, so keys made with other
+parameters and malformed or foreign ciphertexts are rejected, not computed on.
 
-## 2. How It Works: The Zero-Knowledge Workflow
+### What the server can and cannot learn
 
-HEaaS follows a strict cryptographic workflow. Understanding this flow is essential to using the platform correctly.
+The server **cannot** decrypt inputs or results: it only ever holds evaluation keys.
 
-1. **Local Encryption:** You generate a key pair locally. Using your Public Key, you encrypt your sensitive data on your own machines.
-2. **Secure Upload:** You send the encrypted data (ciphertext) to HEaaS via our API. We never receive, request, or store your Private Key.
-3. **Blind Computation:** Our servers perform the requested operations (addition, multiplication, statistical aggregations) directly on the ciphertext. The math is designed so that operating on encrypted data yields an encrypted result.
-4. **Encrypted Return:** We return the computed result, still fully encrypted.
-5. **Local Decryption:** You decrypt the result locally using your Private Key. The output matches exactly what you would have gotten if you had computed on plaintext, but your data was never exposed.
+It **does** see metadata: your account, when you submit jobs, which operation each
+job uses, ciphertext sizes and how many jobs you run.
 
-**Key Guarantee:** At no point does HEaaS see, log, or process your actual data. The computation happens in a mathematically sealed environment.
+Know these limits too:
 
----
-
-## 3. Real-World Use Cases
-
-HEaaS is not a calculator. It is a privacy-preserving compute engine for regulated data.
-
-*   **Healthcare Analytics:** Hospitals can aggregate encrypted patient vitals across multiple facilities to calculate average recovery times or detect outbreaks, without ever exposing individual patient records.
-*   **Financial Risk Modeling:** Banks can compute portfolio risk scores, fraud detection metrics, or credit assessments on encrypted transaction data, ensuring customer financial data never leaves a protected state.
-*   **Confidential AI/ML Training:** Data scientists can train machine learning models on sensitive datasets (e.g., legal documents, proprietary research) by performing gradient updates on encrypted tensors.
-*   **Multi-Party Data Collaboration:** Competing organizations can jointly compute market trends or benchmarking metrics by submitting encrypted data to a neutral HEaaS instance, ensuring no party sees another's raw inputs.
-
----
-
-## 4. Getting Started
-
-### Step 1: Create an Account
-1. Navigate to `https://app.yourdomain.com`.
-2. Click **Register** and provide your corporate email and a strong password.
-3. Verify your email via the activation link.
-
-### Step 2: Key Management
-Upon registration, you will be prompted to generate a **Cryptographic Key Pair**.
-*   **Public Key:** Used to encrypt data before upload. Safe to share.
-*   **Private Key:** Used to decrypt results locally. **Never share this.** It never leaves your environment.
-
-> **Production Recommendation:** Generate keys using our official SDKs on your secure infrastructure. The dashboard key generator is provided for testing convenience only.
+- **Results are not verifiable.** A dishonest or compromised server could return a
+  wrong ciphertext. TFHE alone does not prove that a computation was done correctly.
+- **The dashboard trusts its own JavaScript.** The browser code that generates and
+  stores your key is served by the operator. If you don't want to trust that code,
+  use your own client, such as [`backend/examples/client.rs`](backend/examples/client.rs).
+- **The client key in the browser is not backed up.** It is stored unencrypted in this
+  browser's IndexedDB. Clearing site data loses it, and anything encrypted under it
+  can then no longer be decrypted. (Passphrase-protected storage and export are planned.)
 
 ---
 
-## 5. The Dashboard: A Testing Sandbox
+## Using the dashboard
 
-**Important:** The web dashboard is a **developer sandbox**, not the production interface. It exists solely to verify that your account, keys, and API connectivity are working before you integrate with your actual data pipelines.
+1. Register and verify your email, then sign in.
+2. On the dashboard, choose **Generate encryption key**. Your browser creates the key
+   pair (a few seconds) and uploads the ~60 MB evaluation key.
+3. Choose an operation, enter two numbers and choose **Run**. The browser encrypts
+   them, the server computes on the ciphertexts, and the browser decrypts the result
+   and checks it against the expected value.
 
-### Why Does It Ask for "Value 1" and "Value 2"?
-Homomorphic encryption operates on mathematical structures. To prove the system works without requiring you to write code first, the dashboard provides a simplified test interface:
-*   **Value 1 / Value 2:** These are placeholder integers used to generate test ciphertexts behind the scenes.
-*   **Add / Multiply:** These are the foundational homomorphic operations. All complex analytics (averages, variances, polynomial regressions) are built from these base operations.
-*   **The Workflow:** When you click "Compute", the dashboard encrypts your test integers, sends them to the API, performs the operation on ciphertext, and returns the encrypted result. If you use the "Decrypt" button, it simulates local decryption to show you the math worked.
+The dashboard needs a browser with WebAssembly, Web Workers and `SharedArrayBuffer`,
+and it must be served cross-origin isolated (see [Deployment](#deployment)).
 
-**In production, you will never manually type integers into a web form.** You will use our API/SDK to send encrypted datasets, run batch computations, and retrieve encrypted results programmatically.
+## Using the API
 
----
+All endpoints are under `/api`. The full client flow is in
+[`backend/examples/client.rs`](backend/examples/client.rs), which CI compiles:
 
-## 6. Production Workflow: API & SDK Integration
+```sh
+HEAAS_URL=http://localhost:8080 HEAAS_EMAIL=you@example.com HEAAS_PASSWORD='…' \
+  cargo run --release --manifest-path backend/Cargo.toml --example client -- 300 300
+# registered server key 8e52…
+# 300 × 300 mod 65536 = 24464
+```
 
-Real customers interact with HEaaS exclusively via the REST API and official SDKs. Below is the standard production flow.
+| Method & path | Auth | Purpose |
+|---|---|---|
+| `GET /api/he/params` | — | Scheme, TFHE-rs version, integer type, operations, size limits |
+| `POST /api/auth/register`, `POST /api/auth/login` | — | Account and bearer token (`token`, valid 1 h; refresh with `POST /api/auth/refresh`) |
+| `POST /api/keys` | Bearer | Body: `safe_serialize`d `CompressedServerKey` (`application/octet-stream`). Returns `201 {id, sha256, size_bytes, created_at}`. `409` when you already have the maximum number of keys |
+| `GET /api/keys`, `DELETE /api/keys/{id}` | Bearer | List or remove your keys |
+| `POST /api/compute/jobs` | Bearer | `{"key_id", "operation", "inputs": [b64, b64]}` (standard base64 of `safe_serialize`d `FheUint16`). Returns `202 {id, status}` |
+| `GET /api/compute/jobs/{id}` | Bearer | `status` is `pending`, `processing`, `completed` (`result_b64` set) or `failed` (`error_message` set) |
 
-### Authentication
-All API requests require a Bearer Token obtained via `/api/auth/login`. Include it in every request header:
-    Authorization: Bearer <your_token>
-
-### Submitting a Compute Job
-You send a JSON payload containing Base64-encoded ciphertexts and the desired operation.
-
-Endpoint: `POST /api/compute/jobs`
-
-Request Body:
-    {
-      "input_data_b64": "[\"base64_ciphertext_1\", \"base64_ciphertext_2\"]",
-      "operation": "add"
-    }
-
-Note: The ciphertexts must be generated using your Public Key and the same cryptographic parameters as the server (Poly Modulus Degree: 4096, Plain Modulus: 1024). Our SDKs handle this automatically.
-
-Response:
-    {
-      "id": "job_uuid_string",
-      "status": "pending",
-      "result_b64": null,
-      "error_message": null
-    }
-
-### Retrieving Results
-Poll the job endpoint until completion.
-
-Endpoint: `GET /api/compute/jobs/{job_id}`
-
-Response (Completed):
-    {
-      "id": "job_uuid_string",
-      "status": "completed",
-      "result_b64": "base64_encrypted_result",
-      "error_message": null
-    }
-
-### Python SDK Production Example
-    import requests
-    import json
-    from heaas_sdk import HEClient, KeyManager
-
-    # 1. Initialize client & load keys
-    client = HEClient(api_url="https://api.yourdomain.com", token="your_jwt_token")
-    keys = KeyManager.load("./keys/private.key", "./keys/public.key")
-
-    # 2. Encrypt real data locally
-    sensitive_data_1 = 842  # e.g., encrypted patient age
-    sensitive_data_2 = 156  # e.g., encrypted lab value
-    ct1 = keys.encrypt(sensitive_data_1)
-    ct2 = keys.encrypt(sensitive_data_2)
-
-    # 3. Submit job (server never sees plaintext)
-    job = client.submit_job([ct1, ct2], operation="add")
-    print(f"Job queued: {job.id}")
-
-    # 4. Poll & retrieve encrypted result
-    result_ct = client.wait_for_result(job.id)
-
-    # 5. Decrypt locally
-    plaintext_result = keys.decrypt(result_ct)
-    print(f"Computed result: {plaintext_result}")  # Outputs: 998
+Each submitted job counts against a daily quota (default 100, resets at midnight
+UTC, `429` when exceeded). Polling and listing are free.
 
 ---
 
-## 7. Troubleshooting
+## Development
 
-| Issue | Cause | Solution |
-| :--- | :--- | :--- |
-| **Invalid Input Format** | Ciphertexts not serialized correctly or JSON structure malformed. | Use the official SDK to serialize ciphertexts. Ensure `input_data_b64` is a valid JSON array string. |
-| **Decryption Fails Locally** | Parameter mismatch between client and server. | Verify your SDK is configured with Poly Modulus Degree: 4096 and Plain Modulus: 1024. Mismatched params break HE math. |
-| **Noise Budget Exceeded** | Too many sequential operations on the same ciphertext. | Homomorphic encryption accumulates mathematical "noise" with each operation. Reduce computation depth or request bootstrapping support for deep circuits. |
-| **Job Timeout** | Large batch or complex multiplication chain. | Split workloads into smaller batches. Multiplication consumes more noise and compute cycles than addition. |
-| **401 Unauthorized** | JWT expired or invalid. | Tokens expire after 1 hour. Re-authenticate via `/api/auth/login` and refresh your header. |
-| **403 Forbidden** | Rate limit reached. | Free/Developer tiers are limited to 10 requests/minute. Upgrade your plan or implement exponential backoff. |
+Requirements: Rust ≥ 1.91.1, Node.js 22 and pnpm 10.
 
----
+```sh
+# Backend: http://127.0.0.1:8080
+cd backend
+JWT_SECRET=dev-secret-at-least-32-bytes-long cargo run
 
-## 8. FAQs
+# Frontend: http://localhost:3000/heaas (proxies /api to the backend)
+cd frontend
+pnpm install
+pnpm dev
+```
 
-**Q: Why would I pay for this instead of computing locally?**  
-A: Local computation on encrypted data requires specialized hardware, deep cryptographic expertise, and significant engineering overhead. HEaaS abstracts the complexity, provides optimized compute infrastructure, and ensures mathematical correctness, letting your team focus on analytics, not cryptography.
+Without SMTP settings the backend logs email verification links instead of sending
+them.
 
-**Q: Can you see my data if I send it to your API?**  
-A: No. You send ciphertext. Our servers perform math on ciphertext. We return ciphertext. Without your Private Key (which we never store or request), the data is mathematically indecipherable. This is verifiable via our open cryptographic parameters and third-party audits.
+| Check | Command |
+|---|---|
+| Backend lint, tests | `cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test` |
+| Supply chain | `cargo deny check` (backend), `pnpm audit` (frontend) |
+| Frontend types, unit tests | `pnpm check && pnpm test` |
+| Browser tests (real TFHE WASM, mocked API) | `pnpm test:e2e` |
+| Full stack (real backend, real browser TFHE) | `cargo build` in `backend/`, then `pnpm test:e2e:fullstack` |
 
-**Q: What data types are supported?**  
-A: Currently, integers within the configured plaintext modulus (0-1023 for standard tier). Enterprise tiers support larger integer ranges, fixed-point decimals, and encrypted vector/tensor operations for ML workloads.
+Backend tests include end-to-end runs over HTTP, where the test plays the client:
+it generates the keys and encrypts and decrypts, while the server only receives the
+evaluation key and ciphertexts. CI (`.github/workflows/ci.yml`) runs all of the above.
 
-**Q: How do I handle compliance audits?**  
-A: We provide architectural diagrams, cryptographic parameter sheets, key management policies, and third-party audit reports. Since we never process plaintext, your data processing agreements (DPAs) can classify HEaaS as a zero-knowledge processor, significantly reducing compliance scope.
+### Configuration (backend)
 
-**Q: Can I cancel or downgrade my plan?**  
-A: Yes. Manage subscriptions via Dashboard > Billing. Changes take effect at the end of your current billing cycle. No lock-in contracts.
+| Variable | Default | |
+|---|---|---|
+| `JWT_SECRET` | — (required) | Token signing secret |
+| `DATABASE_URL` | `sqlite://./he_saas.db` | SQLite database |
+| `KEY_STORE_DIR` | `./data/keys` | Uploaded server keys (~60 MB each) |
+| `MAX_SERVER_KEY_BYTES` | 80 MiB | Largest accepted key upload |
+| `MAX_KEYS_PER_USER` | 2 | Server keys per account |
+| `KEY_CACHE_CAPACITY` | 2 | Decompressed keys kept in RAM (~180 MB each) |
+| `DAILY_COMPUTE_QUOTA` | 100 | Jobs per user per UTC day |
+| `ALLOWED_ORIGINS` | — (required in release builds) | CORS origins |
+| `APP_BASE_URL`, `SMTP_*`, `FROM_EMAIL`, `GOOGLE_*`, `GITHUB_*` | | Email and OAuth |
 
----
+### Deployment
 
-## 9. Contact & Support
+`docker-compose.yml` runs the backend and the frontend. nginx (`nginx-heaas.conf`)
+serves the app under `/heaas/` and the API under `/api/`, and accepts request bodies
+up to 96 MB for key uploads.
 
-We specialize in privacy-preserving infrastructure for regulated industries. Our team includes cryptographers, compliance experts, and cloud security engineers.
+TFHE's WebAssembly build uses shared memory, so **every** frontend response must be
+sent with `Cross-Origin-Opener-Policy: same-origin` and
+`Cross-Origin-Embedder-Policy: require-corp`. `frontend/server.js` (production) and
+the Vite dev/preview servers do this. Keep it in place if you put another proxy in
+front.
 
-*   **Technical Support:** support@yourdomain.com
-*   **Sales & Enterprise Plans:** sales@yourdomain.com
-*   **System Status:** status.yourdomain.com
-*   **API Documentation:** docs.yourdomain.com
-*   **Security & Compliance Requests:** security@yourdomain.com
+## Licensing
 
-© 2026 HEaaS Inc. All Rights Reserved.
+TFHE-rs is distributed under BSD-3-Clause-Clear, which grants no patent rights.
+Zama states that TFHE-rs is free for development, research, prototyping and
+experimentation, and that **commercial use requires Zama's patent licence**. Obtain
+that licence before running this service commercially.

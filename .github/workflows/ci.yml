@@ -99,6 +99,47 @@ jobs:
           path: frontend/test-results/
           retention-days: 7
 
+  fullstack:
+    name: Full stack (real backend, browser TFHE)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: backend
+          shared-key: fullstack
+      - name: Build backend
+        working-directory: backend
+        run: cargo build --locked
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: pnpm install --frozen-lockfile
+      - name: Install Playwright browser
+        working-directory: frontend
+        run: pnpm exec playwright install --with-deps chromium
+      - name: Register, generate keys in the browser, compute on the server
+        working-directory: frontend
+        env:
+          HEAAS_BACKEND_BIN: ../backend/target/debug/he-backend
+        run: pnpm test:e2e:fullstack
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: fullstack-report
+          path: |
+            frontend/test-results/fullstack/
+            frontend/e2e-fullstack/.backend.log
+          retention-days: 7
+
   docker:
     name: Docker (lint, build)
     runs-on: ubuntu-latest
