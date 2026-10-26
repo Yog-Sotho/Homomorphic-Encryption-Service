@@ -1272,7 +1272,7 @@ dependencies = [
  "actix-http",
  "actix-web",
  "actix-web-lab",
- "base64 0.22.1",
+ "base64 0.23.1",
  "bcrypt",
  "chrono",
  "dashmap",

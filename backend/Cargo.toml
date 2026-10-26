@@ -23,7 +23,7 @@ env_logger = "0.11"
 log = "0.4"
 dotenvy = "0.15"
 thiserror = "2"
-base64 = "0.22"
+base64 = "0.23"
 dashmap = "6"
 num_cpus = "1"
 tfhe = { version = "1.8", features = ["integer"] }
