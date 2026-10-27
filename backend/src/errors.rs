@@ -206,16 +206,7 @@ pub fn envelope_errors<B: MessageBody + 'static>() -> ErrorHandlers<B> {
             return Ok(ErrorHandlerResponse::Response(res.map_into_left_body()));
         }
         let status = res.status();
-        let code = match status {
-            StatusCode::NOT_FOUND => error_codes::NOT_FOUND,
-            StatusCode::METHOD_NOT_ALLOWED => error_codes::METHOD_NOT_ALLOWED,
-            StatusCode::PAYLOAD_TOO_LARGE => error_codes::PAYLOAD_TOO_LARGE,
-            StatusCode::UNSUPPORTED_MEDIA_TYPE => error_codes::UNSUPPORTED_MEDIA_TYPE,
-            StatusCode::UNAUTHORIZED => error_codes::UNAUTHORIZED,
-            StatusCode::FORBIDDEN => error_codes::FORBIDDEN,
-            s if s.is_server_error() => error_codes::INTERNAL,
-            _ => error_codes::BAD_REQUEST,
-        };
+        let code = error_codes::for_status(status.as_u16());
         let message = match (status.is_server_error(), res.response().error()) {
             (false, Some(e)) => e.to_string(),
             _ => status.canonical_reason().unwrap_or("Error").to_string(),

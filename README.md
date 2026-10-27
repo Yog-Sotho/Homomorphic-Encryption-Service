@@ -39,7 +39,7 @@ key handling and encryption in the browser through TFHE-rs's WebAssembly build.
   encrypted with your passphrase (see [Your key in the browser](#your-key-in-the-browser)).
 - **Compressed server key** (~60 MB): an evaluation key derived from the client key.
   It lets the server compute on your ciphertexts but not decrypt them. You register
-  it once with `POST /api/keys`; the server checks it against its parameters.
+  it once with `POST /api/v1/keys`; the server checks it against its parameters.
 - **Ciphertexts** (~132 KB each): `FheUint16` values. Arithmetic wraps modulo 2¹⁶.
 
 ### Parameters
@@ -50,7 +50,7 @@ key handling and encryption in the browser through TFHE-rs's WebAssembly build.
 | Configuration | `ConfigBuilder::default()`: TFHE-rs default parameters (`PARAM_MESSAGE_2_CARRY_2_KS_PBS_TUNIFORM_2M128`, failure probability ≤ 2⁻¹²⁸) |
 | Integer type | `FheUint16` (0–65535) |
 | Operations | `add`, `subtract`, `multiply` (mod 65536), `min`, `max` |
-| Live values | `GET /api/he/params` |
+| Live values | `GET /api/v1/he/params` |
 
 Uploaded keys and ciphertexts are deserialized with TFHE-rs's size-limited,
 conformance-checked `safe_deserialize_conformant`, so keys made with other
@@ -59,7 +59,7 @@ parameters and malformed or foreign ciphertexts are rejected, not computed on.
 ### Accounts and sessions
 
 - **Sessions.** Signing in returns a 15-minute access token and sets a refresh token
-  as an `HttpOnly; Secure; SameSite=Strict` cookie scoped to `/api/auth`. The
+  as an `HttpOnly; Secure; SameSite=Strict` cookie scoped to `/api/v1/auth`. The
   dashboard keeps the access token in memory only, so page scripts can never read
   a long-lived credential. Every refresh rotates the cookie; replaying an old one
   (more than 10 seconds after it was rotated) revokes that whole session.
@@ -72,7 +72,7 @@ parameters and malformed or foreign ciphertexts are rejected, not computed on.
 - **Google and GitHub sign-in** use the authorization-code flow with PKCE and a
   signed state cookie. Only provider-verified email addresses are accepted (GitHub:
   the verified primary address). The callback hands the browser a one-time code,
-  never a token, which the page exchanges with `POST /api/auth/exchange`.
+  never a token, which the page exchanges with `POST /api/v1/auth/exchange`.
 - **Rate limits** are keyed on the client IP (the rightmost `X-Forwarded-For` hop not
   added by a `TRUSTED_PROXIES` address, so clients cannot choose their own) and on
   the target email address for sign-in attempts and outgoing email.
@@ -93,7 +93,7 @@ Know these limits too:
   wrong ciphertext. TFHE alone does not prove that a computation was done correctly.
 - **The dashboard trusts its own JavaScript.** The browser code that generates and
   stores your key is served by the operator. If you don't want to trust that code,
-  use your own client, such as [`backend/examples/client.rs`](backend/examples/client.rs).
+  use your own client, such as the [Rust SDK and `heaas` CLI](#rust-sdk-and-heaas-cli).
 - **Your passphrase cannot be recovered.** Nobody, including the operator, can reset
   it. Without it (or without a backup file after clearing site data) the key and
   everything encrypted under it is lost.
@@ -134,27 +134,77 @@ and it must be served cross-origin isolated (see [Deployment](#deployment)).
 
 ## Using the API
 
-All endpoints are under `/api`. The full client flow is in
-[`backend/examples/client.rs`](backend/examples/client.rs), which CI compiles:
+The API lives under `/api/v1` and is described by an OpenAPI 3.1 document, served at
+`GET /api/v1/openapi.json` and committed at [`docs/api/openapi.json`](docs/api/openapi.json)
+(a test fails when it no longer matches the code). The unversioned `/api/...` paths
+still answer, marked with `Deprecation` and `Link: </api/v1>; rel="successor-version"`
+headers.
 
-```sh
-HEAAS_URL=http://localhost:8080 HEAAS_EMAIL=you@example.com HEAAS_PASSWORD='…' \
-  cargo run --release --manifest-path backend/Cargo.toml --example client -- 300 300
-# registered server key 8e52…
-# 300 × 300 mod 65536 = 24464
+Every error has the same shape, whatever produced it (a handler, a malformed body,
+an unknown route):
+
+```json
+{ "error": { "code": "not_found", "message": "Job not found" } }
 ```
 
-| Method & path | Auth | Purpose |
+`code` is stable and machine-readable (`bad_request`, `unauthorized`, `forbidden`,
+`not_found`, `method_not_allowed`, `conflict`, `payload_too_large`,
+`unsupported_media_type`, `unprocessable`, `rate_limited`, `unavailable`, `internal`);
+`message` can be shown to people. `429` and `503` carry `Retry-After`.
+
+### Rust SDK and `heaas` CLI
+
+[`sdk/`](sdk) is a Rust client (`heaas-sdk`) built on the same `heaas-core` crate as
+the server, so parameters and request types cannot drift apart. Keys are generated
+and kept locally; only the evaluation key and ciphertexts are sent.
+
+```rust
+use heaas_sdk::{fhe, Client, Operation};
+
+let client = Client::new("https://heaas.example.com")?;
+client.login("you@example.com", "…").await?;
+client.check_compatible().await?; // same TFHE-rs release and integer type
+
+let (secret, server) = fhe::generate_keys();
+let key = client.upload_key(fhe::server_key_bytes(&server)?).await?;
+let (a, b) = (fhe::encrypt(&secret, 300)?, fhe::encrypt(&secret, 300)?);
+let result = client.compute(&key.id, Operation::Multiply, &a, &b, timeout).await?;
+assert_eq!(fhe::decrypt(&secret, &result)?, 24464); // 90000 mod 65536
+```
+
+Submissions carry an `Idempotency-Key` and are retried with it after a network error
+or a full queue, so a job is never created (or charged) twice.
+
+The `heaas` command-line tool does the same from a shell:
+
+```sh
+cargo install --path sdk           # or: cargo run -p heaas-sdk --release -- …
+export HEAAS_URL=https://heaas.example.com HEAAS_EMAIL=you@example.com  # password is prompted
+heaas keygen                       # heaas-client.key (secret, mode 0600) + heaas-server.key
+heaas upload-key                   # prints the key id
+heaas run --key-id <id> --op multiply 300 300    # 24464
+# Step by step:
+heaas encrypt 300 -o a.ct && heaas encrypt 7 -o b.ct
+job=$(heaas submit --key-id <id> --op subtract a.ct b.ct)
+heaas wait "$job" && heaas result "$job" -o r.ct && heaas decrypt r.ct   # 293
+```
+
+`heaas login` prints an access token for `HEAAS_TOKEN`; `heaas keys`, `heaas jobs` and
+`heaas params` list keys, jobs and the server's parameters.
+
+### Endpoints
+
+| Method & path (under `/api/v1`) | Auth | Purpose |
 |---|---|---|
-| `GET /api/he/params` | — | Scheme, TFHE-rs version, integer type, operations, size limits |
-| `POST /api/auth/register`, `POST /api/auth/login` | — | Account and session: `{token, expires_in, user}` plus an `HttpOnly` refresh cookie. `token` is a bearer token valid 15 minutes; `POST /api/auth/refresh` (with the cookie) renews it |
-| `POST /api/keys` | Bearer | Body: `safe_serialize`d `CompressedServerKey` (`application/octet-stream`). Returns `201 {id, sha256, size_bytes, created_at}`. `409` when you already have the maximum number of keys |
-| `GET /api/keys`, `DELETE /api/keys/{id}` | Bearer | List or remove your keys |
-| `POST /api/compute/jobs` | Bearer | `{"key_id", "operation", "inputs": [b64, b64]}` (standard base64 of `safe_serialize`d `FheUint16`). Optional `Idempotency-Key` header. Returns `202` + `Location` and the job |
-| `GET /api/compute/jobs/{id}` | Bearer | Job metadata. `status` is `pending`, `processing`, `completed` or `failed` (`error_message` set) |
-| `GET /api/compute/jobs/{id}/result` | Bearer | The encrypted result (`application/octet-stream`, a `safe_serialize`d `FheUint16`). `409` until the job has completed |
-| `GET /api/compute/jobs?limit=&cursor=` | Bearer | Your jobs, newest first: `{data, next_cursor}` (metadata only, `limit` 1–100, default 20) |
-| `DELETE /api/compute/jobs/{id}` | Bearer | Deletes a job that is not running, with its ciphertexts (`204`; `409` while it runs) |
+| `GET /he/params` | — | Scheme, TFHE-rs version, integer type, operations, size limits |
+| `POST /auth/register`, `POST /auth/login` | — | Account and session: `{token, expires_in, user}` plus an `HttpOnly` refresh cookie. `token` is a bearer token (15 minutes by default); `POST /auth/refresh` (with the cookie) renews it |
+| `POST /keys` | Bearer | Body: `safe_serialize`d `CompressedServerKey` (`application/octet-stream`). Returns `201 {id, sha256, size_bytes, created_at}`. `409` when you already have the maximum number of keys |
+| `GET /keys`, `DELETE /keys/{id}` | Bearer | List or remove your keys |
+| `POST /compute/jobs` | Bearer | `{"key_id", "operation", "inputs": [b64, b64]}` (standard base64 of `safe_serialize`d `FheUint16`). Optional `Idempotency-Key` header. Returns `202` + `Location` and the job |
+| `GET /compute/jobs/{id}` | Bearer | Job metadata. `status` is `pending`, `processing`, `completed` or `failed` (`error_message` set) |
+| `GET /compute/jobs/{id}/result` | Bearer | The encrypted result (`application/octet-stream`, a `safe_serialize`d `FheUint16`). `409` until the job has completed |
+| `GET /compute/jobs?limit=&cursor=` | Bearer | Your jobs, newest first: `{data, next_cursor}` (metadata only, `limit` 1–100, default 20) |
+| `DELETE /compute/jobs/{id}` | Bearer | Deletes a job that is not running, with its ciphertexts (`204`; `409` while it runs) |
 
 Jobs are durable: they are queued in the database, their ciphertexts are kept on
 disk, and a fixed pool of workers runs them. A job interrupted by a restart runs
@@ -177,9 +227,9 @@ whole queue is full `503`; both carry `Retry-After` and are not charged.
 Requirements: Rust ≥ 1.91.1, Node.js 22 and pnpm 10.
 
 ```sh
-# Backend: http://127.0.0.1:8080
-cd backend
-JWT_SECRET=dev-secret-at-least-32-bytes-long cargo run
+# Backend: http://127.0.0.1:8080 (the repository root is a Cargo workspace:
+# backend, core and sdk)
+JWT_SECRET=dev-secret-at-least-32-bytes-long cargo run -p he-backend
 
 # Frontend: http://localhost:3000/heaas (proxies /api to the backend)
 cd frontend
@@ -192,15 +242,16 @@ them.
 
 | Check | Command |
 |---|---|
-| Backend lint, tests | `cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test` |
-| Supply chain | `cargo deny check` (backend), `pnpm audit` (frontend) |
+| Rust lint, tests (backend, core, SDK, CLI, OpenAPI drift) | `cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace` |
+| Regenerate `docs/api/openapi.json` | `UPDATE_OPENAPI=1 cargo test -p he-backend openapi` |
+| Supply chain | `cargo deny check` (workspace), `pnpm audit` (frontend) |
 | Frontend types, unit tests | `pnpm check && pnpm test` |
 | Browser tests (real TFHE WASM, mocked API) | `pnpm test:e2e` |
-| Full stack (real backend, real browser TFHE) | `cargo build` in `backend/`, then `pnpm test:e2e:fullstack` |
+| Full stack (real backend, real browser TFHE) | `cargo build -p he-backend`, then `pnpm test:e2e:fullstack` |
 
 Backend tests include end-to-end runs over HTTP, where the test plays the client:
 it generates the keys and encrypts and decrypts, while the server only receives the
-evaluation key and ciphertexts. CI (`.github/workflows/ci.yml`) runs all of the above.
+evaluation key and ciphertexts. One of them drives a real HTTP server through the SDK. CI (`.github/workflows/ci.yml`) runs all of the above.
 
 ### Configuration (backend)
 

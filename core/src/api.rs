@@ -41,6 +41,24 @@ pub mod error_codes {
     pub const RATE_LIMITED: &str = "rate_limited";
     pub const UNAVAILABLE: &str = "unavailable";
     pub const INTERNAL: &str = "internal";
+
+    /// The code for an HTTP error status, for responses that carry no envelope.
+    pub fn for_status(status: u16) -> &'static str {
+        match status {
+            401 => UNAUTHORIZED,
+            403 => FORBIDDEN,
+            404 => NOT_FOUND,
+            405 => METHOD_NOT_ALLOWED,
+            409 => CONFLICT,
+            413 => PAYLOAD_TOO_LARGE,
+            415 => UNSUPPORTED_MEDIA_TYPE,
+            422 => UNPROCESSABLE,
+            429 => RATE_LIMITED,
+            503 => UNAVAILABLE,
+            500..=599 => INTERNAL,
+            _ => BAD_REQUEST,
+        }
+    }
 }
 
 /// A plain confirmation, e.g. after registration.

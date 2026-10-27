@@ -36,6 +36,26 @@ pub(super) struct TestEnv {
     dir: PathBuf,
 }
 
+/// The app `main` builds, from a test environment's parts.
+macro_rules! app {
+    ($pool:expr, $config:expr, $store:expr, $jobs:expr, $notifier:expr) => {{
+        let config: Arc<Config> = $config;
+        let routes = config.clone();
+        App::new()
+            .app_data(web::Data::new($pool))
+            .app_data(web::Data::new(config.clone()))
+            .app_data($store)
+            .app_data($jobs)
+            .app_data($notifier)
+            .app_data(web::Data::new(RateLimits::new(&config)))
+            .app_data(web::Data::new(crate::api::auth::oauth::http_client()))
+            .app_data(web::Data::new(
+                crate::api::auth::email::Mailer::new(&config.mail).unwrap(),
+            ))
+            .configure(move |cfg| api::configure(cfg, &routes))
+    }};
+}
+
 impl TestEnv {
     /// An app with running workers: submitted jobs are evaluated.
     async fn new() -> Self {
@@ -104,22 +124,36 @@ impl TestEnv {
         &self,
     ) -> impl Service<actix_http::Request, Response = ServiceResponse, Error = actix_web::Error>
     {
-        let config = self.config.clone();
-        test::init_service(
-            App::new()
-                .app_data(web::Data::new(self.pool.clone()))
-                .app_data(web::Data::new(self.config.clone()))
-                .app_data(self.store.clone())
-                .app_data(self.jobs.clone())
-                .app_data(self.notifier.clone())
-                .app_data(web::Data::new(RateLimits::new(&self.config)))
-                .app_data(web::Data::new(crate::api::auth::oauth::http_client()))
-                .app_data(web::Data::new(
-                    crate::api::auth::email::Mailer::new(&self.config.mail).unwrap(),
-                ))
-                .configure(move |cfg| api::configure(cfg, &config)),
-        )
+        test::init_service(app!(
+            self.pool.clone(),
+            self.config.clone(),
+            self.store.clone(),
+            self.jobs.clone(),
+            self.notifier.clone()
+        ))
         .await
+    }
+
+    /// Runs the app on a real HTTP server on a free local port, for clients
+    /// such as the SDK. Returns its URL; the server stops with the test.
+    pub(super) async fn serve(&self) -> String {
+        let parts = (
+            self.pool.clone(),
+            self.config.clone(),
+            self.store.clone(),
+            self.jobs.clone(),
+            self.notifier.clone(),
+        );
+        let server = actix_web::HttpServer::new(move || {
+            let (pool, config, store, jobs, notifier) = parts.clone();
+            app!(pool, config, store, jobs, notifier)
+        })
+        .workers(1)
+        .bind(("127.0.0.1", 0))
+        .unwrap();
+        let url = format!("http://{}", server.addrs()[0]);
+        actix_web::rt::spawn(server.run());
+        url
     }
 
     /// Creates a verified user and returns a bearer token for them.
@@ -882,4 +916,89 @@ async fn every_documented_operation_is_routed() {
     assert_eq!(resp.status(), StatusCode::OK);
     let doc: Value = test::read_body_json(resp).await;
     assert_eq!(doc["servers"][0]["url"], "/api/v1");
+}
+
+/// What a Rust customer does, through the SDK and a real HTTP server: sign in,
+/// register a key, compute every operation on ciphertexts, decrypt locally.
+#[actix_web::test]
+async fn the_sdk_runs_the_whole_flow_against_a_live_server() {
+    use heaas_sdk::{fhe, Client};
+
+    let env = TestEnv::new().await;
+    let password = "Correct-horse-battery-1";
+    let hash = crate::api::auth::password::hash_password(password.into())
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO users (id, email, password_hash, email_verified)
+         VALUES ('sdk', 'sdk@example.com', ?, 1)",
+    )
+    .bind(hash)
+    .execute(&env.pool)
+    .await
+    .unwrap();
+    let client = Client::new(&env.serve().await).unwrap();
+
+    let refused = client.login("sdk@example.com", "wrong").await.unwrap_err();
+    assert_eq!(refused.code(), Some("unauthorized"), "{refused}");
+    client.login("sdk@example.com", password).await.unwrap();
+    let params = client.check_compatible().await.unwrap();
+    assert_eq!(params.tfhe_version, TFHE_VERSION);
+
+    let key = client
+        .upload_key(compressed_server_key_bytes().to_vec())
+        .await
+        .unwrap();
+    assert_eq!(client.list_keys().await.unwrap()[0].id, key.id);
+
+    let secret = client_key();
+    let (a, b) = (
+        fhe::encrypt(secret, 300).unwrap(),
+        fhe::encrypt(secret, 7).unwrap(),
+    );
+    for op in Operation::ALL {
+        let result = client
+            .compute(&key.id, op, &a, &b, Duration::from_secs(300))
+            .await
+            .unwrap();
+        assert_eq!(
+            fhe::decrypt(secret, &result).unwrap(),
+            op.apply_plain(300, 7),
+            "{op}"
+        );
+    }
+
+    // A resubmission with the same idempotency key is the same job.
+    let first = client
+        .submit_idempotent(&key.id, Operation::Add, &a, &b, "sdk-retry")
+        .await
+        .unwrap();
+    let again = client
+        .submit_idempotent(&key.id, Operation::Add, &a, &b, "sdk-retry")
+        .await
+        .unwrap();
+    assert_eq!(first.id, again.id);
+    client
+        .wait(&first.id, Duration::from_secs(300))
+        .await
+        .unwrap();
+
+    let page = client.list_jobs(None, Some(2)).await.unwrap();
+    assert_eq!(page.data.len(), 2);
+    let rest = client
+        .list_jobs(page.next_cursor.as_deref(), None)
+        .await
+        .unwrap();
+    assert_eq!(page.data.len() + rest.data.len(), Operation::ALL.len() + 1);
+
+    // Errors arrive typed, with the envelope's code.
+    let missing = client
+        .job(&uuid::Uuid::new_v4().to_string())
+        .await
+        .unwrap_err();
+    assert_eq!(missing.code(), Some("not_found"));
+
+    client.delete_job(&first.id).await.unwrap();
+    client.delete_key(&key.id).await.unwrap();
+    assert!(client.list_keys().await.unwrap().is_empty());
 }
