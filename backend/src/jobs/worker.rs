@@ -11,11 +11,13 @@ use super::queue::{self, ClaimedJob};
 use super::store::JobStore;
 use super::INPUT_COUNT;
 use crate::crypto::eval::EvalError;
+use crate::telemetry::METRICS;
 use sqlx::SqlitePool;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::{watch, Notify};
-use tokio::task::JoinHandle;
+use tokio::task::{AbortHandle, JoinHandle};
+use tracing::Instrument;
 
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
 const JANITOR_INTERVAL: Duration = Duration::from_secs(3600);
@@ -31,6 +33,21 @@ pub struct JobNotifier(Arc<Notify>);
 impl JobNotifier {
     pub fn job_queued(&self) {
         self.0.notify_one();
+    }
+}
+
+/// Whether the workers are still running (readiness, metrics). A worker only
+/// stops on shutdown, so one that ended otherwise has crashed.
+#[derive(Clone, Default)]
+pub struct Liveness(Arc<Vec<AbortHandle>>);
+
+impl Liveness {
+    pub fn expected(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn alive(&self) -> usize {
+        self.0.iter().filter(|h| !h.is_finished()).count()
     }
 }
 
@@ -68,7 +85,7 @@ impl WorkerPool {
     ) -> sqlx::Result<Self> {
         let recovered = queue::recover_interrupted(&pool, settings.max_attempts).await?;
         if recovered != queue::Recovered::default() {
-            log::warn!(
+            tracing::warn!(
                 "Recovered interrupted jobs: {} requeued, {} failed",
                 recovered.requeued,
                 recovered.failed
@@ -101,6 +118,12 @@ impl WorkerPool {
         self.notifier.clone()
     }
 
+    pub fn liveness(&self) -> Liveness {
+        Liveness(Arc::new(
+            self.workers.iter().map(JoinHandle::abort_handle).collect(),
+        ))
+    }
+
     /// Stops claiming jobs and waits up to `grace` for running ones to finish.
     pub async fn shutdown(self, grace: Duration) {
         let _ = self.shutdown.send(true);
@@ -113,7 +136,9 @@ impl WorkerPool {
         })
         .await;
         if drained.is_err() {
-            log::warn!("Jobs still running after {grace:?}; they will be requeued at next start");
+            tracing::warn!(
+                "Jobs still running after {grace:?}; they will be requeued at next start"
+            );
             aborts.iter().for_each(|a| a.abort());
         }
     }
@@ -124,12 +149,18 @@ async fn work(ctx: Context, mut stop: watch::Receiver<bool>) {
     loop {
         let idle = match queue::claim_next(&ctx.pool).await {
             Ok(Some(job)) => {
-                run(&ctx, job).await;
+                let span = tracing::info_span!(
+                    "job",
+                    job_id = %job.id,
+                    operation = %job.operation,
+                    attempt = job.attempts
+                );
+                run(&ctx, job).instrument(span).await;
                 false
             }
             Ok(None) => true,
             Err(e) => {
-                log::error!("Failed to claim a job: {e}");
+                tracing::error!("Failed to claim a job: {e}");
                 true
             }
         };
@@ -160,49 +191,73 @@ enum Outcome {
 
 async fn run(ctx: &Context, job: ClaimedJob) {
     let id = job.id.as_str();
+    let waited = (chrono::Utc::now().naive_utc() - job.created_at)
+        .to_std()
+        .unwrap_or_default();
+    METRICS.job_started(&job.operation, waited);
+    let started = Instant::now();
+    let outcome = attempt(ctx, &job).await;
+    let evaluated = started.elapsed();
+
     // `finished`: the job reached a final state, so its inputs can go.
-    let (recorded, finished) = match attempt(ctx, &job).await {
+    let (recorded, finished, label) = match outcome {
         Outcome::Done(result) => match ctx.store.write_result(id, &result) {
-            Ok(()) => (queue::complete(&ctx.pool, id, result.len()).await, true),
+            Ok(()) => (
+                queue::complete(&ctx.pool, id, result.len()).await,
+                true,
+                "completed",
+            ),
             Err(e) => retry_or_fail(ctx, &job, format!("storing the result: {e}")).await,
         },
-        Outcome::Rejected(message) => (queue::fail(&ctx.pool, id, &message).await, true),
+        Outcome::Rejected(message) => {
+            tracing::info!("job rejected: {message}");
+            (queue::fail(&ctx.pool, id, &message).await, true, "rejected")
+        }
         Outcome::Error(detail) => retry_or_fail(ctx, &job, detail).await,
-        Outcome::TimedOut(recorded) => (recorded, true),
+        Outcome::TimedOut(recorded) => {
+            tracing::warn!("job timed out after {:?}", ctx.job_timeout);
+            (recorded, true, "timed_out")
+        }
     };
+    METRICS.job_attempt(&job.operation, label, Some(evaluated));
+    if label == "completed" {
+        tracing::info!(seconds = evaluated.as_secs_f64(), "job completed");
+    }
 
     match recorded {
         Ok(true) if finished => {
             if let Err(e) = ctx.store.remove_inputs(id, INPUT_COUNT) {
-                log::error!("Failed to delete inputs of job {id}: {e}");
+                tracing::error!("Failed to delete inputs of job {id}: {e}");
             }
         }
         Ok(true) => {}
         // The job (or its owner's account) was deleted while it ran.
         Ok(false) => ctx.store.remove_logged(id),
         // Left `processing`; requeued at the next start.
-        Err(e) => log::error!("Failed to record the outcome of job {id}: {e}"),
+        Err(e) => tracing::error!("Failed to record the outcome of job {id}: {e}"),
     }
 }
 
 /// Requeues the job if it has attempts left, else fails it. Returns the result of
-/// recording that and whether the job is now finished.
+/// recording that, whether the job is now finished, and the outcome's label.
 async fn retry_or_fail(
     ctx: &Context,
     job: &ClaimedJob,
     detail: String,
-) -> (sqlx::Result<bool>, bool) {
-    log::error!("Job {} attempt {} failed: {detail}", job.id, job.attempts);
+) -> (sqlx::Result<bool>, bool, &'static str) {
+    tracing::error!("Job {} attempt {} failed: {detail}", job.id, job.attempts);
     if job.attempts < ctx.max_attempts {
         // The backoff is noticed by the workers' polling; nobody needs waking.
         (
             queue::retry_later(&ctx.pool, &job.id, job.attempts).await,
             false,
+            "retried",
         )
     } else {
         (
             queue::fail(&ctx.pool, &job.id, "Internal error").await,
             true,
+            "failed",
         )
     }
 }
@@ -255,14 +310,14 @@ async fn janitor(
         match queue::purge_finished(&pool, retention_days).await {
             Ok(ids) => {
                 if !ids.is_empty() {
-                    log::info!(
+                    tracing::info!(
                         "Deleted {} jobs older than {retention_days} days",
                         ids.len()
                     );
                 }
                 ids.iter().for_each(|id| store.remove_logged(id));
             }
-            Err(e) => log::error!("Failed to purge old jobs: {e}"),
+            Err(e) => tracing::error!("Failed to purge old jobs: {e}"),
         }
         tokio::select! {
             _ = tokio::time::sleep(JANITOR_INTERVAL) => {}
@@ -340,13 +395,19 @@ mod tests {
     async fn runs_queued_jobs_and_keeps_only_the_result() {
         let h = Harness::new().await;
         let workers = h.start(concat(), Duration::from_secs(10)).await;
+        let liveness = workers.liveness();
+        assert_eq!((liveness.alive(), liveness.expected()), (2, 2));
+        let completed = || METRICS.jobs_finished("add", "completed");
+        let before = completed();
         let id = h.queue().await;
         workers.notifier().job_queued();
 
         assert_eq!(h.wait_until_finished(&id).await.0, "completed");
         assert_eq!(h.store.read_result(&id).unwrap(), b"ab");
         assert!(h.store.read_inputs(&id, INPUT_COUNT).is_err());
+        assert!(completed() > before);
         workers.shutdown(Duration::from_secs(5)).await;
+        assert_eq!(liveness.alive(), 0);
     }
 
     #[tokio::test]

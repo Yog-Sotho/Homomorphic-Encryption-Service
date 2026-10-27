@@ -1,5 +1,20 @@
+# Both services run as non-root users with a read-only root filesystem, no
+# Linux capabilities and no privilege escalation. State lives in the named
+# volume `heaas-data` (see README "Backups" to back it up and to migrate from
+# the old ./data bind mount).
+x-hardened: &hardened
+  read_only: true
+  tmpfs:
+    - /tmp
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  restart: unless-stopped
+
 services:
   backend:
+    <<: *hardened
     build:
       context: .
       dockerfile: Dockerfile
@@ -9,7 +24,7 @@ services:
     # The backend drains running jobs for up to 30 s after SIGTERM.
     stop_grace_period: 40s
     environment:
-      - DATABASE_URL=sqlite:///usr/src/he-backend/data/he_saas.db
+      # DATABASE_URL, KEY_STORE_DIR and JOB_STORE_DIR point into /data (image defaults).
       - JWT_SECRET=${JWT_SECRET:?JWT_SECRET must be set in .env}
       # Browser origins besides APP_BASE_URL's own (usually none).
       - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-}
@@ -18,14 +33,16 @@ services:
       # X-Forwarded-For hops are believed; everyone else's are not.
       - TRUSTED_PROXIES=${TRUSTED_PROXIES:-127.0.0.1/32,::1/128,172.16.0.0/12}
       - SERVER_ADDR=0.0.0.0:8080
-      - RUST_LOG=info
-      # Users' uploaded TFHE server keys (~60 MB each) live next to the database.
-      - KEY_STORE_DIR=/usr/src/he-backend/data/keys
+      - RUST_LOG=${RUST_LOG:-info}
+      # JSON lines on stdout; `pretty` for reading by eye.
+      - LOG_FORMAT=${LOG_FORMAT:-json}
+      # Enables GET /metrics (Prometheus) with this bearer token; scrape the
+      # backend on 127.0.0.1:8080, nginx does not proxy it.
+      - METRICS_TOKEN=${METRICS_TOKEN:-}
       - MAX_KEYS_PER_USER=${MAX_KEYS_PER_USER:-2}
       # Decompressed keys kept in RAM, ~180 MB each.
       - KEY_CACHE_CAPACITY=${KEY_CACHE_CAPACITY:-2}
-      # Job ciphertexts (inputs and results), kept for JOB_RETENTION_DAYS.
-      - JOB_STORE_DIR=/usr/src/he-backend/data/jobs
+      # Job ciphertexts (inputs and results) are kept for JOB_RETENTION_DAYS.
       - HE_WORKERS=${HE_WORKERS:-2}
       - MAX_QUEUED_JOBS=${MAX_QUEUED_JOBS:-1000}
       - JOB_RETENTION_DAYS=${JOB_RETENTION_DAYS:-7}
@@ -48,17 +65,20 @@ services:
       - RESET_LINK_TTL_MINUTES=${RESET_LINK_TTL_MINUTES:-}
       - DAILY_COMPUTE_QUOTA=${DAILY_COMPUTE_QUOTA:-100}
     volumes:
-      - ./data:/usr/src/he-backend/data
+      # Database, users' server keys (~60 MB each) and job ciphertexts.
+      - heaas-data:/data
+      # Where `./backup.sh` has the backend write its backups.
+      - ${BACKUP_DIR:-/var/backups/heaas}:/backups
   frontend:
-    image: node:22-alpine
-    working_dir: /app
-    volumes:
-      - ./frontend:/app
-      - /app/node_modules
+    <<: *hardened
+    build:
+      context: frontend
     ports:
       - "127.0.0.1:3000:3000"
-    environment:
-      - BACKEND_URL=http://backend:8080
-    command: sh -c "corepack enable && pnpm install --frozen-lockfile && pnpm dev --host"
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
+
+volumes:
+  heaas-data:
+    name: heaas-data

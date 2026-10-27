@@ -17,6 +17,7 @@ pub struct ClaimedJob {
     pub operation: String,
     /// Including the attempt just started.
     pub attempts: i64,
+    pub created_at: chrono::NaiveDateTime,
 }
 
 /// Claims the oldest runnable pending job, if any.
@@ -31,7 +32,7 @@ pub async fn claim_next(pool: &SqlitePool) -> sqlx::Result<Option<ClaimedJob>> {
              ORDER BY created_at, rowid
              LIMIT 1
          )
-         RETURNING id, key_id, operation, attempts",
+         RETURNING id, key_id, operation, attempts, created_at",
     )
     .fetch_optional(pool)
     .await

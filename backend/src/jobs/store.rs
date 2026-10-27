@@ -25,6 +25,10 @@ impl JobStore {
         Ok(JobStore { dir })
     }
 
+    pub fn probe_writable(&self) -> io::Result<()> {
+        crate::storage::probe_writable(&self.dir)
+    }
+
     /// Only UUIDs are accepted, so a job id can never name a path outside `dir`.
     fn job_dir(&self, job_id: &str) -> io::Result<PathBuf> {
         uuid::Uuid::parse_str(job_id)
@@ -73,7 +77,7 @@ impl JobStore {
     /// this after the job's row is gone, when leftovers are only wasted space.
     pub fn remove_logged(&self, job_id: &str) {
         if let Err(e) = self.remove(job_id) {
-            log::error!("Failed to delete stored data for job {job_id}: {e}");
+            tracing::error!("Failed to delete stored data for job {job_id}: {e}");
         }
     }
 

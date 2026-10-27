@@ -9,7 +9,7 @@ use crate::crypto::keys::test_support::{client_key, compressed_server_key_bytes,
 use crate::crypto::keys::KeyStore;
 use crate::crypto::params::{MAX_CIPHERTEXT_BYTES, TFHE_VERSION};
 use crate::jobs::store::JobStore;
-use crate::jobs::worker::{JobNotifier, WorkerPool, WorkerSettings};
+use crate::jobs::worker::{JobNotifier, Liveness, WorkerPool, WorkerSettings};
 use crate::middleware::rate_limit::RateLimits;
 use actix_web::dev::{Service, ServiceResponse};
 use actix_web::http::StatusCode;
@@ -31,6 +31,7 @@ pub(super) struct TestEnv {
     store: web::Data<KeyStore>,
     jobs: web::Data<JobStore>,
     notifier: web::Data<JobNotifier>,
+    liveness: web::Data<Liveness>,
     /// Kept alive for the test; dropping it stops the workers.
     _workers: Option<WorkerPool>,
     dir: PathBuf,
@@ -38,20 +39,25 @@ pub(super) struct TestEnv {
 
 /// The app `main` builds, from a test environment's parts.
 macro_rules! app {
-    ($pool:expr, $config:expr, $store:expr, $jobs:expr, $notifier:expr) => {{
+    ($pool:expr, $config:expr, $store:expr, $jobs:expr, $notifier:expr, $liveness:expr) => {{
         let config: Arc<Config> = $config;
         let routes = config.clone();
         App::new()
+            .wrap(actix_web::middleware::from_fn(
+                crate::telemetry::request_context,
+            ))
             .app_data(web::Data::new($pool))
             .app_data(web::Data::new(config.clone()))
             .app_data($store)
             .app_data($jobs)
             .app_data($notifier)
+            .app_data($liveness)
             .app_data(web::Data::new(RateLimits::new(&config)))
             .app_data(web::Data::new(crate::api::auth::oauth::http_client()))
             .app_data(web::Data::new(
                 crate::api::auth::email::Mailer::new(&config.mail).unwrap(),
             ))
+            .configure(crate::telemetry::configure)
             .configure(move |cfg| api::configure(cfg, &routes))
     }};
 }
@@ -109,12 +115,18 @@ impl TestEnv {
                 .as_ref()
                 .map_or_else(JobNotifier::default, WorkerPool::notifier),
         );
+        let liveness = web::Data::new(
+            workers
+                .as_ref()
+                .map_or_else(Liveness::default, WorkerPool::liveness),
+        );
         TestEnv {
             pool,
             config,
             store,
             jobs,
             notifier,
+            liveness,
             _workers: workers,
             dir,
         }
@@ -129,7 +141,8 @@ impl TestEnv {
             self.config.clone(),
             self.store.clone(),
             self.jobs.clone(),
-            self.notifier.clone()
+            self.notifier.clone(),
+            self.liveness.clone()
         ))
         .await
     }
@@ -143,10 +156,11 @@ impl TestEnv {
             self.store.clone(),
             self.jobs.clone(),
             self.notifier.clone(),
+            self.liveness.clone(),
         );
         let server = actix_web::HttpServer::new(move || {
-            let (pool, config, store, jobs, notifier) = parts.clone();
-            app!(pool, config, store, jobs, notifier)
+            let (pool, config, store, jobs, notifier, liveness) = parts.clone();
+            app!(pool, config, store, jobs, notifier, liveness)
         })
         .workers(1)
         .bind(("127.0.0.1", 0))
@@ -420,17 +434,13 @@ async fn key_uploads_are_validated_limited_and_authenticated() {
         upload_key(&app, &alice, b"").await.status(),
         StatusCode::BAD_REQUEST
     );
-    // The JWT guard rejects with a service error rather than a response.
     let unauthenticated = test::TestRequest::post()
         .uri("/api/v1/keys")
         .insert_header(("Authorization", "Bearer nope"))
         .set_payload(compressed_server_key_bytes().to_vec())
         .to_request();
-    let err = test::try_call_service(&app, unauthenticated)
-        .await
-        .expect_err("rejected");
     assert_eq!(
-        err.as_response_error().status_code(),
+        test::call_service(&app, unauthenticated).await.status(),
         StatusCode::UNAUTHORIZED
     );
 
@@ -1001,4 +1011,117 @@ async fn the_sdk_runs_the_whole_flow_against_a_live_server() {
     client.delete_job(&first.id).await.unwrap();
     client.delete_key(&key.id).await.unwrap();
     assert!(client.list_keys().await.unwrap().is_empty());
+}
+
+#[actix_web::test]
+async fn readiness_checks_the_database_stores_and_workers() {
+    let env = TestEnv::new().await;
+    let app = env.app().await;
+    async fn ready(
+        app: &impl Service<actix_http::Request, Response = ServiceResponse, Error = actix_web::Error>,
+    ) -> (StatusCode, Value) {
+        let resp = test::call_service(
+            app,
+            test::TestRequest::get()
+                .uri("/api/v1/health/ready")
+                .to_request(),
+        )
+        .await;
+        let status = resp.status();
+        (status, test::read_body_json(resp).await)
+    }
+
+    let (status, body) = ready(&app).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body["checks"],
+        json!({ "database": "ok", "key_store": "ok", "job_store": "ok", "workers": "2/2" })
+    );
+
+    // A store that can no longer take files makes the instance unready.
+    std::fs::remove_dir_all(&env.config.key_store_dir).unwrap();
+    let (status, body) = ready(&app).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(body["error"]["code"], "unavailable");
+    assert_eq!(body["error"]["message"], "Not ready: key store");
+    assert_eq!(body["checks"]["key_store"], "unavailable");
+    assert_eq!(body["checks"]["database"], "ok");
+}
+
+#[actix_web::test]
+async fn metrics_need_the_token_and_label_routes_by_pattern() {
+    let token = "metrics-token-that-is-at-least-32-bytes";
+    let disabled = TestEnv::without_workers(|_| {}).await;
+    let app = disabled.app().await;
+    let resp =
+        test::call_service(&app, test::TestRequest::get().uri("/metrics").to_request()).await;
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+
+    let env = TestEnv::without_workers(|c| c.metrics_token = Some(token.into())).await;
+    let app = env.app().await;
+    let alice = env.user("alice").await;
+    // A request with an id in its path, to see how it is labelled.
+    let missing = test::TestRequest::get()
+        .uri(&format!("/api/v1/compute/jobs/{}", uuid::Uuid::new_v4()))
+        .insert_header(("Authorization", alice.as_str()))
+        .to_request();
+    assert_eq!(
+        test::call_service(&app, missing).await.status(),
+        StatusCode::NOT_FOUND
+    );
+
+    for presented in [None, Some("Bearer wrong"), Some(token)] {
+        let mut req = test::TestRequest::get().uri("/metrics");
+        if let Some(value) = presented {
+            req = req.insert_header(("Authorization", value));
+        }
+        let status = test::call_service(&app, req.to_request()).await.status();
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{presented:?}");
+    }
+    let resp = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri("/metrics")
+            .insert_header(("Authorization", format!("Bearer {token}")))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let text = String::from_utf8(test::read_body(resp).await.to_vec()).unwrap();
+    for expected in [
+        r#"heaas_http_requests_total{method="GET",route="/api/v1/compute/jobs/{id}",status="404"}"#,
+        r#"heaas_jobs{status="pending"} 0"#,
+        "heaas_server_keys 0",
+        "heaas_build_info{",
+    ] {
+        assert!(text.contains(expected), "{expected} missing from\n{text}");
+    }
+}
+
+#[actix_web::test]
+async fn every_response_carries_a_request_id() {
+    let env = TestEnv::without_workers(|_| {}).await;
+    let app = env.app().await;
+    // Including errors raised by middleware before any handler runs.
+    for req in [
+        test::TestRequest::get().uri("/api/v1/health"),
+        test::TestRequest::get().uri("/api/v1/keys"),
+        test::TestRequest::get().uri("/api/v1/nope"),
+    ] {
+        let resp = test::call_service(&app, req.to_request()).await;
+        let id = resp.headers().get("x-request-id").expect("x-request-id");
+        assert!(uuid::Uuid::parse_str(id.to_str().unwrap()).is_ok());
+    }
+    let resp = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri("/api/v1/keys")
+            .insert_header(("X-Request-Id", "trace-42"))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(resp.headers().get("x-request-id").unwrap(), "trace-42");
+    let body: Value = test::read_body_json(resp).await;
+    assert_eq!(body["error"]["code"], "unauthorized");
 }

@@ -1,3 +1,4 @@
+use crate::telemetry::LogFormat;
 use dotenvy::dotenv;
 use hkdf::Hkdf;
 use ipnet::IpNet;
@@ -206,7 +207,13 @@ pub struct Config {
     pub github_client_id: Option<String>,
     pub github_client_secret: Option<String>,
     pub daily_compute_quota: usize,
+    pub log_format: LogFormat,
+    /// Bearer token for `GET /metrics`; without one the endpoint is off.
+    pub metrics_token: Option<String>,
 }
+
+/// A Prometheus scraper's token is a credential like any other.
+pub const MIN_METRICS_TOKEN_BYTES: usize = 32;
 
 /// Every problem found in the environment, so one start reports them all.
 #[derive(Debug)]
@@ -422,6 +429,29 @@ impl Config {
         };
 
         let mail = Self::mail_settings(&mut vars, debug_build);
+        let log_format = match vars
+            .get("LOG_FORMAT")
+            .map(|v| v.to_ascii_lowercase())
+            .as_deref()
+        {
+            None if debug_build => LogFormat::Pretty,
+            None | Some("json") => LogFormat::Json,
+            Some("pretty") => LogFormat::Pretty,
+            Some(other) => {
+                vars.errors
+                    .push(format!("LOG_FORMAT must be json or pretty, not {other:?}"));
+                LogFormat::Json
+            }
+        };
+        let metrics_token = vars.get("METRICS_TOKEN");
+        if metrics_token
+            .as_ref()
+            .is_some_and(|t| t.len() < MIN_METRICS_TOKEN_BYTES)
+        {
+            vars.errors.push(format!(
+                "METRICS_TOKEN must be at least {MIN_METRICS_TOKEN_BYTES} bytes (e.g. `openssl rand -hex 32`)"
+            ));
+        }
         let (google_client_id, google_client_secret) =
             vars.pair("GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET");
         let (github_client_id, github_client_secret) =
@@ -459,6 +489,8 @@ impl Config {
             github_client_id,
             github_client_secret,
             daily_compute_quota: vars.number("DAILY_COMPUTE_QUOTA", 100, 1..=1_000_000),
+            log_format,
+            metrics_token,
         };
         if vars.errors.is_empty() {
             Ok(config)
@@ -572,6 +604,8 @@ impl Config {
             github_client_id: None,
             github_client_secret: None,
             daily_compute_quota: 100,
+            log_format: LogFormat::Pretty,
+            metrics_token: None,
         }
     }
 }
@@ -645,6 +679,8 @@ mod tests {
         assert_eq!(config.rate_limits.auth_per_minute, 30);
         assert!(config.mail.smtp.is_none());
         assert!(config.mail.log_links);
+        assert_eq!(config.log_format, LogFormat::Pretty);
+        assert!(config.metrics_token.is_none());
         assert!(config
             .allowed_origins
             .contains(&"http://localhost:5173".to_string()));
@@ -665,6 +701,8 @@ mod tests {
                 ("GOOGLE_CLIENT_ID", "id-without-secret"),
                 ("DATABASE_URL", "postgres://db"),
                 ("SERVER_ADDR", "8080"),
+                ("LOG_FORMAT", "xml"),
+                ("METRICS_TOKEN", "short"),
             ],
             true,
         );
@@ -680,13 +718,15 @@ mod tests {
             "GOOGLE_CLIENT_ID",
             "DATABASE_URL",
             "SERVER_ADDR",
+            "LOG_FORMAT",
+            "METRICS_TOKEN",
         ] {
             assert!(
                 found.iter().any(|p| p.contains(name)),
                 "{name} not reported in {found:#?}"
             );
         }
-        assert_eq!(found.len(), 11, "{found:#?}");
+        assert_eq!(found.len(), 13, "{found:#?}");
     }
 
     #[test]
@@ -706,6 +746,7 @@ mod tests {
         assert_eq!(config.app_base_url, "https://heaas.example");
         assert_eq!(config.allowed_origins, vec!["https://heaas.example"]);
         assert!(!config.mail.log_links);
+        assert_eq!(config.log_format, LogFormat::Json);
         assert!(!problems(
             &[
                 ("JWT_SECRET", SECRET),

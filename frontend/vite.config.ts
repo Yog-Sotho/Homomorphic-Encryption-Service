@@ -4,8 +4,7 @@ import adapter from '@sveltejs/adapter-node';
 import { defineConfig, type Connect, type Plugin } from 'vite';
 import { ISOLATION_HEADERS } from './isolation-headers.js';
 
-// BACKEND_URL is set to http://backend:8080 when running inside Docker Compose.
-// When running natively (pnpm dev on the host) it falls back to localhost:8080.
+// BACKEND_URL: where the dev and preview servers proxy /api (default: a local backend).
 const backendUrl = process.env.BACKEND_URL ?? 'http://localhost:8080';
 
 const setIsolationHeaders: Connect.NextHandleFunction = (_req, res, next) => {

@@ -141,19 +141,54 @@ jobs:
           retention-days: 7
 
   docker:
-    name: Docker (lint, build)
+    name: Docker (lint, build, run)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: hadolint/hadolint-action@v3.5.0
         with:
           dockerfile: Dockerfile
+      - uses: hadolint/hadolint-action@v3.5.0
+        with:
+          dockerfile: frontend/Dockerfile
       - uses: docker/setup-buildx-action@v4
       - name: Build backend image
         uses: docker/build-push-action@v7
         with:
           context: .
           push: false
+          load: true
           tags: heaas-backend:ci
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=backend
+          cache-to: type=gha,mode=max,scope=backend
+      - name: Build frontend image
+        uses: docker/build-push-action@v7
+        with:
+          context: frontend
+          push: false
+          load: true
+          tags: heaas-frontend:ci
+          cache-from: type=gha,scope=frontend
+          cache-to: type=gha,mode=max,scope=frontend
+      # Run both the way compose does: read-only root, no capabilities, as the
+      # images' non-root users. Health comes from the images' own HEALTHCHECKs.
+      - name: Containers start healthy and unprivileged
+        run: |
+          set -eu
+          hardened="--read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges --health-interval 2s"
+          docker run -d --name backend $hardened \
+            -e JWT_SECRET=ci-secret-that-is-at-least-32-bytes-long \
+            -e APP_BASE_URL=http://localhost:3000 heaas-backend:ci
+          docker run -d --name frontend $hardened heaas-frontend:ci
+          for c in backend frontend; do
+            for _ in $(seq 1 60); do
+              status=$(docker inspect --format '{{.State.Health.Status}}' "$c")
+              [ "$status" = healthy ] && break
+              sleep 2
+            done
+            docker logs "$c" | tail -20
+            [ "$status" = healthy ] || { echo "$c is $status"; exit 1; }
+          done
+          [ "$(docker inspect --format '{{.Config.User}}' heaas-backend:ci)" = 65532:65532 ]
+          [ "$(docker inspect --format '{{.Config.User}}' heaas-frontend:ci)" = node ]
+          docker exec backend he-backend backup /data/backup-ci

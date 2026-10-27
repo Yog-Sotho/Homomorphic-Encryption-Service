@@ -108,7 +108,9 @@ fn transport(smtp: &SmtpSettings) -> Result<AsyncSmtpTransport<Tokio1Executor>, 
         SmtpTls::StartTls => Transport::starttls_relay(&smtp.host).map_err(invalid)?,
         SmtpTls::Implicit => Transport::relay(&smtp.host).map_err(invalid)?,
         SmtpTls::None => {
-            log::warn!("SMTP_TLS=none: emails (which carry sign-in links) are sent unencrypted");
+            tracing::warn!(
+                "SMTP_TLS=none: emails (which carry sign-in links) are sent unencrypted"
+            );
             Transport::builder_dangerous(&smtp.host)
         }
     }
@@ -140,13 +142,13 @@ impl Mailer {
         outbox::record(to, template.url);
         let Some(transport) = &self.transport else {
             if self.log_links {
-                log::info!(
+                tracing::info!(
                     "SMTP not configured; {:?} for {to}: {}",
                     template.subject,
                     template.url
                 );
             } else {
-                log::warn!(
+                tracing::warn!(
                     "SMTP not configured; {:?} for {to} was not sent",
                     template.subject
                 );
@@ -154,7 +156,7 @@ impl Mailer {
             return;
         };
         if let Err(e) = self.deliver(transport, to, &template).await {
-            log::error!("Failed to send {:?} to {to}: {e}", template.subject);
+            tracing::error!("Failed to send {:?} to {to}: {e}", template.subject);
         }
     }
 

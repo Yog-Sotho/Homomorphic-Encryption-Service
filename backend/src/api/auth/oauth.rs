@@ -497,7 +497,7 @@ pub async fn callback(
         Ok(identity) => identity,
         Err(Failure::Rejected(message)) => return fail(&config, message),
         Err(Failure::Provider(detail)) => {
-            log::error!("{} sign-in failed: {detail}", provider.name());
+            tracing::error!("{} sign-in failed: {detail}", provider.name());
             return fail(&config, "Sign-in failed. Please try again.");
         }
     };
@@ -518,7 +518,7 @@ pub async fn callback(
             .cookie(state_cookie(&config, String::new(), time::Duration::ZERO))
             .finish(),
         Err(e) => {
-            log::error!("{} sign-in: account lookup failed: {e:?}", provider.name());
+            tracing::error!("{} sign-in: account lookup failed: {e:?}", provider.name());
             fail(&config, "Sign-in failed. Please try again.")
         }
     }

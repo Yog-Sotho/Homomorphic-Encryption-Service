@@ -126,7 +126,7 @@ pub async fn revoke_all<'e, E: sqlx::Executor<'e, Database = Sqlite>>(
 fn signed_out(config: &Config, message: &str) -> HttpResponse {
     let mut response = AppError::unauthorized(message).error_response();
     if let Err(e) = response.add_cookie(&clear_refresh_cookie(config)) {
-        log::error!("Could not clear the refresh cookie: {e}");
+        tracing::error!("Could not clear the refresh cookie: {e}");
     }
     response
 }
@@ -195,7 +195,7 @@ pub async fn refresh(
                 Some(Rotated {
                     user_id, family_id, ..
                 }) => {
-                    log::warn!(
+                    tracing::warn!(
                         "Rotated refresh token reused for user {user_id}; revoking its session"
                     );
                     sqlx::query("DELETE FROM refresh_tokens WHERE family_id = ?")

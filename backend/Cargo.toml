@@ -22,8 +22,11 @@ chrono.workspace = true
 jsonwebtoken = { version = "11", default-features = false, features = ["aws_lc_rs"] }
 bcrypt = "0.19"
 uuid.workspace = true
-env_logger = "0.11"
-log = "0.4"
+# Structured logs (JSON in production); `log` records from libraries are bridged in.
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+# Prometheus text exposition only; protobuf is not needed.
+prometheus = { version = "0.14", default-features = false }
 dotenvy = "0.15"
 base64.workspace = true
 tfhe.workspace = true

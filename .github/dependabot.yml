@@ -17,7 +17,7 @@ updates:
         update-types: [minor, patch]
 
   - package-ecosystem: docker
-    directory: /
+    directories: [/, /frontend]
     schedule:
       interval: weekly
 
