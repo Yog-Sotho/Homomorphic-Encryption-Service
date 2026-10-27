@@ -10,7 +10,7 @@ use crate::crypto::keys::KeyStore;
 use crate::crypto::params::{MAX_CIPHERTEXT_BYTES, TFHE_VERSION};
 use crate::jobs::store::JobStore;
 use crate::jobs::worker::{JobNotifier, WorkerPool, WorkerSettings};
-use crate::middleware::rate_limit::RateLimiter;
+use crate::middleware::rate_limit::RateLimits;
 use actix_web::dev::{Service, ServiceResponse};
 use actix_web::http::StatusCode;
 use actix_web::{test, web, App};
@@ -25,9 +25,9 @@ use tfhe::prelude::*;
 use tfhe::safe_serialization::{safe_deserialize, safe_serialize};
 use tfhe::FheUint16;
 
-struct TestEnv {
-    pool: SqlitePool,
-    config: Arc<Config>,
+pub(super) struct TestEnv {
+    pub(super) pool: SqlitePool,
+    pub(super) config: Arc<Config>,
     store: web::Data<KeyStore>,
     jobs: web::Data<JobStore>,
     notifier: web::Data<JobNotifier>,
@@ -43,7 +43,7 @@ impl TestEnv {
     }
 
     /// An app whose jobs stay queued, for testing the queue's limits.
-    async fn without_workers(adjust: impl FnOnce(&mut Config)) -> Self {
+    pub(super) async fn without_workers(adjust: impl FnOnce(&mut Config)) -> Self {
         Self::with(adjust, false).await
     }
 
@@ -100,7 +100,7 @@ impl TestEnv {
         }
     }
 
-    async fn app(
+    pub(super) async fn app(
         &self,
     ) -> impl Service<actix_http::Request, Response = ServiceResponse, Error = actix_web::Error>
     {
@@ -112,14 +112,15 @@ impl TestEnv {
                 .app_data(self.store.clone())
                 .app_data(self.jobs.clone())
                 .app_data(self.notifier.clone())
-                .app_data(web::Data::new(RateLimiter::new()))
+                .app_data(web::Data::new(RateLimits::new(&self.config)))
+                .app_data(web::Data::new(crate::api::auth::oauth::http_client()))
                 .configure(move |cfg| api::configure(cfg, &config)),
         )
         .await
     }
 
     /// Creates a verified user and returns a bearer token for them.
-    async fn user(&self, id: &str) -> String {
+    pub(super) async fn user(&self, id: &str) -> String {
         sqlx::query(
             "INSERT INTO users (id, email, password_hash, email_verified) VALUES (?, ?, '', 1)",
         )

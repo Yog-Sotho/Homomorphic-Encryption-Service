@@ -4,19 +4,6 @@ use sqlx::FromRow;
 
 use crate::crypto::eval::Operation;
 
-#[derive(Debug, Serialize, Deserialize, FromRow)]
-pub struct User {
-    pub id: String,
-    pub email: String,
-    #[serde(skip_serializing)]
-    pub password_hash: String,
-    pub created_at: NaiveDateTime,
-    pub email_verified: bool,
-    pub email_verify_token: Option<String>,
-    pub password_reset_token: Option<String>,
-    pub password_reset_expires_at: Option<chrono::NaiveDateTime>,
-}
-
 /// A job as its owner sees it: metadata only, never ciphertexts or the owner's id.
 #[derive(Debug, Serialize, Deserialize, FromRow)]
 pub struct JobSummary {

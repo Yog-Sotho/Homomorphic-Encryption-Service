@@ -2,13 +2,10 @@
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
   import { resolve } from '$app/paths';
+  import { session } from '#lib/api.js';
 
-  onMount(() => {
-    if (localStorage.getItem('token') || localStorage.getItem('refresh_token')) {
-      goto(resolve('/dashboard'));
-    } else {
-      goto(resolve('/login'));
-    }
+  onMount(async () => {
+    goto(resolve((await session.restore()) ? '/dashboard' : '/login'));
   });
 </script>
 

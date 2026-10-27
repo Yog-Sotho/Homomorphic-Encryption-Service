@@ -25,19 +25,35 @@ export async function cspViolations(page: Page): Promise<string[]> {
   return page.evaluate(() => (window as unknown as { __csp?: string[] }).__csp ?? []);
 }
 
-/** Mocks a successful login and returns the signed-in user. */
+/** Mocks the auth endpoints every page may call while signed out. */
+export async function mockPublicAuthApi(page: Page) {
+  await page.route('**/api/auth/providers', (route) =>
+    route.fulfill({ json: { google: false, github: false } })
+  );
+}
+
+/**
+ * Mocks a successful login and returns the signed-in user. Afterwards the
+ * refresh endpoint answers as if the browser held the HttpOnly session cookie,
+ * so reloads stay signed in.
+ */
 export async function mockLogin(page: Page) {
   const user = { id: 'u1', email: 'alice@example.com', created_at: '2026-10-25T00:00:00' };
-  // Payload of the access token only needs a future `exp` for the layout's expiry check.
-  const exp = Math.floor(Date.now() / 1000) + 3600;
-  const token = `h.${Buffer.from(JSON.stringify({ sub: 'u1', exp })).toString('base64url')}.s`;
-  await page.route('**/api/auth/login', (route) =>
-    route.fulfill({ json: { token, refresh_token: 'r1', user } })
+  const session = { token: 'access-token', expires_in: 900, user };
+  let signedIn = false;
+  await mockPublicAuthApi(page);
+  await page.route('**/api/auth/login', (route) => {
+    signedIn = true;
+    return route.fulfill({ json: session });
+  });
+  await page.route('**/api/auth/refresh', (route) =>
+    signedIn
+      ? route.fulfill({ json: session })
+      : route.fulfill({ status: 401, json: { message: 'Not signed in' } })
   );
   return user;
 }
 
-/** Signs in through the login form (with whatever API the test has mocked or started). */
 export async function signIn(page: Page, email = 'alice@example.com', password = 'Correct-horse-1') {
   await page.goto('/heaas/login');
   await page.getByLabel('Email').fill(email);

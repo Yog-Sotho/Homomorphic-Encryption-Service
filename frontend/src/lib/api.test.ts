@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { ApiError, auth, compute, errorMessage, user } from './api.js';
+import { get } from 'svelte/store';
+import { ApiError, auth, compute, errorMessage, session, user } from './api.js';
+import { userStore } from './stores.js';
 
 function jsonResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {
@@ -32,23 +34,34 @@ describe('api client', () => {
     vi.stubGlobal('fetch', fetchMock);
     vi.stubGlobal('localStorage', memoryStorage());
     vi.stubGlobal('window', { location });
+    session.clear();
   });
 
   afterEach(() => {
     vi.unstubAllGlobals();
   });
 
-  it('sends JSON with the bearer token and returns the parsed body', async () => {
-    localStorage.setItem('token', 'access-1');
-    fetchMock.mockResolvedValueOnce(jsonResponse(200, { message: 'ok' }));
+  const SESSION = {
+    token: 'access-1',
+    expires_in: 900,
+    user: { id: 'u1', email: 'a@b.co', created_at: '2026-10-27T00:00:00' }
+  };
 
+  it('keeps the access token in memory only and sends it as a bearer token', async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(200, SESSION))
+      .mockResolvedValueOnce(jsonResponse(200, { message: 'ok' }));
+
+    await auth.login('a@b.co', 'pw');
+    expect(get(userStore)).toEqual(SESSION.user);
     await expect(auth.forgotPassword('a@b.co')).resolves.toEqual({ message: 'ok' });
 
-    const [url, init] = fetchMock.mock.calls[0];
+    const [url, init] = fetchMock.mock.calls[1];
     expect(url).toBe('/api/auth/forgot-password');
     expect(init?.method).toBe('POST');
     expect(init?.body).toBe(JSON.stringify({ email: 'a@b.co' }));
     expect((init?.headers as Record<string, string>).Authorization).toBe('Bearer access-1');
+    expect(localStorage.length).toBe(0);
   });
 
   it('maps error responses to ApiError with the server message', async () => {
@@ -72,13 +85,14 @@ describe('api client', () => {
     await expect(user.me()).rejects.toMatchObject({ status: 0, message: 'Network error' });
   });
 
-  it('refreshes once for concurrent 401s and retries with the new token', async () => {
-    localStorage.setItem('token', 'expired');
-    localStorage.setItem('refresh_token', 'refresh-1');
+  it('refreshes once from the cookie for concurrent 401s and retries with the new token', async () => {
     fetchMock.mockImplementation(async (url, init) => {
       const authHeader = (init?.headers as Record<string, string>).Authorization;
       if (url === '/api/auth/refresh') {
-        return jsonResponse(200, { token: 'access-2', refresh_token: 'refresh-2' });
+        // The refresh token travels only as the HttpOnly cookie.
+        expect(init?.body).toBeUndefined();
+        expect(authHeader).toBeUndefined();
+        return jsonResponse(200, { ...SESSION, token: 'access-2' });
       }
       return authHeader === 'Bearer access-2'
         ? jsonResponse(200, { id: 'u1' })
@@ -90,27 +104,42 @@ describe('api client', () => {
     expect(results).toEqual([{ id: 'u1' }, { id: 'u1' }]);
     const refreshCalls = fetchMock.mock.calls.filter(([url]) => url === '/api/auth/refresh');
     expect(refreshCalls).toHaveLength(1);
-    expect(localStorage.getItem('token')).toBe('access-2');
-    expect(localStorage.getItem('refresh_token')).toBe('refresh-2');
   });
 
-  it('clears the session and redirects to login when refresh fails', async () => {
-    localStorage.setItem('token', 'expired');
-    localStorage.setItem('refresh_token', 'revoked');
+  it('redirects to login when the session cannot be refreshed', async () => {
     fetchMock.mockImplementation(async (url) =>
       url === '/api/auth/refresh'
-        ? jsonResponse(401, { message: 'Invalid refresh token' })
+        ? jsonResponse(401, { message: 'Session expired' })
         : jsonResponse(401, { message: 'Invalid or missing token' })
     );
 
     await expect(user.me()).rejects.toMatchObject({ status: 401 });
-    expect(localStorage.getItem('token')).toBeNull();
-    expect(localStorage.getItem('refresh_token')).toBeNull();
     expect(location.href).toBe('/heaas/login');
+    expect(get(userStore)).toBeNull();
+  });
+
+  it('restores a session after a reload, or reports there is none', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(200, SESSION));
+    await expect(session.restore()).resolves.toBe(true);
+    // Already signed in: no second request.
+    await expect(session.restore()).resolves.toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    session.clear();
+    fetchMock.mockResolvedValueOnce(jsonResponse(401, { message: 'Not signed in' }));
+    await expect(session.restore()).resolves.toBe(false);
+  });
+
+  it('signs out on the server and forgets the session even if that fails', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(200, SESSION));
+    await auth.login('a@b.co', 'pw');
+    fetchMock.mockRejectedValueOnce(new TypeError('offline'));
+    await expect(session.end()).rejects.toBeInstanceOf(ApiError);
+    expect(get(userStore)).toBeNull();
+    expect(fetchMock.mock.calls[1][0]).toBe('/api/auth/logout');
   });
 
   it('does not try to refresh on auth endpoints', async () => {
-    localStorage.setItem('refresh_token', 'refresh-1');
     fetchMock.mockResolvedValueOnce(jsonResponse(401, { message: 'Invalid credentials' }));
 
     await expect(auth.login('a@b.co', 'wrong')).rejects.toMatchObject({

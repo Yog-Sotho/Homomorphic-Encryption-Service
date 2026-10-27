@@ -1,4 +1,5 @@
 import { resolve } from '$app/paths';
+import { userStore } from './stores.js';
 
 const API_BASE = '/api';
 const REQUEST_TIMEOUT_MS = 10_000;
@@ -85,22 +86,32 @@ async function parse<T>(response: Response): Promise<T> {
   return data as T;
 }
 
-interface TokenPair {
-  token: string;
-  refresh_token: string;
+// ── Session ─────────────────────────────────────────────────────────────────
+//
+// The access token lives only in this module's memory, never in localStorage,
+// so injected scripts cannot lift it from storage. The long-lived refresh token
+// is an HttpOnly cookie the server sets on /api/auth; page scripts cannot read
+// it at all. A reload restores the session with `session.restore()`.
+
+let accessToken: string | null = null;
+// Single-flight refresh: concurrent 401s (and the layout's restore) share one request.
+let refreshPromise: Promise<AuthResponse> | null = null;
+
+function startSession(res: AuthResponse): AuthResponse {
+  accessToken = res.token;
+  userStore.set(res.user);
+  return res;
 }
 
-// Single-flight refresh: concurrent 401s share one refresh request.
-let refreshPromise: Promise<string> | null = null;
+function clearSession(): void {
+  accessToken = null;
+  userStore.set(null);
+}
 
-function refreshAccessToken(refreshToken: string): Promise<string> {
-  refreshPromise ??= send('POST', '/auth/refresh', { body: { json: { refresh_token: refreshToken } } }, null)
-    .then((res) => parse<TokenPair>(res))
-    .then((pair) => {
-      localStorage.setItem('token', pair.token);
-      localStorage.setItem('refresh_token', pair.refresh_token);
-      return pair.token;
-    })
+function refreshSession(): Promise<AuthResponse> {
+  refreshPromise ??= send('POST', '/auth/refresh', {}, null)
+    .then((res) => parse<AuthResponse>(res))
+    .then(startSession)
     .finally(() => {
       refreshPromise = null;
     });
@@ -108,30 +119,50 @@ function refreshAccessToken(refreshToken: string): Promise<string> {
 }
 
 function redirectToLogin(): void {
-  localStorage.removeItem('token');
-  localStorage.removeItem('refresh_token');
+  clearSession();
   window.location.href = resolve('/login');
 }
 
-/** Sends with the stored access token, refreshing it once on a 401. */
+/** Sends with the current access token, refreshing it once on a 401. */
 async function authorized(method: Method, path: string, options: RequestOptions): Promise<Response> {
-  const response = await send(method, path, options, localStorage.getItem('token'));
+  const response = await send(method, path, options, accessToken);
   if (response.status !== 401 || path.startsWith('/auth/')) return response;
 
-  const refreshToken = localStorage.getItem('refresh_token');
-  if (!refreshToken) {
-    redirectToLogin();
-    return response;
-  }
-  let newToken: string;
+  let renewed: AuthResponse;
   try {
-    newToken = await refreshAccessToken(refreshToken);
+    renewed = await refreshSession();
   } catch {
     redirectToLogin();
     return response;
   }
-  return send(method, path, options, newToken);
+  return send(method, path, options, renewed.token);
 }
+
+export const session = {
+  /** Records a sign-in (login, email verification, OAuth exchange). */
+  start: startSession,
+  /** Restores the session from the refresh cookie; `false` if there is none. */
+  restore: async (): Promise<boolean> => {
+    if (accessToken) return true;
+    try {
+      await refreshSession();
+      return true;
+    } catch {
+      clearSession();
+      return false;
+    }
+  },
+  /** Signs out on the server (best effort) and forgets the session here. */
+  end: async (): Promise<void> => {
+    try {
+      await send('POST', '/auth/logout', {}, null);
+    } finally {
+      clearSession();
+    }
+  },
+  /** Forgets the session here only (the server already ended it). */
+  clear: clearSession
+};
 
 async function request<T>(method: Method, path: string, options: RequestOptions = {}): Promise<T> {
   return parse<T>(await authorized(method, path, options));
@@ -150,7 +181,10 @@ export interface PublicUser {
   created_at: string;
 }
 
-export interface AuthResponse extends TokenPair {
+export interface AuthResponse {
+  token: string;
+  /** Seconds until `token` expires. */
+  expires_in: number;
   user: PublicUser;
 }
 
@@ -216,11 +250,16 @@ export const auth = {
   register: (email: string, password: string) =>
     request<MessageResponse>('POST', '/auth/register', json({ email, password })),
   login: (email: string, password: string) =>
-    request<AuthResponse>('POST', '/auth/login', json({ email, password })),
+    request<AuthResponse>('POST', '/auth/login', json({ email, password })).then(startSession),
+  /** Confirms an email address from the token in a verification link; signs in. */
+  verifyEmail: (token: string) =>
+    request<AuthResponse>('POST', '/auth/verify', json({ token })).then(startSession),
+  /** Redeems the one-time code an OAuth sign-in redirects back with. */
+  exchange: (code: string) =>
+    request<AuthResponse>('POST', '/auth/exchange', json({ code })).then(startSession),
+  providers: () => request<{ google: boolean; github: boolean }>('GET', '/auth/providers'),
   resendVerification: (email: string) =>
     request<MessageResponse>('POST', '/auth/resend-verification', json({ email })),
-  logout: (refreshToken: string) =>
-    request<MessageResponse>('POST', '/auth/logout', json({ refresh_token: refreshToken })),
   forgotPassword: (email: string) =>
     request<MessageResponse>('POST', '/auth/forgot-password', json({ email })),
   resetPassword: (token: string, newPassword: string) =>

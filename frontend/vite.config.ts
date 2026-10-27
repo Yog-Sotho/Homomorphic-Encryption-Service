@@ -60,14 +60,14 @@ export default defineConfig({
     port: 3000,
     strictPort: true,
     proxy: {
-      '/api': { target: backendUrl, changeOrigin: true, secure: false }
+      '/api': { target: backendUrl, changeOrigin: true, secure: false, xfwd: true }
     }
   },
   preview: {
     port: 4173,
     strictPort: true,
     proxy: {
-      '/api': { target: backendUrl, changeOrigin: true, secure: false }
+      '/api': { target: backendUrl, changeOrigin: true, secure: false, xfwd: true }
     }
   },
   build: {

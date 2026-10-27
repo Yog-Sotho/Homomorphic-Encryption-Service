@@ -3,14 +3,20 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    # Reachable only from this host (nginx); never publish the API directly.
     ports:
-      - "18080:8080"
+      - "127.0.0.1:8080:8080"
     # The backend drains running jobs for up to 30 s after SIGTERM.
     stop_grace_period: 40s
     environment:
       - DATABASE_URL=sqlite:///usr/src/he-backend/data/he_saas.db
       - JWT_SECRET=${JWT_SECRET:?JWT_SECRET must be set in .env}
-      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:3000}
+      # Browser origins besides APP_BASE_URL's own (usually none).
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-}
+      # Requests reach the backend through nginx on the host and the frontend
+      # container (Docker networks are in 172.16.0.0/12), so their
+      # X-Forwarded-For hops are believed; everyone else's are not.
+      - TRUSTED_PROXIES=${TRUSTED_PROXIES:-127.0.0.1/32,::1/128,172.16.0.0/12}
       - SERVER_ADDR=0.0.0.0:8080
       - RUST_LOG=info
       # Users' uploaded TFHE server keys (~60 MB each) live next to the database.
@@ -43,7 +49,7 @@ services:
       - ./frontend:/app
       - /app/node_modules
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     environment:
       - BACKEND_URL=http://backend:8080
     command: sh -c "corepack enable && pnpm install --frozen-lockfile && pnpm dev --host"
