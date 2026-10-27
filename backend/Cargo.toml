@@ -38,7 +38,7 @@ utoipa.workspace = true
 governor = "0.10"
 ipnet = "2"
 hmac = "0.12"
-hkdf = "0.12"
+hkdf = "0.13"
 subtle = "2"
 getrandom = "0.3"
 
