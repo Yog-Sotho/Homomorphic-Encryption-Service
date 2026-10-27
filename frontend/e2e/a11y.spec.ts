@@ -23,9 +23,9 @@ async function scan(page: Page) {
 
 async function mockSignedInApi(page: Page) {
   await mockLogin(page);
-  await page.route('**/api/he/params', (route) => route.fulfill({ json: { max_keys_per_user: 2 } }));
-  await page.route('**/api/keys', (route) => route.fulfill({ json: [KEY] }));
-  await page.route('**/api/user/me', (route) =>
+  await page.route('**/api/v1/he/params', (route) => route.fulfill({ json: { max_keys_per_user: 2 } }));
+  await page.route('**/api/v1/keys', (route) => route.fulfill({ json: [KEY] }));
+  await page.route('**/api/v1/user/me', (route) =>
     route.fulfill({
       json: {
         id: 'u1',
@@ -38,7 +38,7 @@ async function mockSignedInApi(page: Page) {
       }
     })
   );
-  await page.route('**/api/compute/jobs?*', (route) =>
+  await page.route('**/api/v1/compute/jobs?*', (route) =>
     route.fulfill({
       json: {
         data: [

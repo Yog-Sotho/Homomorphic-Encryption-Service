@@ -27,7 +27,7 @@ export async function cspViolations(page: Page): Promise<string[]> {
 
 /** Mocks the auth endpoints every page may call while signed out. */
 export async function mockPublicAuthApi(page: Page) {
-  await page.route('**/api/auth/providers', (route) =>
+  await page.route('**/api/v1/auth/providers', (route) =>
     route.fulfill({ json: { google: false, github: false } })
   );
 }
@@ -42,14 +42,14 @@ export async function mockLogin(page: Page) {
   const session = { token: 'access-token', expires_in: 900, user };
   let signedIn = false;
   await mockPublicAuthApi(page);
-  await page.route('**/api/auth/login', (route) => {
+  await page.route('**/api/v1/auth/login', (route) => {
     signedIn = true;
     return route.fulfill({ json: session });
   });
-  await page.route('**/api/auth/refresh', (route) =>
+  await page.route('**/api/v1/auth/refresh', (route) =>
     signedIn
       ? route.fulfill({ json: session })
-      : route.fulfill({ status: 401, json: { message: 'Not signed in' } })
+      : route.fulfill({ status: 401, json: { error: { code: 'unauthorized', message: 'Not signed in' } } })
   );
   return user;
 }

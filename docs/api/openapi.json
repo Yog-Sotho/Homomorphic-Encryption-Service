@@ -1,0 +1,2097 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "HEaaS API",
+    "description": "Homomorphic encryption as a service. Clients keep their TFHE client key; the server evaluates on ciphertexts with the server key they upload. Every error is `{\"error\": {\"code\", \"message\"}}`.",
+    "version": "0.4.0"
+  },
+  "servers": [
+    {
+      "url": "/api/v1"
+    }
+  ],
+  "paths": {
+    "/auth/exchange": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "`POST /api/v1/auth/exchange` — redeems a one-time login code (once).",
+        "operationId": "exchange",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExchangeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Signed in",
+            "headers": {
+              "Set-Cookie": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The `HttpOnly` refresh cookie (path `/api/v1/auth`)"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unknown, used or expired code",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "$ref": "#/components/responses/CrossOrigin"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {}
+        ]
+      }
+    },
+    "/auth/forgot-password": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "`POST /api/v1/auth/forgot-password`",
+        "operationId": "forgot_password",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmailRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Sent if the account exists (the answer is the same either way)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "$ref": "#/components/responses/CrossOrigin"
+          },
+          "429": {
+            "description": "Too many requests; see `Retry-After`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {}
+        ]
+      }
+    },
+    "/auth/forgot-password/redirect": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "`GET /api/v1/auth/forgot-password/redirect?token=` — the same for reset links.",
+        "operationId": "reset_link",
+        "parameters": [
+          {
+            "name": "token",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "302": {
+            "description": "Redirect to the frontend page, token in the fragment. Consumes nothing."
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {}
+        ]
+      }
+    },
+    "/auth/github": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Starts GitHub sign-in.",
+        "operationId": "github_start",
+        "responses": {
+          "302": {
+            "description": "Redirect to GitHub, with a state cookie"
+          },
+          "404": {
+            "description": "GitHub sign-in is not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {}
+        ]
+      }
+    },
+    "/auth/github/callback": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Where GitHub returns the user after sign-in.",
+        "operationId": "github_callback",
+        "parameters": [
+          {
+            "name": "code",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "state",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "error",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "302": {
+            "description": "Redirect to the frontend with `#code=` (exchange it at `/auth/exchange`) or `#error=`"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {}
+        ]
+      }
+    },
+    "/auth/google": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Starts Google sign-in.",
+        "operationId": "google_start",
+        "responses": {
+          "302": {
+            "description": "Redirect to Google, with a state cookie"
+          },
+          "404": {
+            "description": "Google sign-in is not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {}
+        ]
+      }
+    },
+    "/auth/google/callback": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Where Google returns the user after sign-in.",
+        "operationId": "google_callback",
+        "parameters": [
+          {
+            "name": "code",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "state",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "error",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "302": {
+            "description": "Redirect to the frontend with `#code=` (exchange it at `/auth/exchange`) or `#error=`"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {}
+        ]
+      }
+    },
+    "/auth/login": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "`POST /api/v1/auth/login`",
+        "operationId": "login",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Credentials"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Signed in",
+            "headers": {
+              "Set-Cookie": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The `HttpOnly` refresh cookie (path `/api/v1/auth`)"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Wrong email or password, or the email is not verified",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "$ref": "#/components/responses/CrossOrigin"
+          },
+          "429": {
+            "description": "Too many requests; see `Retry-After`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {}
+        ]
+      }
+    },
+    "/auth/logout": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "`POST /api/v1/auth/logout` — ends this browser's session (its whole family).",
+        "operationId": "logout",
+        "responses": {
+          "200": {
+            "description": "Signed out; the cookie is cleared",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "$ref": "#/components/responses/CrossOrigin"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "refresh_cookie": []
+          }
+        ]
+      }
+    },
+    "/auth/providers": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "`GET /api/v1/auth/providers` — which sign-in buttons the frontend should show.",
+        "operationId": "providers",
+        "responses": {
+          "200": {
+            "description": "Which OAuth providers are configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Providers"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {}
+        ]
+      }
+    },
+    "/auth/refresh": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "`POST /api/v1/auth/refresh` — exchanges the refresh cookie for a new access\ntoken and a new refresh cookie.",
+        "operationId": "refresh",
+        "responses": {
+          "200": {
+            "description": "A new access token; the refresh cookie is rotated",
+            "headers": {
+              "Set-Cookie": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The `HttpOnly` refresh cookie (path `/api/v1/auth`)"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session (the cookie is cleared)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "$ref": "#/components/responses/CrossOrigin"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "refresh_cookie": []
+          }
+        ]
+      }
+    },
+    "/auth/register": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "`POST /api/v1/auth/register`",
+        "operationId": "register",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Credentials"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Verification email sent. The same answer is given when the address already has an account.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid email or weak password",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "$ref": "#/components/responses/CrossOrigin"
+          },
+          "429": {
+            "description": "Too many requests; see `Retry-After`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {}
+        ]
+      }
+    },
+    "/auth/resend-verification": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "`POST /api/v1/auth/resend-verification`",
+        "operationId": "resend_verification",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmailRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Sent if an unverified account exists (the answer is the same either way)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "$ref": "#/components/responses/CrossOrigin"
+          },
+          "429": {
+            "description": "Too many requests; see `Retry-After`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {}
+        ]
+      }
+    },
+    "/auth/reset-password": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "`POST /api/v1/auth/reset-password` — sets a new password (once per link) and\nsigns out every session.",
+        "operationId": "reset_password",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResetPasswordRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Password set; every session is signed out",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid or expired link, or weak password",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "$ref": "#/components/responses/CrossOrigin"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {}
+        ]
+      }
+    },
+    "/auth/verify": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "`GET /api/v1/auth/verify?token=` — links in emails sent before verification\nmoved to the frontend. Redirects without consuming the token.",
+        "operationId": "verify_link",
+        "parameters": [
+          {
+            "name": "token",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "302": {
+            "description": "Redirect to the frontend page, token in the fragment. Consumes nothing."
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {}
+        ]
+      },
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "`POST /api/v1/auth/verify` — confirms the email address and signs the user in.",
+        "operationId": "verify_email",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TokenRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Email verified and signed in",
+            "headers": {
+              "Set-Cookie": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The `HttpOnly` refresh cookie (path `/api/v1/auth`)"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid or expired verification link",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "$ref": "#/components/responses/CrossOrigin"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {}
+        ]
+      }
+    },
+    "/compute/jobs": {
+      "get": {
+        "tags": [
+          "jobs"
+        ],
+        "summary": "`GET /api/v1/compute/jobs?cursor=&limit=` — the caller's jobs, newest first.",
+        "operationId": "list_jobs",
+        "parameters": [
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "`next_cursor` of the previous page.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Jobs per page (default 20).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "maximum": 100,
+              "minimum": 1
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The caller's jobs, newest first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid cursor or limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "jobs"
+        ],
+        "summary": "`POST /api/v1/compute/jobs` — queue `operation(inputs[0], inputs[1])`.",
+        "description": "Honours an `Idempotency-Key` header: resending the same request with the same\nkey returns the original job (with `Idempotent-Replayed: true`) instead of\nqueuing and charging a second one.",
+        "operationId": "submit_job",
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "1-255 visible ASCII characters. A retry with the same key and body returns the original job instead of queuing (and charging) another.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateJobRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Queued (or, for a replayed idempotency key, the original job)",
+            "headers": {
+              "Idempotent-Replayed": {
+                "schema": {
+                  "type": "boolean"
+                },
+                "description": "`true` when this is the original job of a reused key"
+              },
+              "Location": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The job"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobSummary"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Wrong number of inputs, bad base64 or a bad Idempotency-Key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "description": "No such server key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Body too large",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unknown operation, or the Idempotency-Key was used for a different request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Daily quota used up, or too many jobs waiting; see `Retry-After`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The queue is full; see `Retry-After`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/compute/jobs/{id}": {
+      "get": {
+        "tags": [
+          "jobs"
+        ],
+        "summary": "`GET /api/v1/compute/jobs/{id}`",
+        "operationId": "get_job_status",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Job id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The job",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobSummary"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "description": "No such job",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "jobs"
+        ],
+        "summary": "`DELETE /api/v1/compute/jobs/{id}` — removes a job that is not running, with\nits stored ciphertexts.",
+        "operationId": "delete_job",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Job id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted with its ciphertexts"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "description": "No such job",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The job is running",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/compute/jobs/{id}/result": {
+      "get": {
+        "tags": [
+          "jobs"
+        ],
+        "summary": "`GET /api/v1/compute/jobs/{id}/result` — the encrypted result as\n`application/octet-stream` (a `safe_serialize`d `FheUint16`).",
+        "operationId": "get_job_result",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Job id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The encrypted result: a `safe_serialize`d `FheUint16`",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "description": "No such job",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The job has not completed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/he/params": {
+      "get": {
+        "tags": [
+          "he"
+        ],
+        "summary": "What a client needs to produce compatible keys and inputs.",
+        "operationId": "get_params",
+        "responses": {
+          "200": {
+            "description": "Scheme, TFHE-rs version and limits",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HeParams"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {}
+        ]
+      }
+    },
+    "/health": {
+      "get": {
+        "tags": [
+          "meta"
+        ],
+        "summary": "Liveness.",
+        "operationId": "health",
+        "responses": {
+          "200": {
+            "description": "The server is up",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Health"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {}
+        ]
+      }
+    },
+    "/keys": {
+      "get": {
+        "tags": [
+          "keys"
+        ],
+        "summary": "`GET /api/v1/keys` — the caller's keys, newest first.",
+        "operationId": "list_keys",
+        "responses": {
+          "200": {
+            "description": "The caller's keys, newest first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ServerKeyInfo"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "keys"
+        ],
+        "summary": "`POST /api/v1/keys` — body is a `safe_serialize`d TFHE `CompressedServerKey`.",
+        "operationId": "upload_key",
+        "requestBody": {
+          "description": "A `safe_serialize`d TFHE-rs `CompressedServerKey` for the parameters of `/he/params`",
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Registered",
+            "headers": {
+              "Location": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The new key"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServerKeyInfo"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Not a compressed server key for these parameters",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "409": {
+            "description": "The account already has its maximum number of keys",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Larger than `max_server_key_bytes`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/keys/{id}": {
+      "delete": {
+        "tags": [
+          "keys"
+        ],
+        "summary": "`DELETE /api/v1/keys/{id}` — removes the key; its jobs stay but lose the reference.",
+        "operationId": "delete_key",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Key id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "description": "No such key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/user/account": {
+      "delete": {
+        "tags": [
+          "user"
+        ],
+        "summary": "`DELETE /api/v1/user/account` — deletes the account and everything it owns.",
+        "operationId": "delete_account",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeleteAccountRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The account, its keys and jobs are deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "description": "Wrong password, or (without a password) no sign-in in the last 5 minutes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/user/me": {
+      "get": {
+        "tags": [
+          "user"
+        ],
+        "summary": "`GET /api/v1/user/me` — the signed-in user, their sign-in methods and today's usage.",
+        "operationId": "get_me",
+        "responses": {
+          "200": {
+            "description": "The signed-in user",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MeResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid access token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/user/password": {
+      "put": {
+        "tags": [
+          "user"
+        ],
+        "summary": "`PUT /api/v1/user/password` — changes the password and signs out every session.",
+        "operationId": "change_password",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChangePasswordRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Changed; every session is signed out",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Weak password, or the account has no password",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Current password is incorrect",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The password changed meanwhile",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "AuthResponse": {
+        "type": "object",
+        "description": "A signed-in session. The refresh token is not here: it is set as the\n`HttpOnly` cookie `heaas_refresh` (path `/api/v1/auth`).",
+        "required": [
+          "token",
+          "expires_in",
+          "user"
+        ],
+        "properties": {
+          "expires_in": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Seconds until `token` expires."
+          },
+          "token": {
+            "type": "string",
+            "description": "Bearer token for API calls."
+          },
+          "user": {
+            "$ref": "#/components/schemas/UserPublic"
+          }
+        }
+      },
+      "ChangePasswordRequest": {
+        "type": "object",
+        "required": [
+          "current_password",
+          "new_password"
+        ],
+        "properties": {
+          "current_password": {
+            "type": "string"
+          },
+          "new_password": {
+            "type": "string"
+          }
+        }
+      },
+      "CreateJobRequest": {
+        "type": "object",
+        "description": "`POST /api/v1/compute/jobs`: compute `operation(inputs[0], inputs[1])`.",
+        "required": [
+          "key_id",
+          "operation",
+          "inputs"
+        ],
+        "properties": {
+          "inputs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Standard base64 of exactly two `safe_serialize`d `FheUint16` ciphertexts,\nencrypted with the client key that belongs to `key_id`."
+          },
+          "key_id": {
+            "type": "string",
+            "description": "One of the caller's registered server keys."
+          },
+          "operation": {
+            "$ref": "#/components/schemas/Operation"
+          }
+        }
+      },
+      "Credentials": {
+        "type": "object",
+        "required": [
+          "email",
+          "password"
+        ],
+        "properties": {
+          "email": {
+            "type": "string"
+          },
+          "password": {
+            "type": "string"
+          }
+        }
+      },
+      "DailyUsage": {
+        "type": "object",
+        "required": [
+          "count",
+          "quota",
+          "date"
+        ],
+        "properties": {
+          "count": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "date": {
+            "type": "string"
+          },
+          "quota": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "DeleteAccountRequest": {
+        "type": "object",
+        "required": [
+          "password"
+        ],
+        "properties": {
+          "password": {
+            "type": "string"
+          }
+        }
+      },
+      "EmailRequest": {
+        "type": "object",
+        "required": [
+          "email"
+        ],
+        "properties": {
+          "email": {
+            "type": "string"
+          }
+        }
+      },
+      "ErrorBody": {
+        "type": "object",
+        "description": "Every error response: `{\"error\": {\"code\": \"...\", \"message\": \"...\"}}`.",
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/ErrorDetail"
+          }
+        }
+      },
+      "ErrorDetail": {
+        "type": "object",
+        "required": [
+          "code",
+          "message"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "Stable, machine-readable reason; one of [`error_codes`]. New codes may be\nadded, so clients should fall back on the HTTP status for unknown ones.",
+            "example": "not_found"
+          },
+          "message": {
+            "type": "string",
+            "description": "Human-readable explanation, safe to show to the user."
+          }
+        }
+      },
+      "ExchangeRequest": {
+        "type": "object",
+        "required": [
+          "code"
+        ],
+        "properties": {
+          "code": {
+            "type": "string"
+          }
+        }
+      },
+      "HeParams": {
+        "type": "object",
+        "description": "`GET /api/v1/he/params`: what a client needs to make compatible keys and inputs.",
+        "required": [
+          "scheme",
+          "library",
+          "tfhe_version",
+          "config",
+          "integer_type",
+          "plaintext_modulus",
+          "operations",
+          "max_ciphertext_bytes",
+          "max_server_key_bytes",
+          "max_keys_per_user"
+        ],
+        "properties": {
+          "config": {
+            "type": "string",
+            "example": "ConfigBuilder::default()"
+          },
+          "integer_type": {
+            "type": "string",
+            "example": "FheUint16"
+          },
+          "library": {
+            "type": "string",
+            "example": "TFHE-rs"
+          },
+          "max_ciphertext_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "max_keys_per_user": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "max_server_key_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "operations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Operation"
+            }
+          },
+          "plaintext_modulus": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "scheme": {
+            "type": "string",
+            "example": "TFHE (CGGI)"
+          },
+          "tfhe_version": {
+            "type": "string",
+            "description": "Clients must use exactly this TFHE-rs release.",
+            "example": "1.8.2"
+          }
+        }
+      },
+      "Health": {
+        "type": "object",
+        "required": [
+          "status",
+          "version"
+        ],
+        "properties": {
+          "status": {
+            "type": "string",
+            "example": "ok"
+          },
+          "version": {
+            "type": "string",
+            "description": "The server's version."
+          }
+        }
+      },
+      "JobPage": {
+        "type": "object",
+        "description": "One page of `GET /api/v1/compute/jobs`, newest first.",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/JobSummary"
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Pass as `cursor` for the next (older) page; `None` on the last page."
+          }
+        }
+      },
+      "JobStatus": {
+        "type": "string",
+        "enum": [
+          "pending",
+          "processing",
+          "completed",
+          "failed"
+        ]
+      },
+      "JobSummary": {
+        "type": "object",
+        "description": "A job as its owner sees it: metadata only, never ciphertexts.",
+        "required": [
+          "id",
+          "status",
+          "operation",
+          "attempts",
+          "created_at"
+        ],
+        "properties": {
+          "attempts": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Attempts started so far (internal errors are retried)."
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "error_message": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why the job failed, if it did."
+          },
+          "finished_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "id": {
+            "type": "string"
+          },
+          "input_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Total size of the submitted ciphertexts."
+          },
+          "key_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The server key the job is evaluated with; `None` once that key is deleted."
+          },
+          "operation": {
+            "$ref": "#/components/schemas/Operation"
+          },
+          "result_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Size of the encrypted result (`GET /api/v1/compute/jobs/{id}/result`)."
+          },
+          "started_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "status": {
+            "$ref": "#/components/schemas/JobStatus"
+          }
+        }
+      },
+      "MeResponse": {
+        "type": "object",
+        "required": [
+          "id",
+          "email",
+          "email_verified",
+          "has_password",
+          "created_at",
+          "oauth_providers",
+          "daily_usage"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "daily_usage": {
+            "$ref": "#/components/schemas/DailyUsage"
+          },
+          "email": {
+            "type": "string"
+          },
+          "email_verified": {
+            "type": "boolean"
+          },
+          "has_password": {
+            "type": "boolean"
+          },
+          "id": {
+            "type": "string"
+          },
+          "oauth_providers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "MessageResponse": {
+        "type": "object",
+        "description": "A plain confirmation, e.g. after registration.",
+        "required": [
+          "message"
+        ],
+        "properties": {
+          "message": {
+            "type": "string"
+          }
+        }
+      },
+      "Operation": {
+        "type": "string",
+        "description": "Binary operations on `FheUint16`. Arithmetic wraps modulo 2^16.",
+        "enum": [
+          "add",
+          "subtract",
+          "multiply",
+          "min",
+          "max"
+        ]
+      },
+      "Providers": {
+        "type": "object",
+        "required": [
+          "google",
+          "github"
+        ],
+        "properties": {
+          "github": {
+            "type": "boolean"
+          },
+          "google": {
+            "type": "boolean"
+          }
+        }
+      },
+      "ResetPasswordRequest": {
+        "type": "object",
+        "required": [
+          "token",
+          "new_password"
+        ],
+        "properties": {
+          "new_password": {
+            "type": "string"
+          },
+          "token": {
+            "type": "string"
+          }
+        }
+      },
+      "ServerKeyInfo": {
+        "type": "object",
+        "description": "A registered (compressed) server key.",
+        "required": [
+          "id",
+          "sha256",
+          "size_bytes",
+          "created_at"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "id": {
+            "type": "string"
+          },
+          "sha256": {
+            "type": "string",
+            "description": "Lower-case hex SHA-256 of the uploaded bytes."
+          },
+          "size_bytes": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "TokenRequest": {
+        "type": "object",
+        "required": [
+          "token"
+        ],
+        "properties": {
+          "token": {
+            "type": "string"
+          }
+        }
+      },
+      "UserPublic": {
+        "type": "object",
+        "required": [
+          "id",
+          "email",
+          "created_at"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "email": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "responses": {
+      "CrossOrigin": {
+        "description": "A browser request from an origin that is not allowed",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorBody"
+            }
+          }
+        }
+      },
+      "Error": {
+        "description": "Any other error, in the error envelope",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorBody"
+            }
+          }
+        }
+      },
+      "RateLimited": {
+        "description": "Too many requests from this client or for this account",
+        "headers": {
+          "Retry-After": {
+            "schema": {
+              "type": "integer"
+            },
+            "description": "Seconds to wait before retrying"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorBody"
+            }
+          }
+        }
+      },
+      "Unauthorized": {
+        "description": "Missing, invalid or expired access token",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorBody"
+            }
+          }
+        }
+      }
+    },
+    "securitySchemes": {
+      "bearer": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "The access token from sign-in or `/auth/refresh` (15 minutes by default)"
+      },
+      "refresh_cookie": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "heaas_refresh",
+        "description": "`HttpOnly` cookie set at sign-in; only sent to `/api/v1/auth`"
+      }
+    }
+  },
+  "tags": [
+    {
+      "name": "meta",
+      "description": "Service status"
+    },
+    {
+      "name": "he",
+      "description": "Encryption parameters"
+    },
+    {
+      "name": "auth",
+      "description": "Accounts and sessions. Browser calls must come from an allowed `Origin`."
+    },
+    {
+      "name": "user",
+      "description": "The signed-in account"
+    },
+    {
+      "name": "keys",
+      "description": "Your TFHE server keys"
+    },
+    {
+      "name": "jobs",
+      "description": "Homomorphic computations"
+    }
+  ]
+}

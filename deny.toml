@@ -70,6 +70,8 @@ ignore = true
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
+# Path dependencies between the (unpublished) workspace crates have no version.
+allow-wildcard-paths = true
 # OpenSSL is not wanted: all TLS goes through rustls.
 deny = [
   { crate = "openssl-sys", reason = "use rustls" },

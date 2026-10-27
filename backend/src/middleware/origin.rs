@@ -1,4 +1,4 @@
-//! CSRF defence for the cookie-authenticated `/api/auth` routes.
+//! CSRF defence for the cookie-authenticated `/api/v1/auth` routes.
 //!
 //! The refresh cookie is `SameSite=Strict`, so browsers already withhold it from
 //! cross-site requests. As a second layer, state-changing requests that carry an

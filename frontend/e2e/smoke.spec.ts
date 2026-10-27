@@ -47,7 +47,7 @@ test('root redirects to login without a session', async ({ page }) => {
 test('signing in reaches the dashboard', async ({ page }) => {
   const problems = trackProblems(page);
   await mockLogin(page);
-  await page.route('**/api/keys', (route) => route.fulfill({ json: [] }));
+  await page.route('**/api/v1/keys', (route) => route.fulfill({ json: [] }));
 
   await signIn(page);
 
@@ -61,8 +61,8 @@ test('signing in reaches the dashboard', async ({ page }) => {
 
 test('API errors are shown to the user', async ({ page }) => {
   await mockPublicAuthApi(page);
-  await page.route('**/api/auth/login', (route) =>
-    route.fulfill({ status: 401, json: { message: 'Invalid credentials' } })
+  await page.route('**/api/v1/auth/login', (route) =>
+    route.fulfill({ status: 401, json: { error: { code: 'unauthorized', message: 'Invalid credentials' } } })
   );
 
   await page.goto('/heaas/login');
@@ -76,9 +76,9 @@ test('API errors are shown to the user', async ({ page }) => {
 test('OAuth sign-in is completed by exchanging the one-time code', async ({ page }) => {
   const problems = trackProblems(page);
   await mockLogin(page);
-  await page.route('**/api/keys', (route) => route.fulfill({ json: [] }));
+  await page.route('**/api/v1/keys', (route) => route.fulfill({ json: [] }));
   let exchanged = '';
-  await page.route('**/api/auth/exchange', async (route) => {
+  await page.route('**/api/v1/auth/exchange', async (route) => {
     exchanged = (route.request().postDataJSON() as { code: string }).code;
     const user = { id: 'u1', email: 'alice@example.com', created_at: '2026-10-25T00:00:00' };
     await route.fulfill({ json: { token: 'access-token', expires_in: 900, user } });
@@ -100,11 +100,11 @@ test('OAuth errors are shown and the fragment is cleared', async ({ page }) => {
 
 test('verification links sign the user in without the token reaching the server in a URL', async ({ page }) => {
   await mockLogin(page);
-  await page.route('**/api/keys', (route) => route.fulfill({ json: [] }));
+  await page.route('**/api/v1/keys', (route) => route.fulfill({ json: [] }));
   const urls: string[] = [];
   page.on('request', (r) => urls.push(r.url()));
   let posted = '';
-  await page.route('**/api/auth/verify', async (route) => {
+  await page.route('**/api/v1/auth/verify', async (route) => {
     posted = (route.request().postDataJSON() as { token: string }).token;
     const user = { id: 'u1', email: 'alice@example.com', created_at: '2026-10-25T00:00:00' };
     await route.fulfill({ json: { token: 'access-token', expires_in: 900, user } });
@@ -119,7 +119,7 @@ test('verification links sign the user in without the token reaching the server 
 
 test('password reset pages post the token from the fragment', async ({ page }) => {
   let body: { token?: string; new_password?: string } = {};
-  await page.route('**/api/auth/reset-password', async (route) => {
+  await page.route('**/api/v1/auth/reset-password', async (route) => {
     body = route.request().postDataJSON();
     await route.fulfill({ json: { message: 'Password reset. You can now sign in.' } });
   });

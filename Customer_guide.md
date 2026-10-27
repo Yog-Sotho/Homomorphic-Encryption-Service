@@ -67,30 +67,58 @@ and its passphrase, or delete the key if you need room for a new one.
 
 ## 3. Using the API
 
-Use the API to encrypt on your own systems. The complete flow, as a small Rust
-program, is in [`backend/examples/client.rs`](backend/examples/client.rs). Your client
-must use **TFHE-rs 1.8.2** with `ConfigBuilder::default()`, and serialize keys and
-ciphertexts with `tfhe::safe_serialization::safe_serialize`.
+Use the API to encrypt on your own systems. Every path below is under `/api/v1`
+(the older unversioned `/api/...` paths still work but are deprecated). The full
+description is the OpenAPI document at `GET /api/v1/openapi.json`.
+
+**From Rust or a shell**, use the SDK and the `heaas` command-line tool in
+[`sdk/`](sdk). They generate your keys locally, check that the server is compatible,
+and retry safely:
+
+```sh
+export HEAAS_URL=https://<your HEaaS site> HEAAS_EMAIL=you@example.com
+heaas keygen         # heaas-client.key is your secret key: keep it (and a backup) safe
+heaas upload-key     # prints the key id
+heaas run --key-id <key id> --op multiply 300 300    # prints 24464
+```
+
+**From other languages**, your client must use **TFHE-rs 1.8.2** with
+`ConfigBuilder::default()`, and serialize keys and ciphertexts with
+`tfhe::safe_serialization::safe_serialize`.
+
+### Errors
+
+Every error response has the same body:
+
+```json
+{ "error": { "code": "not_found", "message": "Job not found" } }
+```
+
+Branch on `code` (for example `unauthorized`, `not_found`, `conflict`,
+`payload_too_large`, `unprocessable`, `rate_limited`, `unavailable`) and show `message`
+to people. A malformed JSON body is `400`, a body of the wrong type `415`, one that is
+too large `413`, and a well-formed body with an invalid value (such as an unknown
+`operation`) `422`.
 
 ### Authentication
 
-`POST /api/auth/login` with `{"email", "password"}` returns `{"token", "expires_in", "user"}`
+`POST /api/v1/auth/login` with `{"email", "password"}` returns `{"token", "expires_in", "user"}`
 and sets a refresh cookie (`heaas_refresh`). Send `Authorization: Bearer <token>` on
 every request below. Tokens last 15 minutes (`expires_in` seconds). To renew one,
-`POST /api/auth/refresh` with the cookie (keep a cookie jar in your HTTP client),
+`POST /api/v1/auth/refresh` with the cookie (keep a cookie jar in your HTTP client),
 or simply sign in again. Each refresh replaces the cookie; reusing an old one ends
 the session.
 
 ### Parameters
 
-`GET /api/he/params` (no authentication) returns the scheme, the TFHE-rs version, the
+`GET /api/v1/he/params` (no authentication) returns the scheme, the TFHE-rs version, the
 integer type, the supported operations and the size limits. Check it before you
 generate keys.
 
 ### Register a server key
 
 ```
-POST /api/keys
+POST /api/v1/keys
 Content-Type: application/octet-stream
 <body: safe_serialize(CompressedServerKey::new(&client_key))>
 
@@ -98,17 +126,17 @@ Content-Type: application/octet-stream
 { "id": "8e521fee-…", "sha256": "…", "size_bytes": 60228265, "created_at": "…" }
 ```
 
-`GET /api/keys` lists your keys. `DELETE /api/keys/{id}` removes one (`204`).
+`GET /api/v1/keys` lists your keys. `DELETE /api/v1/keys/{id}` removes one (`204`).
 
 ### Submit a job
 
 ```
-POST /api/compute/jobs
+POST /api/v1/compute/jobs
 Idempotency-Key: 5b0c…            (optional, recommended)
 { "key_id": "8e521fee-…", "operation": "multiply", "inputs": ["<base64>", "<base64>"] }
 
 202 Accepted
-Location: /api/compute/jobs/3f2a…
+Location: /api/v1/compute/jobs/3f2a…
 { "id": "3f2a…", "status": "pending", "operation": "multiply", "key_id": "8e521fee-…",
   "attempts": 0, "error_message": null, "input_bytes": 264202, "result_bytes": null,
   "created_at": "…", "started_at": null, "finished_at": null }
@@ -125,8 +153,8 @@ a second job, and you are not charged twice.
 
 ### Get the result
 
-Poll `GET /api/compute/jobs/{id}` until `status` is `completed` or `failed`. Then
-`GET /api/compute/jobs/{id}/result` returns the encrypted result as raw bytes
+Poll `GET /api/v1/compute/jobs/{id}` until `status` is `completed` or `failed`. Then
+`GET /api/v1/compute/jobs/{id}/result` returns the encrypted result as raw bytes
 (`application/octet-stream`): `safe_deserialize` it as `FheUint16` and decrypt it with
 your client key. If `status` is `failed`, `error_message` says why.
 
@@ -135,9 +163,9 @@ internal error. `attempts` shows how many times it has been started.
 
 ### List and delete jobs
 
-`GET /api/compute/jobs` lists your jobs, newest first, 20 at a time (`?limit=` up to
+`GET /api/v1/compute/jobs` lists your jobs, newest first, 20 at a time (`?limit=` up to
 100). When `next_cursor` is not null, pass it as `?cursor=` for the next page.
-`DELETE /api/compute/jobs/{id}` deletes a finished or waiting job and its ciphertexts.
+`DELETE /api/v1/compute/jobs/{id}` deletes a finished or waiting job and its ciphertexts.
 Finished jobs are deleted automatically after 7 days (the operator can change this),
 so fetch results before then.
 
@@ -158,9 +186,9 @@ not charged.
 | `400` "Not a compressed server key for this service's parameters" | The key was made with different parameters or a different TFHE-rs release | Generate it with TFHE-rs 1.8.2 and `ConfigBuilder::default()` |
 | `413 Payload Too Large` | The upload is over the size limit | Upload only the compressed server key, never the full server key |
 | Job `failed`: "Input 1 is not a valid FheUint16 ciphertext for this key" | The input is not an `FheUint16`, is corrupted, or was made with other parameters | Encrypt with the client key that belongs to `key_id` and `safe_serialize` the result |
-| `404` "Server key not found" | The key id is wrong, deleted, or belongs to another account | List your keys with `GET /api/keys` |
+| `404` "Server key not found" | The key id is wrong, deleted, or belongs to another account | List your keys with `GET /api/v1/keys` (or `heaas keys`) |
 | `429` "Too many sign-in attempts for this account" | Several failed sign-ins in a short time | Wait the `Retry-After` seconds, or reset your password |
-| Verification or reset link says "Invalid or expired" | Links work once; verification links last 24 hours, reset links 1 hour | Request a new one from the sign-in page |
+| Verification or reset link says "Invalid or expired" | Links work once; verification links last 24 hours and reset links 1 hour (unless the operator changed this; the email says how long) | Request a new one from the sign-in page |
 | "For your security, sign in again" when deleting a Google/GitHub account | Deleting an account without a password needs a fresh sign-in | Sign out, sign in again, then delete within 5 minutes |
 | `429` "Daily compute quota … reached" | You submitted the maximum number of jobs today | Wait until midnight UTC (`Retry-After` says how long) |
 | `429` "You have N jobs waiting or running" | Too many of your jobs are unfinished | Wait for some to finish, then resubmit |

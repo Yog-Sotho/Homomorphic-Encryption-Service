@@ -1,4 +1,4 @@
-//! Security regression tests for `/api/auth` and account management, over HTTP.
+//! Security regression tests for `/api/v1/auth` and account management, over HTTP.
 
 use super::auth::email::outbox;
 use super::auth::session::{REFRESH_COOKIE, ROTATION_GRACE_SECS};
@@ -67,14 +67,14 @@ async fn signed_up(app: &impl TestApp, email: &str) -> (Cookie<'static>, String)
     let resp = call(
         app,
         post(
-            "/api/auth/register",
+            "/api/v1/auth/register",
             json!({ "email": email, "password": PASSWORD }),
         ),
     )
     .await;
     assert_eq!(resp.status(), StatusCode::ACCEPTED);
     let token = outbox::latest_token(email);
-    let resp = call(app, post("/api/auth/verify", json!({ "token": token }))).await;
+    let resp = call(app, post("/api/v1/auth/verify", json!({ "token": token }))).await;
     assert_eq!(resp.status(), StatusCode::OK);
     let cookie = refresh_cookie(&resp).expect("session cookie");
     let body = json_body(resp).await;
@@ -84,14 +84,14 @@ async fn signed_up(app: &impl TestApp, email: &str) -> (Cookie<'static>, String)
 async fn refresh(app: &impl TestApp, cookie: &Cookie<'static>) -> ServiceResponse {
     call(
         app,
-        with_cookie(post("/api/auth/refresh", json!({})), cookie),
+        with_cookie(post("/api/v1/auth/refresh", json!({})), cookie),
     )
     .await
 }
 
 async fn me(app: &impl TestApp, token: &str) -> StatusCode {
     let req = TestRequest::get()
-        .uri("/api/user/me")
+        .uri("/api/v1/user/me")
         .insert_header(("Authorization", format!("Bearer {token}")));
     match test::try_call_service(app, req.to_request()).await {
         Ok(resp) => resp.status(),
@@ -108,7 +108,7 @@ async fn sessions_live_in_an_httponly_cookie_and_rotate() {
     assert!(cookie.http_only().unwrap_or(false));
     assert!(cookie.secure().unwrap_or(false));
     assert_eq!(cookie.same_site(), Some(SameSite::Strict));
-    assert_eq!(cookie.path(), Some("/api/auth"));
+    assert_eq!(cookie.path(), Some("/api/v1/auth"));
     assert_eq!(me(&app, &token).await, StatusCode::OK);
 
     let resp = refresh(&app, &cookie).await;
@@ -156,7 +156,7 @@ async fn logout_ends_the_session_and_garbage_cookies_are_refused() {
 
     let resp = call(
         &app,
-        with_cookie(post("/api/auth/logout", json!({})), &cookie),
+        with_cookie(post("/api/v1/auth/logout", json!({})), &cookie),
     )
     .await;
     assert_eq!(resp.status(), StatusCode::OK);
@@ -171,7 +171,7 @@ async fn logout_ends_the_session_and_garbage_cookies_are_refused() {
         refresh(&app, &forged).await.status(),
         StatusCode::UNAUTHORIZED
     );
-    let none = call(&app, post("/api/auth/refresh", json!({}))).await;
+    let none = call(&app, post("/api/v1/auth/refresh", json!({}))).await;
     assert_eq!(none.status(), StatusCode::UNAUTHORIZED);
 }
 
@@ -182,12 +182,12 @@ async fn cross_origin_requests_cannot_use_the_session() {
     let (cookie, _) = signed_up(&app, "csrf@example.com").await;
 
     let evil = TestRequest::post()
-        .uri("/api/auth/refresh")
+        .uri("/api/v1/auth/refresh")
         .insert_header(("Origin", "https://evil.example"))
         .cookie(cookie.clone());
     assert_eq!(call(&app, evil).await.status(), StatusCode::FORBIDDEN);
     let cross_site = TestRequest::post()
-        .uri("/api/auth/logout")
+        .uri("/api/v1/auth/logout")
         .insert_header(("Sec-Fetch-Site", "cross-site"))
         .cookie(cookie.clone());
     assert_eq!(call(&app, cross_site).await.status(), StatusCode::FORBIDDEN);
@@ -203,7 +203,7 @@ async fn verification_links_are_single_use_and_get_has_no_side_effect() {
     let resp = call(
         &app,
         post(
-            "/api/auth/register",
+            "/api/v1/auth/register",
             json!({ "email": email, "password": PASSWORD }),
         ),
     )
@@ -219,7 +219,7 @@ async fn verification_links_are_single_use_and_get_has_no_side_effect() {
     // Old-style links (and mail scanners prefetching them) only get redirected.
     let resp = call(
         &app,
-        TestRequest::get().uri(&format!("/api/auth/verify?token={token}")),
+        TestRequest::get().uri(&format!("/api/v1/auth/verify?token={token}")),
     )
     .await;
     assert_eq!(resp.status(), StatusCode::FOUND);
@@ -238,22 +238,22 @@ async fn verification_links_are_single_use_and_get_has_no_side_effect() {
     let login = call(
         &app,
         post(
-            "/api/auth/login",
+            "/api/v1/auth/login",
             json!({ "email": email, "password": PASSWORD }),
         ),
     )
     .await;
     assert_eq!(login.status(), StatusCode::UNAUTHORIZED);
 
-    let first = call(&app, post("/api/auth/verify", json!({ "token": token }))).await;
+    let first = call(&app, post("/api/v1/auth/verify", json!({ "token": token }))).await;
     assert_eq!(first.status(), StatusCode::OK);
-    let again = call(&app, post("/api/auth/verify", json!({ "token": token }))).await;
+    let again = call(&app, post("/api/v1/auth/verify", json!({ "token": token }))).await;
     assert_eq!(again.status(), StatusCode::BAD_REQUEST);
 
     let login = call(
         &app,
         post(
-            "/api/auth/login",
+            "/api/v1/auth/login",
             json!({ "email": email, "password": PASSWORD }),
         ),
     )
@@ -270,7 +270,7 @@ async fn expired_verification_links_are_refused() {
     call(
         &app,
         post(
-            "/api/auth/register",
+            "/api/v1/auth/register",
             json!({ "email": email, "password": PASSWORD }),
         ),
     )
@@ -285,7 +285,7 @@ async fn expired_verification_links_are_refused() {
     let resp = call(
         &app,
         post(
-            "/api/auth/verify",
+            "/api/v1/auth/verify",
             json!({ "token": outbox::latest_token(email) }),
         ),
     )
@@ -302,7 +302,7 @@ async fn password_reset_is_single_use_and_signs_out_everywhere() {
 
     let resp = call(
         &app,
-        post("/api/auth/forgot-password", json!({ "email": email })),
+        post("/api/v1/auth/forgot-password", json!({ "email": email })),
     )
     .await;
     assert_eq!(resp.status(), StatusCode::OK);
@@ -316,7 +316,7 @@ async fn password_reset_is_single_use_and_signs_out_everywhere() {
     let weak = call(
         &app,
         post(
-            "/api/auth/reset-password",
+            "/api/v1/auth/reset-password",
             json!({ "token": token, "new_password": "short" }),
         ),
     )
@@ -324,12 +324,12 @@ async fn password_reset_is_single_use_and_signs_out_everywhere() {
     assert_eq!(weak.status(), StatusCode::BAD_REQUEST);
     let new_password = "Brand-New-Pass-7";
     let reset = post(
-        "/api/auth/reset-password",
+        "/api/v1/auth/reset-password",
         json!({ "token": token, "new_password": new_password }),
     );
     assert_eq!(call(&app, reset).await.status(), StatusCode::OK);
     let reuse = post(
-        "/api/auth/reset-password",
+        "/api/v1/auth/reset-password",
         json!({ "token": token, "new_password": "Another-Pass-8!" }),
     );
     assert_eq!(call(&app, reuse).await.status(), StatusCode::BAD_REQUEST);
@@ -341,7 +341,7 @@ async fn password_reset_is_single_use_and_signs_out_everywhere() {
     let old = call(
         &app,
         post(
-            "/api/auth/login",
+            "/api/v1/auth/login",
             json!({ "email": email, "password": PASSWORD }),
         ),
     )
@@ -350,7 +350,7 @@ async fn password_reset_is_single_use_and_signs_out_everywhere() {
     let new = call(
         &app,
         post(
-            "/api/auth/login",
+            "/api/v1/auth/login",
             json!({ "email": email, "password": new_password }),
         ),
     )
@@ -361,7 +361,7 @@ async fn password_reset_is_single_use_and_signs_out_everywhere() {
     let unknown = call(
         &app,
         post(
-            "/api/auth/forgot-password",
+            "/api/v1/auth/forgot-password",
             json!({ "email": "nobody@example.com" }),
         ),
     )
@@ -391,7 +391,7 @@ async fn sign_in_attempts_are_limited_per_account() {
     let app = env.app().await;
     let attempt = |email: &str| {
         post(
-            "/api/auth/login",
+            "/api/v1/auth/login",
             json!({ "email": email, "password": "Wrong-Pass-1!" }),
         )
     };
@@ -424,7 +424,7 @@ async fn forwarded_for_only_counts_from_trusted_proxies() {
     let app = env.app().await;
     let from = |peer: &str, forwarded: &str| {
         TestRequest::get()
-            .uri("/api/auth/providers")
+            .uri("/api/v1/auth/providers")
             .peer_addr(peer.parse::<SocketAddr>().unwrap())
             .insert_header(("X-Forwarded-For", forwarded))
     };
@@ -464,7 +464,7 @@ async fn email_floods_are_capped_silently_per_address() {
     call(
         &app,
         post(
-            "/api/auth/register",
+            "/api/v1/auth/register",
             json!({ "email": email, "password": PASSWORD }),
         ),
     )
@@ -472,7 +472,10 @@ async fn email_floods_are_capped_silently_per_address() {
     for _ in 0..3 {
         let resp = call(
             &app,
-            post("/api/auth/resend-verification", json!({ "email": email })),
+            post(
+                "/api/v1/auth/resend-verification",
+                json!({ "email": email }),
+            ),
         )
         .await;
         assert_eq!(
@@ -496,7 +499,7 @@ async fn email_requests_are_limited_per_client() {
         let resp = call(
             &app,
             post(
-                "/api/auth/forgot-password",
+                "/api/v1/auth/forgot-password",
                 json!({ "email": format!("x{i}@example.com") }),
             ),
         )
@@ -506,7 +509,7 @@ async fn email_requests_are_limited_per_client() {
     let resp = call(
         &app,
         post(
-            "/api/auth/forgot-password",
+            "/api/v1/auth/forgot-password",
             json!({ "email": "x9@example.com" }),
         ),
     )
@@ -521,7 +524,7 @@ async fn password_changes_end_every_session() {
     let (cookie, token) = signed_up(&app, "change@example.com").await;
 
     let req = TestRequest::put()
-        .uri("/api/user/password")
+        .uri("/api/v1/user/password")
         .insert_header(("Authorization", format!("Bearer {token}")))
         .set_json(json!({ "current_password": PASSWORD, "new_password": "Changed-Pass-42" }));
     let resp = call(&app, req).await;
@@ -540,7 +543,7 @@ async fn accounts_without_a_password_need_a_recent_sign_in_to_be_deleted() {
     env.user("social").await;
     let delete = |token: String| {
         TestRequest::delete()
-            .uri("/api/user/account")
+            .uri("/api/v1/user/account")
             .insert_header(("Authorization", format!("Bearer {token}")))
             .set_json(json!({ "password": "" }))
     };
@@ -579,7 +582,7 @@ async fn oauth_env(server: &MockServer) -> TestEnv {
 async fn start_oauth(app: &impl TestApp, provider: &str) -> (Cookie<'static>, url::Url) {
     let resp = call(
         app,
-        TestRequest::get().uri(&format!("/api/auth/{provider}")),
+        TestRequest::get().uri(&format!("/api/v1/auth/{provider}")),
     )
     .await;
     assert_eq!(resp.status(), StatusCode::FOUND);
@@ -609,7 +612,7 @@ async fn finish_oauth(
 ) -> String {
     let req = TestRequest::get()
         .uri(&format!(
-            "/api/auth/{provider}/callback?code=the-code&state={state}"
+            "/api/v1/auth/{provider}/callback?code=the-code&state={state}"
         ))
         .cookie(cookie.clone());
     location(&call(app, req).await)
@@ -629,7 +632,7 @@ async fn google_sign_in_uses_pkce_and_hands_over_a_one_time_code() {
     assert_eq!(param(&authorize, "code_challenge_method"), "S256");
     assert_eq!(
         param(&authorize, "redirect_uri"),
-        "http://localhost:3000/api/auth/google/callback"
+        "http://localhost:3000/api/v1/auth/google/callback"
     );
 
     // The token request must carry a verifier (checked against the challenge below).
@@ -668,12 +671,12 @@ async fn google_sign_in_uses_pkce_and_hands_over_a_one_time_code() {
         param(&authorize, "code_challenge")
     );
 
-    let resp = call(&app, post("/api/auth/exchange", json!({ "code": code }))).await;
+    let resp = call(&app, post("/api/v1/auth/exchange", json!({ "code": code }))).await;
     assert_eq!(resp.status(), StatusCode::OK);
     assert!(refresh_cookie(&resp).is_some());
     let body = json_body(resp).await;
     assert_eq!(body["user"]["email"], "person@example.com");
-    let again = call(&app, post("/api/auth/exchange", json!({ "code": code }))).await;
+    let again = call(&app, post("/api/v1/auth/exchange", json!({ "code": code }))).await;
     assert_eq!(
         again.status(),
         StatusCode::UNAUTHORIZED,
@@ -723,8 +726,9 @@ async fn callbacks_without_the_matching_state_cookie_are_refused() {
     assert!(finish_oauth(&app, "google", &cookie, "attacker-state")
         .await
         .contains("#error="));
-    let no_cookie =
-        TestRequest::get().uri(&format!("/api/auth/google/callback?code=c&state={state}"));
+    let no_cookie = TestRequest::get().uri(&format!(
+        "/api/v1/auth/google/callback?code=c&state={state}"
+    ));
     assert!(location(&call(&app, no_cookie).await).contains("#error="));
     let (github_cookie, github_authorize) = start_oauth(&app, "github").await;
     let crossed = finish_oauth(
@@ -737,7 +741,7 @@ async fn callbacks_without_the_matching_state_cookie_are_refused() {
     assert!(crossed.contains("#error="));
 
     // Provider-supplied error text is never reflected.
-    let denied = TestRequest::get().uri("/api/auth/google/callback?error=Call+0800+scam");
+    let denied = TestRequest::get().uri("/api/v1/auth/google/callback?error=Call+0800+scam");
     let redirect = location(&call(&app, denied).await);
     assert!(!redirect.contains("scam"), "{redirect}");
 }
@@ -768,7 +772,7 @@ async fn github_sign_in_trusts_only_the_verified_primary_email() {
     let (cookie, authorize) = start_oauth(&app, "github").await;
     let done = finish_oauth(&app, "github", &cookie, &param(&authorize, "state")).await;
     let code = done.split_once("#code=").expect("signed in").1;
-    let resp = call(&app, post("/api/auth/exchange", json!({ "code": code }))).await;
+    let resp = call(&app, post("/api/v1/auth/exchange", json!({ "code": code }))).await;
     assert_eq!(
         json_body(resp).await["user"]["email"],
         "primary@example.com"
@@ -815,6 +819,6 @@ async fn provider_errors_fail_cleanly() {
     assert!(done.contains("#error="), "{done}");
 
     let providers: Value =
-        json_body(call(&app, TestRequest::get().uri("/api/auth/providers")).await).await;
+        json_body(call(&app, TestRequest::get().uri("/api/v1/auth/providers")).await).await;
     assert_eq!(providers, json!({ "google": true, "github": true }));
 }

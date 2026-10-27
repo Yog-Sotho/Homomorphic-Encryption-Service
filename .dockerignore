@@ -3,7 +3,7 @@
 .claude
 **/node_modules
 frontend
-backend/target
+target
 data
 *.db
 *.db-*

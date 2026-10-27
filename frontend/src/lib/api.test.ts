@@ -57,7 +57,7 @@ describe('api client', () => {
     await expect(auth.forgotPassword('a@b.co')).resolves.toEqual({ message: 'ok' });
 
     const [url, init] = fetchMock.mock.calls[1];
-    expect(url).toBe('/api/auth/forgot-password');
+    expect(url).toBe('/api/v1/auth/forgot-password');
     expect(init?.method).toBe('POST');
     expect(init?.body).toBe(JSON.stringify({ email: 'a@b.co' }));
     expect((init?.headers as Record<string, string>).Authorization).toBe('Bearer access-1');
@@ -65,11 +65,12 @@ describe('api client', () => {
   });
 
   it('maps error responses to ApiError with the server message', async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse(400, { message: 'Invalid email address.' }));
+    fetchMock.mockResolvedValueOnce(jsonResponse(400, { error: { code: 'bad_request', message: 'Invalid email address.' } }));
 
     const error = await auth.register('bad', 'x').catch((e: unknown) => e);
     expect(error).toBeInstanceOf(ApiError);
     expect((error as ApiError).status).toBe(400);
+    expect((error as ApiError).code).toBe('bad_request');
     expect(errorMessage(error, 'fallback')).toBe('Invalid email address.');
   });
 
@@ -88,7 +89,7 @@ describe('api client', () => {
   it('refreshes once from the cookie for concurrent 401s and retries with the new token', async () => {
     fetchMock.mockImplementation(async (url, init) => {
       const authHeader = (init?.headers as Record<string, string>).Authorization;
-      if (url === '/api/auth/refresh') {
+      if (url === '/api/v1/auth/refresh') {
         // The refresh token travels only as the HttpOnly cookie.
         expect(init?.body).toBeUndefined();
         expect(authHeader).toBeUndefined();
@@ -96,21 +97,21 @@ describe('api client', () => {
       }
       return authHeader === 'Bearer access-2'
         ? jsonResponse(200, { id: 'u1' })
-        : jsonResponse(401, { message: 'Invalid or missing token' });
+        : jsonResponse(401, { error: { code: 'unauthorized', message: 'Invalid or missing token' } });
     });
 
     const results = await Promise.all([user.me(), user.me()]);
 
     expect(results).toEqual([{ id: 'u1' }, { id: 'u1' }]);
-    const refreshCalls = fetchMock.mock.calls.filter(([url]) => url === '/api/auth/refresh');
+    const refreshCalls = fetchMock.mock.calls.filter(([url]) => url === '/api/v1/auth/refresh');
     expect(refreshCalls).toHaveLength(1);
   });
 
   it('redirects to login when the session cannot be refreshed', async () => {
     fetchMock.mockImplementation(async (url) =>
-      url === '/api/auth/refresh'
-        ? jsonResponse(401, { message: 'Session expired' })
-        : jsonResponse(401, { message: 'Invalid or missing token' })
+      url === '/api/v1/auth/refresh'
+        ? jsonResponse(401, { error: { code: 'unauthorized', message: 'Session expired' } })
+        : jsonResponse(401, { error: { code: 'unauthorized', message: 'Invalid or missing token' } })
     );
 
     await expect(user.me()).rejects.toMatchObject({ status: 401 });
@@ -126,7 +127,7 @@ describe('api client', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
 
     session.clear();
-    fetchMock.mockResolvedValueOnce(jsonResponse(401, { message: 'Not signed in' }));
+    fetchMock.mockResolvedValueOnce(jsonResponse(401, { error: { code: 'unauthorized', message: 'Not signed in' } }));
     await expect(session.restore()).resolves.toBe(false);
   });
 
@@ -136,11 +137,11 @@ describe('api client', () => {
     fetchMock.mockRejectedValueOnce(new TypeError('offline'));
     await expect(session.end()).rejects.toBeInstanceOf(ApiError);
     expect(get(userStore)).toBeNull();
-    expect(fetchMock.mock.calls[1][0]).toBe('/api/auth/logout');
+    expect(fetchMock.mock.calls[1][0]).toBe('/api/v1/auth/logout');
   });
 
   it('does not try to refresh on auth endpoints', async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse(401, { message: 'Invalid credentials' }));
+    fetchMock.mockResolvedValueOnce(jsonResponse(401, { error: { code: 'unauthorized', message: 'Invalid credentials' } }));
 
     await expect(auth.login('a@b.co', 'wrong')).rejects.toMatchObject({
       status: 401,
@@ -167,7 +168,7 @@ describe('api client', () => {
   });
 
   it('does not retry submissions the server refused', async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse(503, { message: 'The job queue is full' }));
+    fetchMock.mockResolvedValueOnce(jsonResponse(503, { error: { code: 'unavailable', message: 'The job queue is full' } }));
 
     await expect(compute.submitJob('key-1', 'add', ['YQ==', 'Yg=='])).rejects.toMatchObject({
       status: 503,
@@ -179,10 +180,10 @@ describe('api client', () => {
   it('returns job results as bytes and reports errors from the result endpoint', async () => {
     fetchMock
       .mockResolvedValueOnce(new Response(new Uint8Array([1, 2, 3]), { status: 200 }))
-      .mockResolvedValueOnce(jsonResponse(409, { message: 'Job is pending' }));
+      .mockResolvedValueOnce(jsonResponse(409, { error: { code: 'conflict', message: 'Job is pending' } }));
 
     await expect(compute.getJobResult('job/1')).resolves.toEqual(new Uint8Array([1, 2, 3]));
-    expect(fetchMock.mock.calls[0][0]).toBe('/api/compute/jobs/job%2F1/result');
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/compute/jobs/job%2F1/result');
     await expect(compute.getJobResult('job-2')).rejects.toMatchObject({
       status: 409,
       message: 'Job is pending'
@@ -195,8 +196,8 @@ describe('api client', () => {
     await compute.listJobs();
     await compute.listJobs('abc', 50);
     expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
-      '/api/compute/jobs',
-      '/api/compute/jobs?cursor=abc&limit=50'
+      '/api/v1/compute/jobs',
+      '/api/v1/compute/jobs?cursor=abc&limit=50'
     ]);
   });
 });

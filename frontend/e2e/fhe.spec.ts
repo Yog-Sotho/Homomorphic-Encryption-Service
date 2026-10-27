@@ -26,8 +26,8 @@ async function mockFheApi(page: Page): Promise<Captured> {
     if (body) captured.bodies.push(body);
   });
 
-  await page.route('**/api/he/params', (route) => route.fulfill({ json: { max_keys_per_user: 2 } }));
-  await page.route('**/api/keys', async (route) => {
+  await page.route('**/api/v1/he/params', (route) => route.fulfill({ json: { max_keys_per_user: 2 } }));
+  await page.route('**/api/v1/keys', async (route) => {
     if (route.request().method() === 'POST') {
       const body = route.request().postDataBuffer() ?? Buffer.alloc(0);
       captured.keyUpload = body;
@@ -43,7 +43,7 @@ async function mockFheApi(page: Page): Promise<Captured> {
     }
     await route.fulfill({ json: registered ? [registered] : [] });
   });
-  await page.route(`**/api/keys/${KEY_ID}`, async (route) => {
+  await page.route(`**/api/v1/keys/${KEY_ID}`, async (route) => {
     registered = null;
     await route.fulfill({ status: 204, body: '' });
   });
@@ -61,7 +61,7 @@ async function mockFheApi(page: Page): Promise<Captured> {
     started_at: null,
     finished_at: null
   });
-  await page.route('**/api/compute/jobs', async (route) => {
+  await page.route('**/api/v1/compute/jobs', async (route) => {
     const job = route.request().postDataJSON() as Captured['jobs'][number];
     captured.jobs.push(job);
     captured.idempotencyKeys.push(route.request().headers()['idempotency-key']);
@@ -71,10 +71,10 @@ async function mockFheApi(page: Page): Promise<Captured> {
       json: { id: `job-${captured.jobs.length}`, status: 'pending', error_message: null }
     });
   });
-  await page.route('**/api/compute/jobs?*', (route) =>
+  await page.route('**/api/v1/compute/jobs?*', (route) =>
     route.fulfill({ json: { data: captured.jobs.map((_, i) => summary(i)).reverse(), next_cursor: null } })
   );
-  await page.route('**/api/compute/jobs/job-*/result', async (route) => {
+  await page.route('**/api/v1/compute/jobs/job-*/result', async (route) => {
     const index = Number(/job-(\d+)/.exec(route.request().url())![1]) - 1;
     // "Compute" by echoing the first input back: it decrypts to the first operand.
     await route.fulfill({
@@ -82,7 +82,7 @@ async function mockFheApi(page: Page): Promise<Captured> {
       body: Buffer.from(captured.jobs[index].inputs[0], 'base64')
     });
   });
-  await page.route('**/api/compute/jobs/job-*', async (route) => {
+  await page.route('**/api/v1/compute/jobs/job-*', async (route) => {
     if (route.request().method() === 'DELETE') {
       await route.fulfill({ status: 204, body: '' });
       return;

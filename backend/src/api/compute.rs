@@ -1,4 +1,4 @@
-//! `/api/compute/jobs`: homomorphic jobs evaluated under the caller's own key.
+//! `/api/v1/compute/jobs`: homomorphic jobs evaluated under the caller's own key.
 //!
 //! The server never sees plaintext: inputs arrive encrypted under the caller's
 //! client key, are evaluated with the caller's uploaded server key, and the
@@ -10,7 +10,6 @@
 
 use crate::config::Config;
 use crate::crypto::params::MAX_CIPHERTEXT_BYTES;
-use crate::db::models::{CreateJobRequest, JobSummary};
 use crate::errors::AppError;
 use crate::jobs::store::JobStore;
 use crate::jobs::worker::JobNotifier;
@@ -18,10 +17,12 @@ use crate::jobs::INPUT_COUNT;
 use crate::middleware::quota::{consume_compute_quota, refund_compute_quota, QuotaCharge};
 use actix_web::{http::header, web, HttpRequest, HttpResponse, Responder};
 use base64::{engine::general_purpose, Engine as _};
-use serde::{Deserialize, Serialize};
+use heaas_core::api::{CreateJobRequest, JobPage, JobStatus, JobSummary};
+use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use sqlx::SqlitePool;
 use std::sync::Arc;
+use utoipa::IntoParams;
 use uuid::Uuid;
 
 /// Base64 length of the largest accepted ciphertext.
@@ -115,7 +116,7 @@ async fn fetch_summary(
 
 fn accepted(job: JobSummary, replayed: bool) -> HttpResponse {
     let mut response = HttpResponse::Accepted();
-    response.insert_header((header::LOCATION, format!("/api/compute/jobs/{}", job.id)));
+    response.insert_header((header::LOCATION, format!("/api/v1/compute/jobs/{}", job.id)));
     if replayed {
         response.insert_header(("Idempotent-Replayed", "true"));
     }
@@ -130,22 +131,27 @@ async fn replay(
     key: &str,
     fingerprint: &str,
 ) -> Result<Option<HttpResponse>, AppError> {
-    let earlier: Option<(String, Option<String>)> = sqlx::query_as(
+    #[derive(sqlx::FromRow)]
+    struct Earlier {
+        id: String,
+        request_sha256: Option<String>,
+    }
+    let earlier: Option<Earlier> = sqlx::query_as(
         "SELECT id, request_sha256 FROM jobs WHERE user_id = ? AND idempotency_key = ?",
     )
     .bind(user_id)
     .bind(key)
     .fetch_optional(pool)
     .await?;
-    let Some((job_id, earlier_fingerprint)) = earlier else {
+    let Some(earlier) = earlier else {
         return Ok(None);
     };
-    if earlier_fingerprint.as_deref() != Some(fingerprint) {
+    if earlier.request_sha256.as_deref() != Some(fingerprint) {
         return Err(AppError::unprocessable(format!(
             "This {IDEMPOTENCY_KEY} was already used for a different request"
         )));
     }
-    let job = fetch_summary(pool, &job_id, user_id)
+    let job = fetch_summary(pool, &earlier.id, user_id)
         .await?
         .ok_or_else(|| AppError::internal("idempotent job vanished"))?;
     Ok(Some(accepted(job, true)))
@@ -228,11 +234,12 @@ async fn abandon(
     let _ = web::block(move || jobs.remove_logged(&job_id)).await;
 }
 
-/// `POST /api/compute/jobs` — queue `operation(inputs[0], inputs[1])`.
+/// `POST /api/v1/compute/jobs` — queue `operation(inputs[0], inputs[1])`.
 ///
 /// Honours an `Idempotency-Key` header: resending the same request with the same
 /// key returns the original job (with `Idempotent-Replayed: true`) instead of
 /// queuing and charging a second one.
+#[utoipa::path(post, path = "/compute/jobs", tag = "jobs", security(("bearer" = [])), request_body = heaas_core::api::CreateJobRequest, params(("Idempotency-Key" = Option<String>, Header, description = "1-255 visible ASCII characters. A retry with the same key and body returns the original job instead of queuing (and charging) another.")), responses((status = 202, description = "Queued (or, for a replayed idempotency key, the original job)", body = heaas_core::api::JobSummary, headers(("Location" = String, description = "The job"), ("Idempotent-Replayed" = bool, description = "`true` when this is the original job of a reused key"))), (status = 400, description = "Wrong number of inputs, bad base64 or a bad Idempotency-Key", body = heaas_core::api::ErrorBody), (status = 404, description = "No such server key", body = heaas_core::api::ErrorBody), (status = 413, description = "Body too large", body = heaas_core::api::ErrorBody), (status = 422, description = "Unknown operation, or the Idempotency-Key was used for a different request", body = heaas_core::api::ErrorBody), (status = 429, description = "Daily quota used up, or too many jobs waiting; see `Retry-After`", body = heaas_core::api::ErrorBody), (status = 503, description = "The queue is full; see `Retry-After`", body = heaas_core::api::ErrorBody)))]
 pub async fn submit_job(
     pool: web::Data<SqlitePool>,
     config: web::Data<Arc<Config>>,
@@ -322,7 +329,8 @@ pub async fn submit_job(
     Ok(accepted(job, false))
 }
 
-/// `GET /api/compute/jobs/{id}`
+/// `GET /api/v1/compute/jobs/{id}`
+#[utoipa::path(get, path = "/compute/jobs/{id}", tag = "jobs", security(("bearer" = [])), params(("id" = String, Path, description = "Job id")), responses((status = 200, description = "The job", body = heaas_core::api::JobSummary), (status = 404, description = "No such job", body = heaas_core::api::ErrorBody)))]
 pub async fn get_job_status(
     pool: web::Data<SqlitePool>,
     job_id: web::Path<String>,
@@ -334,8 +342,9 @@ pub async fn get_job_status(
         .ok_or_else(|| AppError::not_found("Job not found"))
 }
 
-/// `GET /api/compute/jobs/{id}/result` — the encrypted result as
+/// `GET /api/v1/compute/jobs/{id}/result` — the encrypted result as
 /// `application/octet-stream` (a `safe_serialize`d `FheUint16`).
+#[utoipa::path(get, path = "/compute/jobs/{id}/result", tag = "jobs", security(("bearer" = [])), params(("id" = String, Path, description = "Job id")), responses((status = 200, description = "The encrypted result: a `safe_serialize`d `FheUint16`", body = inline(crate::api::openapi::Binary), content_type = "application/octet-stream"), (status = 404, description = "No such job", body = heaas_core::api::ErrorBody), (status = 409, description = "The job has not completed", body = heaas_core::api::ErrorBody)))]
 pub async fn get_job_result(
     pool: web::Data<SqlitePool>,
     jobs: web::Data<JobStore>,
@@ -344,20 +353,26 @@ pub async fn get_job_result(
 ) -> Result<impl Responder, AppError> {
     let job_id = job_id.into_inner();
     // `result_b64` is only set on jobs finished before results moved to disk.
-    let row: Option<(String, Option<String>)> =
+    #[derive(sqlx::FromRow)]
+    struct ResultRow {
+        status: JobStatus,
+        result_b64: Option<String>,
+    }
+    let row: Option<ResultRow> =
         sqlx::query_as("SELECT status, result_b64 FROM jobs WHERE id = ? AND user_id = ?")
             .bind(&job_id)
             .bind(user_id.into_inner())
             .fetch_optional(pool.get_ref())
             .await?;
-    let (status, legacy_result) = row.ok_or_else(|| AppError::not_found("Job not found"))?;
-    if status != "completed" {
+    let row = row.ok_or_else(|| AppError::not_found("Job not found"))?;
+    if row.status != JobStatus::Completed {
         return Err(AppError::conflict(format!(
-            "Job is {status}; its result is available once it has completed"
+            "Job is {}; its result is available once it has completed",
+            row.status
         )));
     }
 
-    let bytes = match legacy_result {
+    let bytes = match row.result_b64 {
         Some(b64) => general_purpose::STANDARD
             .decode(b64)
             .map_err(|e| AppError::internal(format!("stored result is not base64: {e}")))?,
@@ -380,17 +395,14 @@ pub async fn get_job_result(
         .body(bytes))
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct ListQuery {
+    /// `next_cursor` of the previous page.
     cursor: Option<String>,
+    /// Jobs per page (default 20).
+    #[param(minimum = 1, maximum = 100)]
     limit: Option<u32>,
-}
-
-#[derive(Serialize)]
-pub struct JobPage {
-    data: Vec<JobSummary>,
-    /// Pass as `cursor` to get the next (older) page; `None` on the last page.
-    next_cursor: Option<String>,
 }
 
 const CURSOR_TIME_FORMAT: &str = "%Y-%m-%d %H:%M:%S";
@@ -413,7 +425,8 @@ fn decode_cursor(cursor: &str) -> Result<(String, String), AppError> {
     Ok((created_at.to_string(), id.to_string()))
 }
 
-/// `GET /api/compute/jobs?cursor=&limit=` — the caller's jobs, newest first.
+/// `GET /api/v1/compute/jobs?cursor=&limit=` — the caller's jobs, newest first.
+#[utoipa::path(get, path = "/compute/jobs", tag = "jobs", security(("bearer" = [])), params(ListQuery), responses((status = 200, description = "The caller's jobs, newest first", body = heaas_core::api::JobPage), (status = 400, description = "Invalid cursor or limit", body = heaas_core::api::ErrorBody)))]
 pub async fn list_jobs(
     pool: web::Data<SqlitePool>,
     query: web::Query<ListQuery>,
@@ -466,8 +479,9 @@ pub async fn list_jobs(
     }))
 }
 
-/// `DELETE /api/compute/jobs/{id}` — removes a job that is not running, with
+/// `DELETE /api/v1/compute/jobs/{id}` — removes a job that is not running, with
 /// its stored ciphertexts.
+#[utoipa::path(delete, path = "/compute/jobs/{id}", tag = "jobs", security(("bearer" = [])), params(("id" = String, Path, description = "Job id")), responses((status = 204, description = "Deleted with its ciphertexts"), (status = 404, description = "No such job", body = heaas_core::api::ErrorBody), (status = 409, description = "The job is running", body = heaas_core::api::ErrorBody)))]
 pub async fn delete_job(
     pool: web::Data<SqlitePool>,
     jobs: web::Data<JobStore>,
@@ -533,8 +547,8 @@ mod tests {
     fn cursors_round_trip_and_reject_garbage() {
         let job = JobSummary {
             id: Uuid::new_v4().to_string(),
-            status: "completed".into(),
-            operation: "add".into(),
+            status: JobStatus::Completed,
+            operation: heaas_core::Operation::Add,
             key_id: None,
             attempts: 1,
             error_message: None,

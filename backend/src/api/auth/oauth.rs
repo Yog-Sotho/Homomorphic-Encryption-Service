@@ -1,13 +1,13 @@
 //! Google and GitHub sign-in (OAuth 2.0 authorization code flow with PKCE).
 //!
-//! 1. `GET /api/auth/{provider}` picks a random `state` and PKCE verifier, keeps
+//! 1. `GET /api/v1/auth/{provider}` picks a random `state` and PKCE verifier, keeps
 //!    them in a short-lived, HMAC-signed `HttpOnly` cookie, and redirects to the
 //!    provider with the state and the verifier's S256 challenge.
-//! 2. `GET /api/auth/{provider}/callback` accepts the code only if its `state`
+//! 2. `GET /api/v1/auth/{provider}/callback` accepts the code only if its `state`
 //!    matches the cookie, redeems it with the verifier, and reads the account's
 //!    *verified* email address.
 //! 3. It redirects to the frontend with a one-time login code (never a token),
-//!    which the page redeems with `POST /api/auth/exchange`.
+//!    which the page redeems with `POST /api/v1/auth/exchange`.
 
 use super::session::{create_login_code, COOKIE_PATH};
 use super::{app_url, random_token};
@@ -23,6 +23,7 @@ use sqlx::SqlitePool;
 use std::sync::Arc;
 use std::time::Duration;
 use subtle::ConstantTimeEq;
+use utoipa::{IntoParams, ToSchema};
 use uuid::Uuid;
 
 const STATE_COOKIE: &str = "heaas_oauth";
@@ -54,7 +55,11 @@ impl Provider {
     }
 
     fn callback_url(self, config: &Config) -> String {
-        format!("{}/api/auth/{}/callback", config.app_base_url, self.name())
+        format!(
+            "{}/api/v1/auth/{}/callback",
+            config.app_base_url,
+            self.name()
+        )
     }
 }
 
@@ -69,13 +74,14 @@ pub fn http_client() -> reqwest::Client {
         .expect("TLS backend available")
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct Providers {
     google: bool,
     github: bool,
 }
 
-/// `GET /api/auth/providers` — which sign-in buttons the frontend should show.
+/// `GET /api/v1/auth/providers` — which sign-in buttons the frontend should show.
+#[utoipa::path(get, path = "/auth/providers", tag = "auth", responses((status = 200, description = "Which OAuth providers are configured", body = Providers)))]
 pub async fn providers(config: web::Data<Arc<Config>>) -> HttpResponse {
     HttpResponse::Ok().json(Providers {
         google: Provider::Google.client(&config).is_some(),
@@ -175,7 +181,7 @@ fn fail(config: &Config, message: &'static str) -> HttpResponse {
         .finish()
 }
 
-/// `GET /api/auth/{provider}` — starts sign-in.
+/// `GET /api/v1/auth/{provider}` — starts sign-in.
 pub async fn start(
     config: web::Data<Arc<Config>>,
     provider: Provider,
@@ -210,17 +216,22 @@ pub async fn start(
     Ok(redirect(url.as_str()).cookie(cookie).finish())
 }
 
+/// Starts Google sign-in.
+#[utoipa::path(get, path = "/auth/google", tag = "auth", responses((status = 302, description = "Redirect to Google, with a state cookie"), (status = 404, description = "Google sign-in is not configured", body = heaas_core::api::ErrorBody)))]
 pub async fn google_start(config: web::Data<Arc<Config>>) -> Result<HttpResponse, AppError> {
     start(config, Provider::Google).await
 }
 
+/// Starts GitHub sign-in.
+#[utoipa::path(get, path = "/auth/github", tag = "auth", responses((status = 302, description = "Redirect to GitHub, with a state cookie"), (status = 404, description = "GitHub sign-in is not configured", body = heaas_core::api::ErrorBody)))]
 pub async fn github_start(config: web::Data<Arc<Config>>) -> Result<HttpResponse, AppError> {
     start(config, Provider::Github).await
 }
 
 // ── Callback ─────────────────────────────────────────────────────────────────
 
-#[derive(Deserialize)]
+#[derive(Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct CallbackQuery {
     pub code: Option<String>,
     pub state: Option<String>,
@@ -388,14 +399,22 @@ pub async fn find_or_create_oauth_user(
     }
 
     let email_lower = email.trim().to_lowercase();
-    let by_email: Option<(String, bool)> =
+    #[derive(sqlx::FromRow)]
+    struct ByEmail {
+        id: String,
+        email_verified: bool,
+    }
+    let by_email: Option<ByEmail> =
         sqlx::query_as("SELECT id, email_verified FROM users WHERE email = ?")
             .bind(&email_lower)
             .fetch_optional(&mut *tx)
             .await?;
     let user_id = match by_email {
-        Some((user_id, verified)) => {
-            if !verified {
+        Some(ByEmail {
+            id: user_id,
+            email_verified,
+        }) => {
+            if !email_verified {
                 // Someone registered this address without proving they own it.
                 // The provider just proved the real owner signed in, so drop the
                 // unproven password: it must not keep working (account takeover).
@@ -441,7 +460,7 @@ pub async fn find_or_create_oauth_user(
     Ok(user_id)
 }
 
-/// `GET /api/auth/{provider}/callback`
+/// `GET /api/v1/auth/{provider}/callback`
 pub async fn callback(
     pool: web::Data<SqlitePool>,
     config: web::Data<Arc<Config>>,
@@ -505,6 +524,8 @@ pub async fn callback(
     }
 }
 
+/// Where Google returns the user after sign-in.
+#[utoipa::path(get, path = "/auth/google/callback", tag = "auth", params(CallbackQuery), responses((status = 302, description = "Redirect to the frontend with `#code=` (exchange it at `/auth/exchange`) or `#error=`")))]
 pub async fn google_callback(
     pool: web::Data<SqlitePool>,
     config: web::Data<Arc<Config>>,
@@ -515,6 +536,8 @@ pub async fn google_callback(
     callback(pool, config, http, req, query, Provider::Google).await
 }
 
+/// Where GitHub returns the user after sign-in.
+#[utoipa::path(get, path = "/auth/github/callback", tag = "auth", params(CallbackQuery), responses((status = 302, description = "Redirect to the frontend with `#code=` (exchange it at `/auth/exchange`) or `#error=`")))]
 pub async fn github_callback(
     pool: web::Data<SqlitePool>,
     config: web::Data<Arc<Config>>,

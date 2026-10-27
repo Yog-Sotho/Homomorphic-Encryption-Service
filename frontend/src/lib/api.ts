@@ -1,7 +1,8 @@
 import { resolve } from '$app/paths';
 import { userStore } from './stores.js';
 
-const API_BASE = '/api';
+/** The versioned API (the unversioned `/api` is deprecated). */
+export const API_BASE = '/api/v1';
 const REQUEST_TIMEOUT_MS = 10_000;
 /** Compressed server keys are ~60 MB; give slow uplinks time to send them. */
 const KEY_UPLOAD_TIMEOUT_MS = 10 * 60_000;
@@ -11,11 +12,29 @@ export class ApiError extends Error {
   constructor(
     public readonly status: number,
     message: string,
-    options?: ErrorOptions
+    options?: ErrorOptions & {
+      /** The envelope's machine-readable reason, e.g. `rate_limited`; `undefined` for network errors. */
+      code?: string;
+    }
   ) {
     super(message, options);
     this.name = 'ApiError';
+    this.code = options?.code;
   }
+
+  readonly code: string | undefined;
+}
+
+/** Error bodies: `{"error": {"code": "...", "message": "..."}}`. */
+function errorDetail(data: unknown): { code?: string; message?: string } {
+  if (typeof data !== 'object' || data === null || !('error' in data)) return {};
+  const error = (data as { error: unknown }).error;
+  if (typeof error !== 'object' || error === null) return {};
+  const { code, message } = error as { code?: unknown; message?: unknown };
+  return {
+    code: typeof code === 'string' ? code : undefined,
+    message: typeof message === 'string' ? message : undefined
+  };
 }
 
 /** Human-readable message for an unknown thrown value. */
@@ -77,11 +96,8 @@ async function parse<T>(response: Response): Promise<T> {
     }
   }
   if (!response.ok) {
-    const message =
-      typeof data === 'object' && data !== null && 'message' in data && typeof data.message === 'string'
-        ? data.message
-        : `Request failed (${response.status})`;
-    throw new ApiError(response.status, message);
+    const { code, message } = errorDetail(data);
+    throw new ApiError(response.status, message ?? `Request failed (${response.status})`, { code });
   }
   return data as T;
 }
@@ -90,7 +106,7 @@ async function parse<T>(response: Response): Promise<T> {
 //
 // The access token lives only in this module's memory, never in localStorage,
 // so injected scripts cannot lift it from storage. The long-lived refresh token
-// is an HttpOnly cookie the server sets on /api/auth; page scripts cannot read
+// is an HttpOnly cookie the server sets on /api/v1/auth; page scripts cannot read
 // it at all. A reload restores the session with `session.restore()`.
 
 let accessToken: string | null = null;

@@ -4,7 +4,7 @@
 # the email verification link (SMTP is not configured, so the backend logs it).
 set -eu
 
-BIN="${HEAAS_BACKEND_BIN:-../backend/target/debug/he-backend}"
+BIN="${HEAAS_BACKEND_BIN:-../target/debug/he-backend}"
 WORK="$(mktemp -d)"
 
 export DATABASE_URL="sqlite://$WORK/he_saas.db?mode=rwc"

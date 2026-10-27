@@ -14,8 +14,6 @@ use std::sync::Arc;
 pub const ISSUER: &str = "heaas";
 pub const AUDIENCE: &str = "heaas-api";
 const TOKEN_TYPE: &str = "access";
-/// Access tokens are short-lived; the refresh cookie renews them.
-pub const ACCESS_TOKEN_TTL_SECS: i64 = 15 * 60;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Claims {
@@ -47,7 +45,7 @@ pub fn issue_access_token(
         aud: AUDIENCE.to_string(),
         typ: TOKEN_TYPE.to_string(),
         iat: now,
-        exp: now + ACCESS_TOKEN_TTL_SECS,
+        exp: now + config.ttl.access_token_secs,
         jti: uuid::Uuid::new_v4().to_string(),
         auth_time,
     };
@@ -115,7 +113,7 @@ mod tests {
             (claims.sub.as_str(), claims.auth_time),
             ("user-1", 1_700_000_000)
         );
-        assert_eq!(claims.exp - claims.iat, ACCESS_TOKEN_TTL_SECS);
+        assert_eq!(claims.exp - claims.iat, config.ttl.access_token_secs);
 
         let mut other = Config::for_tests(std::env::temp_dir());
         other.keys = SecretKeys::derive("a-different-secret-of-sufficient-length");

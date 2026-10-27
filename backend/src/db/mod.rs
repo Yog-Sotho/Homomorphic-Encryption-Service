@@ -1,4 +1,3 @@
-pub mod models;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqliteSynchronous};
 use sqlx::SqlitePool;
 use std::str::FromStr;
