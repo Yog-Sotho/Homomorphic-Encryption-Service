@@ -10,8 +10,9 @@ use actix_web::{web, HttpMessage, HttpRequest, HttpResponse, Responder};
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 use std::sync::Arc;
+use utoipa::ToSchema;
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct MeResponse {
     pub id: String,
     pub email: String,
@@ -22,7 +23,7 @@ pub struct MeResponse {
     pub daily_usage: DailyUsage,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct DailyUsage {
     pub count: i64,
     pub quota: i64,
@@ -41,17 +42,19 @@ struct MeRow {
     daily_usage_count: i64,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema)]
 pub struct ChangePasswordRequest {
     pub current_password: String,
     pub new_password: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema)]
 pub struct DeleteAccountRequest {
     pub password: String,
 }
 
+/// `GET /api/v1/user/me` — the signed-in user, their sign-in methods and today's usage.
+#[utoipa::path(get, path = "/user/me", tag = "user", security(("bearer" = [])), responses((status = 200, description = "The signed-in user", body = MeResponse), (status = 401, description = "Missing or invalid access token", body = heaas_core::api::ErrorBody)))]
 pub async fn get_me(
     pool: web::Data<SqlitePool>,
     config: web::Data<Arc<Config>>,
@@ -128,6 +131,7 @@ fn signed_out_response(config: &Config, message: &str) -> HttpResponse {
 }
 
 /// `PUT /api/v1/user/password` — changes the password and signs out every session.
+#[utoipa::path(put, path = "/user/password", tag = "user", security(("bearer" = [])), request_body = ChangePasswordRequest, responses((status = 200, description = "Changed; every session is signed out", body = heaas_core::api::MessageResponse), (status = 400, description = "Weak password, or the account has no password", body = heaas_core::api::ErrorBody), (status = 401, description = "Current password is incorrect", body = heaas_core::api::ErrorBody), (status = 409, description = "The password changed meanwhile", body = heaas_core::api::ErrorBody)))]
 pub async fn change_password(
     pool: web::Data<SqlitePool>,
     config: web::Data<Arc<Config>>,
@@ -185,6 +189,7 @@ pub async fn change_password(
 }
 
 /// `DELETE /api/v1/user/account` — deletes the account and everything it owns.
+#[utoipa::path(delete, path = "/user/account", tag = "user", security(("bearer" = [])), request_body = DeleteAccountRequest, responses((status = 200, description = "The account, its keys and jobs are deleted", body = heaas_core::api::MessageResponse), (status = 403, description = "Wrong password, or (without a password) no sign-in in the last 5 minutes", body = heaas_core::api::ErrorBody)))]
 pub async fn delete_account(
     pool: web::Data<SqlitePool>,
     config: web::Data<Arc<Config>>,

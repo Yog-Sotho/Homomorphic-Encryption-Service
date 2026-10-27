@@ -22,6 +22,7 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use sqlx::SqlitePool;
 use std::sync::Arc;
+use utoipa::IntoParams;
 use uuid::Uuid;
 
 /// Base64 length of the largest accepted ciphertext.
@@ -238,6 +239,7 @@ async fn abandon(
 /// Honours an `Idempotency-Key` header: resending the same request with the same
 /// key returns the original job (with `Idempotent-Replayed: true`) instead of
 /// queuing and charging a second one.
+#[utoipa::path(post, path = "/compute/jobs", tag = "jobs", security(("bearer" = [])), request_body = heaas_core::api::CreateJobRequest, params(("Idempotency-Key" = Option<String>, Header, description = "1-255 visible ASCII characters. A retry with the same key and body returns the original job instead of queuing (and charging) another.")), responses((status = 202, description = "Queued (or, for a replayed idempotency key, the original job)", body = heaas_core::api::JobSummary, headers(("Location" = String, description = "The job"), ("Idempotent-Replayed" = bool, description = "`true` when this is the original job of a reused key"))), (status = 400, description = "Wrong number of inputs, bad base64 or a bad Idempotency-Key", body = heaas_core::api::ErrorBody), (status = 404, description = "No such server key", body = heaas_core::api::ErrorBody), (status = 413, description = "Body too large", body = heaas_core::api::ErrorBody), (status = 422, description = "Unknown operation, or the Idempotency-Key was used for a different request", body = heaas_core::api::ErrorBody), (status = 429, description = "Daily quota used up, or too many jobs waiting; see `Retry-After`", body = heaas_core::api::ErrorBody), (status = 503, description = "The queue is full; see `Retry-After`", body = heaas_core::api::ErrorBody)))]
 pub async fn submit_job(
     pool: web::Data<SqlitePool>,
     config: web::Data<Arc<Config>>,
@@ -328,6 +330,7 @@ pub async fn submit_job(
 }
 
 /// `GET /api/v1/compute/jobs/{id}`
+#[utoipa::path(get, path = "/compute/jobs/{id}", tag = "jobs", security(("bearer" = [])), params(("id" = String, Path, description = "Job id")), responses((status = 200, description = "The job", body = heaas_core::api::JobSummary), (status = 404, description = "No such job", body = heaas_core::api::ErrorBody)))]
 pub async fn get_job_status(
     pool: web::Data<SqlitePool>,
     job_id: web::Path<String>,
@@ -341,6 +344,7 @@ pub async fn get_job_status(
 
 /// `GET /api/v1/compute/jobs/{id}/result` — the encrypted result as
 /// `application/octet-stream` (a `safe_serialize`d `FheUint16`).
+#[utoipa::path(get, path = "/compute/jobs/{id}/result", tag = "jobs", security(("bearer" = [])), params(("id" = String, Path, description = "Job id")), responses((status = 200, description = "The encrypted result: a `safe_serialize`d `FheUint16`", body = inline(crate::api::openapi::Binary), content_type = "application/octet-stream"), (status = 404, description = "No such job", body = heaas_core::api::ErrorBody), (status = 409, description = "The job has not completed", body = heaas_core::api::ErrorBody)))]
 pub async fn get_job_result(
     pool: web::Data<SqlitePool>,
     jobs: web::Data<JobStore>,
@@ -391,9 +395,13 @@ pub async fn get_job_result(
         .body(bytes))
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct ListQuery {
+    /// `next_cursor` of the previous page.
     cursor: Option<String>,
+    /// Jobs per page (default 20).
+    #[param(minimum = 1, maximum = 100)]
     limit: Option<u32>,
 }
 
@@ -418,6 +426,7 @@ fn decode_cursor(cursor: &str) -> Result<(String, String), AppError> {
 }
 
 /// `GET /api/v1/compute/jobs?cursor=&limit=` — the caller's jobs, newest first.
+#[utoipa::path(get, path = "/compute/jobs", tag = "jobs", security(("bearer" = [])), params(ListQuery), responses((status = 200, description = "The caller's jobs, newest first", body = heaas_core::api::JobPage), (status = 400, description = "Invalid cursor or limit", body = heaas_core::api::ErrorBody)))]
 pub async fn list_jobs(
     pool: web::Data<SqlitePool>,
     query: web::Query<ListQuery>,
@@ -472,6 +481,7 @@ pub async fn list_jobs(
 
 /// `DELETE /api/v1/compute/jobs/{id}` — removes a job that is not running, with
 /// its stored ciphertexts.
+#[utoipa::path(delete, path = "/compute/jobs/{id}", tag = "jobs", security(("bearer" = [])), params(("id" = String, Path, description = "Job id")), responses((status = 204, description = "Deleted with its ciphertexts"), (status = 404, description = "No such job", body = heaas_core::api::ErrorBody), (status = 409, description = "The job is running", body = heaas_core::api::ErrorBody)))]
 pub async fn delete_job(
     pool: web::Data<SqlitePool>,
     jobs: web::Data<JobStore>,

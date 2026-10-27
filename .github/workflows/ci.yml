@@ -53,6 +53,18 @@ jobs:
           manifest-path: Cargo.toml
           command: check advisories bans licenses sources
 
+  openapi:
+    name: OpenAPI document (lint)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      # The Rust tests check that docs/api/openapi.json matches the code; this
+      # checks the document itself against the OpenAPI 3.1 specification.
+      - run: npx --yes @redocly/cli@1.34.5 lint docs/api/openapi.json
+
   frontend:
     name: Frontend (check, unit, build, e2e)
     runs-on: ubuntu-latest

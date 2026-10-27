@@ -20,6 +20,7 @@ use bcrypt::{hash, verify, DEFAULT_COST};
 use serde::Deserialize;
 use sqlx::SqlitePool;
 use std::sync::Arc;
+use utoipa::{IntoParams, ToSchema};
 use uuid::Uuid;
 
 /// Verified against when an account has no password, so every sign-in costs
@@ -91,6 +92,7 @@ async fn send_verification(mailer: &Mailer, config: &Config, to: &str, token: &s
 pub use heaas_core::api::Credentials;
 
 /// `POST /api/v1/auth/register`
+#[utoipa::path(post, path = "/auth/register", tag = "auth", request_body = heaas_core::api::Credentials, responses((status = 202, description = "Verification email sent. The same answer is given when the address already has an account.", body = heaas_core::api::MessageResponse), (status = 400, description = "Invalid email or weak password", body = heaas_core::api::ErrorBody), (status = 429, description = "Too many requests; see `Retry-After`", body = heaas_core::api::ErrorBody)))]
 pub async fn register(
     pool: web::Data<SqlitePool>,
     config: web::Data<Arc<Config>>,
@@ -149,6 +151,7 @@ struct LoginRow {
 }
 
 /// `POST /api/v1/auth/login`
+#[utoipa::path(post, path = "/auth/login", tag = "auth", request_body = heaas_core::api::Credentials, responses((status = 200, description = "Signed in", body = heaas_core::api::AuthResponse, headers(("Set-Cookie" = String, description = "The `HttpOnly` refresh cookie (path `/api/v1/auth`)"))), (status = 401, description = "Wrong email or password, or the email is not verified", body = heaas_core::api::ErrorBody), (status = 429, description = "Too many requests; see `Retry-After`", body = heaas_core::api::ErrorBody)))]
 pub async fn login(
     pool: web::Data<SqlitePool>,
     config: web::Data<Arc<Config>>,
@@ -189,12 +192,13 @@ pub async fn login(
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema)]
 pub struct TokenRequest {
     pub token: String,
 }
 
 /// `POST /api/v1/auth/verify` — confirms the email address and signs the user in.
+#[utoipa::path(post, path = "/auth/verify", tag = "auth", request_body = TokenRequest, responses((status = 200, description = "Email verified and signed in", body = heaas_core::api::AuthResponse, headers(("Set-Cookie" = String, description = "The `HttpOnly` refresh cookie (path `/api/v1/auth`)"))), (status = 400, description = "Invalid or expired verification link", body = heaas_core::api::ErrorBody)))]
 pub async fn verify_email(
     pool: web::Data<SqlitePool>,
     config: web::Data<Arc<Config>>,
@@ -217,7 +221,8 @@ pub async fn verify_email(
     start_session(pool.get_ref(), &config, user.ok_or_else(invalid)?).await
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct LinkQuery {
     pub token: Option<String>,
 }
@@ -239,6 +244,7 @@ fn to_page(config: &Config, page: &str, token: Option<&str>) -> HttpResponse {
 
 /// `GET /api/v1/auth/verify?token=` — links in emails sent before verification
 /// moved to the frontend. Redirects without consuming the token.
+#[utoipa::path(get, path = "/auth/verify", tag = "auth", params(LinkQuery), responses((status = 302, description = "Redirect to the frontend page, token in the fragment. Consumes nothing.")))]
 pub async fn verify_link(
     config: web::Data<Arc<Config>>,
     query: web::Query<LinkQuery>,
@@ -247,6 +253,7 @@ pub async fn verify_link(
 }
 
 /// `GET /api/v1/auth/forgot-password/redirect?token=` — the same for reset links.
+#[utoipa::path(get, path = "/auth/forgot-password/redirect", tag = "auth", params(LinkQuery), responses((status = 302, description = "Redirect to the frontend page, token in the fragment. Consumes nothing.")))]
 pub async fn reset_link(
     config: web::Data<Arc<Config>>,
     query: web::Query<LinkQuery>,
@@ -254,12 +261,13 @@ pub async fn reset_link(
     to_page(&config, "/reset", query.token.as_deref())
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema)]
 pub struct EmailRequest {
     pub email: String,
 }
 
 /// `POST /api/v1/auth/resend-verification`
+#[utoipa::path(post, path = "/auth/resend-verification", tag = "auth", request_body = EmailRequest, responses((status = 200, description = "Sent if an unverified account exists (the answer is the same either way)", body = heaas_core::api::MessageResponse), (status = 429, description = "Too many requests; see `Retry-After`", body = heaas_core::api::ErrorBody)))]
 pub async fn resend_verification(
     pool: web::Data<SqlitePool>,
     config: web::Data<Arc<Config>>,
@@ -291,6 +299,7 @@ pub async fn resend_verification(
 }
 
 /// `POST /api/v1/auth/forgot-password`
+#[utoipa::path(post, path = "/auth/forgot-password", tag = "auth", request_body = EmailRequest, responses((status = 200, description = "Sent if the account exists (the answer is the same either way)", body = heaas_core::api::MessageResponse), (status = 429, description = "Too many requests; see `Retry-After`", body = heaas_core::api::ErrorBody)))]
 pub async fn forgot_password(
     pool: web::Data<SqlitePool>,
     config: web::Data<Arc<Config>>,
@@ -330,7 +339,7 @@ pub async fn forgot_password(
     Ok(HttpResponse::Ok().json(message(RESET_SENT)))
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema)]
 pub struct ResetPasswordRequest {
     pub token: String,
     pub new_password: String,
@@ -338,6 +347,7 @@ pub struct ResetPasswordRequest {
 
 /// `POST /api/v1/auth/reset-password` — sets a new password (once per link) and
 /// signs out every session.
+#[utoipa::path(post, path = "/auth/reset-password", tag = "auth", request_body = ResetPasswordRequest, responses((status = 200, description = "Password set; every session is signed out", body = heaas_core::api::MessageResponse), (status = 400, description = "Invalid or expired link, or weak password", body = heaas_core::api::ErrorBody)))]
 pub async fn reset_password(
     pool: web::Data<SqlitePool>,
     req: web::Json<ResetPasswordRequest>,

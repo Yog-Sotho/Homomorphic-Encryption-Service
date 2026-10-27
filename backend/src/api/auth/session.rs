@@ -17,6 +17,7 @@ use chrono::NaiveDateTime;
 use serde::Deserialize;
 use sqlx::{Sqlite, SqlitePool};
 use std::sync::Arc;
+use utoipa::ToSchema;
 use uuid::Uuid;
 
 pub const REFRESH_COOKIE: &str = "heaas_refresh";
@@ -148,6 +149,7 @@ struct Claimed {
 
 /// `POST /api/v1/auth/refresh` — exchanges the refresh cookie for a new access
 /// token and a new refresh cookie.
+#[utoipa::path(post, path = "/auth/refresh", tag = "auth", security(("refresh_cookie" = [])), responses((status = 200, description = "A new access token; the refresh cookie is rotated", body = heaas_core::api::AuthResponse, headers(("Set-Cookie" = String, description = "The `HttpOnly` refresh cookie (path `/api/v1/auth`)"))), (status = 401, description = "No valid session (the cookie is cleared)", body = heaas_core::api::ErrorBody)))]
 pub async fn refresh(
     pool: web::Data<SqlitePool>,
     config: web::Data<Arc<Config>>,
@@ -235,6 +237,7 @@ pub async fn refresh(
 }
 
 /// `POST /api/v1/auth/logout` — ends this browser's session (its whole family).
+#[utoipa::path(post, path = "/auth/logout", tag = "auth", security(("refresh_cookie" = [])), responses((status = 200, description = "Signed out; the cookie is cleared", body = heaas_core::api::MessageResponse)))]
 pub async fn logout(
     pool: web::Data<SqlitePool>,
     config: web::Data<Arc<Config>>,
@@ -270,12 +273,13 @@ pub async fn create_login_code(pool: &SqlitePool, user_id: &str) -> Result<Strin
     Ok(code)
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema)]
 pub struct ExchangeRequest {
     pub code: String,
 }
 
 /// `POST /api/v1/auth/exchange` — redeems a one-time login code (once).
+#[utoipa::path(post, path = "/auth/exchange", tag = "auth", request_body = ExchangeRequest, responses((status = 200, description = "Signed in", body = heaas_core::api::AuthResponse, headers(("Set-Cookie" = String, description = "The `HttpOnly` refresh cookie (path `/api/v1/auth`)"))), (status = 401, description = "Unknown, used or expired code", body = heaas_core::api::ErrorBody)))]
 pub async fn exchange(
     pool: web::Data<SqlitePool>,
     config: web::Data<Arc<Config>>,

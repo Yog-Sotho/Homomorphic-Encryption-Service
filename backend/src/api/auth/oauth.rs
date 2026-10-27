@@ -23,6 +23,7 @@ use sqlx::SqlitePool;
 use std::sync::Arc;
 use std::time::Duration;
 use subtle::ConstantTimeEq;
+use utoipa::{IntoParams, ToSchema};
 use uuid::Uuid;
 
 const STATE_COOKIE: &str = "heaas_oauth";
@@ -73,13 +74,14 @@ pub fn http_client() -> reqwest::Client {
         .expect("TLS backend available")
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct Providers {
     google: bool,
     github: bool,
 }
 
 /// `GET /api/v1/auth/providers` — which sign-in buttons the frontend should show.
+#[utoipa::path(get, path = "/auth/providers", tag = "auth", responses((status = 200, description = "Which OAuth providers are configured", body = Providers)))]
 pub async fn providers(config: web::Data<Arc<Config>>) -> HttpResponse {
     HttpResponse::Ok().json(Providers {
         google: Provider::Google.client(&config).is_some(),
@@ -214,17 +216,22 @@ pub async fn start(
     Ok(redirect(url.as_str()).cookie(cookie).finish())
 }
 
+/// Starts Google sign-in.
+#[utoipa::path(get, path = "/auth/google", tag = "auth", responses((status = 302, description = "Redirect to Google, with a state cookie"), (status = 404, description = "Google sign-in is not configured", body = heaas_core::api::ErrorBody)))]
 pub async fn google_start(config: web::Data<Arc<Config>>) -> Result<HttpResponse, AppError> {
     start(config, Provider::Google).await
 }
 
+/// Starts GitHub sign-in.
+#[utoipa::path(get, path = "/auth/github", tag = "auth", responses((status = 302, description = "Redirect to GitHub, with a state cookie"), (status = 404, description = "GitHub sign-in is not configured", body = heaas_core::api::ErrorBody)))]
 pub async fn github_start(config: web::Data<Arc<Config>>) -> Result<HttpResponse, AppError> {
     start(config, Provider::Github).await
 }
 
 // ── Callback ─────────────────────────────────────────────────────────────────
 
-#[derive(Deserialize)]
+#[derive(Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct CallbackQuery {
     pub code: Option<String>,
     pub state: Option<String>,
@@ -517,6 +524,8 @@ pub async fn callback(
     }
 }
 
+/// Where Google returns the user after sign-in.
+#[utoipa::path(get, path = "/auth/google/callback", tag = "auth", params(CallbackQuery), responses((status = 302, description = "Redirect to the frontend with `#code=` (exchange it at `/auth/exchange`) or `#error=`")))]
 pub async fn google_callback(
     pool: web::Data<SqlitePool>,
     config: web::Data<Arc<Config>>,
@@ -527,6 +536,8 @@ pub async fn google_callback(
     callback(pool, config, http, req, query, Provider::Google).await
 }
 
+/// Where GitHub returns the user after sign-in.
+#[utoipa::path(get, path = "/auth/github/callback", tag = "auth", params(CallbackQuery), responses((status = 302, description = "Redirect to the frontend with `#code=` (exchange it at `/auth/exchange`) or `#error=`")))]
 pub async fn github_callback(
     pool: web::Data<SqlitePool>,
     config: web::Data<Arc<Config>>,

@@ -12,6 +12,7 @@ use uuid::Uuid;
 pub use heaas_core::api::ServerKeyInfo;
 
 /// `POST /api/v1/keys` — body is a `safe_serialize`d TFHE `CompressedServerKey`.
+#[utoipa::path(post, path = "/keys", tag = "keys", security(("bearer" = [])), request_body(content = inline(crate::api::openapi::Binary), content_type = "application/octet-stream", description = "A `safe_serialize`d TFHE-rs `CompressedServerKey` for the parameters of `/he/params`"), responses((status = 201, description = "Registered", body = heaas_core::api::ServerKeyInfo, headers(("Location" = String, description = "The new key"))), (status = 400, description = "Not a compressed server key for these parameters", body = heaas_core::api::ErrorBody), (status = 409, description = "The account already has its maximum number of keys", body = heaas_core::api::ErrorBody), (status = 413, description = "Larger than `max_server_key_bytes`", body = heaas_core::api::ErrorBody)))]
 pub async fn upload_key(
     pool: web::Data<SqlitePool>,
     config: web::Data<Arc<Config>>,
@@ -81,6 +82,7 @@ pub async fn upload_key(
 }
 
 /// `GET /api/v1/keys` — the caller's keys, newest first.
+#[utoipa::path(get, path = "/keys", tag = "keys", security(("bearer" = [])), responses((status = 200, description = "The caller's keys, newest first", body = Vec<heaas_core::api::ServerKeyInfo>)))]
 pub async fn list_keys(
     pool: web::Data<SqlitePool>,
     user_id: web::ReqData<String>,
@@ -96,6 +98,7 @@ pub async fn list_keys(
 }
 
 /// `DELETE /api/v1/keys/{id}` — removes the key; its jobs stay but lose the reference.
+#[utoipa::path(delete, path = "/keys/{id}", tag = "keys", security(("bearer" = [])), params(("id" = String, Path, description = "Key id")), responses((status = 204, description = "Deleted"), (status = 404, description = "No such key", body = heaas_core::api::ErrorBody)))]
 pub async fn delete_key(
     pool: web::Data<SqlitePool>,
     store: web::Data<KeyStore>,

@@ -839,3 +839,47 @@ async fn the_unversioned_api_still_answers_but_is_marked_deprecated() {
     assert_eq!(current.status(), StatusCode::OK);
     assert!(current.headers().get("deprecation").is_none());
 }
+
+#[actix_web::test]
+async fn every_documented_operation_is_routed() {
+    let env = TestEnv::without_workers(|_| {}).await;
+    let app = env.app().await;
+    let alice = env.user("alice").await;
+
+    let operations = api::openapi::operations();
+    assert!(operations.len() >= 25, "{operations:?}");
+    for (method, path) in operations {
+        let uri = format!(
+            "/api/v1{}",
+            path.replace("{id}", &uuid::Uuid::new_v4().to_string())
+        );
+        let req = test::TestRequest::default()
+            .method(method.parse().unwrap())
+            .uri(&uri)
+            .insert_header(("Authorization", alice.as_str()))
+            .insert_header(("Origin", "http://localhost:3000"))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        let status = resp.status();
+        let body = test::read_body(resp).await;
+        let unrouted = status == StatusCode::METHOD_NOT_ALLOWED
+            || (status == StatusCode::NOT_FOUND
+                && String::from_utf8_lossy(&body).contains("No such endpoint"));
+        assert!(
+            !unrouted,
+            "{method} {uri} is documented but not routed ({status})"
+        );
+    }
+
+    // And the document itself is served.
+    let resp = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri("/api/v1/openapi.json")
+            .to_request(),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let doc: Value = test::read_body_json(resp).await;
+    assert_eq!(doc["servers"][0]["url"], "/api/v1");
+}

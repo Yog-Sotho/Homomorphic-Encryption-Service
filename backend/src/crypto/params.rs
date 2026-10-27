@@ -9,6 +9,7 @@ use heaas_core::Operation;
 use std::sync::Arc;
 
 /// What a client needs to produce compatible keys and inputs.
+#[utoipa::path(get, path = "/he/params", tag = "he", responses((status = 200, description = "Scheme, TFHE-rs version and limits", body = heaas_core::api::HeParams)))]
 pub async fn get_params(config: web::Data<Arc<Config>>) -> HttpResponse {
     HttpResponse::Ok().json(HeParams {
         scheme: "TFHE (CGGI)".into(),
