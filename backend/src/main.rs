@@ -1,4 +1,5 @@
 mod api;
+mod backup;
 mod config;
 mod crypto;
 mod db;
@@ -6,6 +7,7 @@ mod errors;
 mod jobs;
 mod middleware;
 mod storage;
+mod telemetry;
 
 use crate::api::auth::email::Mailer;
 use crate::crypto::keys::KeyStore;
@@ -14,8 +16,8 @@ use crate::jobs::worker::{WorkerPool, WorkerSettings};
 use crate::middleware::rate_limit::RateLimits;
 use actix_cors::Cors;
 use actix_web::http::{header, Method};
-use actix_web::middleware::DefaultHeaders;
-use actix_web::{web, App, HttpResponse, HttpServer};
+use actix_web::middleware::{from_fn, DefaultHeaders};
+use actix_web::{web, App, HttpServer};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -23,27 +25,107 @@ use std::time::Duration;
 /// (they are requeued at the next start).
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(30);
 
-async fn health() -> HttpResponse {
-    HttpResponse::Ok().json(serde_json::json!({
-        "status": "ok",
-        "version": env!("CARGO_PKG_VERSION")
-    }))
+/// `he-backend healthcheck`: exits 0 when the running server on SERVER_ADDR
+/// reports ready. For container health checks; the image has no curl.
+fn healthcheck() -> std::process::ExitCode {
+    use std::io::{Read, Write};
+    dotenvy::dotenv().ok();
+    let addr = std::env::var("SERVER_ADDR").unwrap_or_else(|_| "127.0.0.1:8080".into());
+    // A server listening on all interfaces is reached on loopback.
+    let addr = addr
+        .replace("0.0.0.0:", "127.0.0.1:")
+        .replace("[::]:", "[::1]:");
+    let probe = || -> std::io::Result<bool> {
+        let timeout = Duration::from_secs(3);
+        let target = std::net::ToSocketAddrs::to_socket_addrs(&addr)?
+            .next()
+            .ok_or_else(|| std::io::Error::other("SERVER_ADDR resolves to nothing"))?;
+        let mut stream = std::net::TcpStream::connect_timeout(&target, timeout)?;
+        stream.set_read_timeout(Some(timeout))?;
+        write!(
+            stream,
+            "GET /api/v1/health/ready HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n"
+        )?;
+        let mut head = [0u8; 12];
+        stream.read_exact(&mut head)?;
+        Ok(head.starts_with(b"HTTP/1.1 200") || head.starts_with(b"HTTP/1.0 200"))
+    };
+    match probe() {
+        Ok(true) => std::process::ExitCode::SUCCESS,
+        Ok(false) => {
+            eprintln!("not ready");
+            std::process::ExitCode::FAILURE
+        }
+        Err(e) => {
+            eprintln!("healthcheck failed: {e}");
+            std::process::ExitCode::FAILURE
+        }
+    }
+}
+
+/// `he-backend backup <dir>`: see [`backup`].
+fn run_backup(dest: Option<String>) -> std::process::ExitCode {
+    let Some(dest) = dest else {
+        eprintln!("usage: he-backend backup <new directory>");
+        return std::process::ExitCode::from(2);
+    };
+    let sources = backup::Sources::from_env();
+    let runtime = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(e) => {
+            eprintln!("backup failed: {e}");
+            return std::process::ExitCode::FAILURE;
+        }
+    };
+    match runtime.block_on(backup::run(&sources, std::path::Path::new(&dest))) {
+        Ok(copied) => {
+            println!(
+                "Backed up the database, {} key files and {} job files to {dest}",
+                copied.key_files, copied.job_files
+            );
+            std::process::ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("backup failed: {e}");
+            std::process::ExitCode::FAILURE
+        }
+    }
+}
+
+fn main() -> std::process::ExitCode {
+    let mut args = std::env::args().skip(1);
+    match args.next().as_deref() {
+        Some("healthcheck") => return healthcheck(),
+        Some("backup") => return run_backup(args.next()),
+        _ => {}
+    }
+    match serve() {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(e) => {
+            tracing::error!("Server failed: {e}");
+            std::process::ExitCode::FAILURE
+        }
+    }
 }
 
 #[actix_web::main]
-async fn main() -> std::io::Result<()> {
-    env_logger::init();
+async fn serve() -> std::io::Result<()> {
     let config = match config::Config::from_env() {
         Ok(config) => Arc::new(config),
         Err(e) => {
-            log::error!("Invalid configuration:\n{e}");
+            telemetry::init_logging(telemetry::LogFormat::Json);
+            tracing::error!("Invalid configuration:\n{e}");
             std::process::exit(2);
         }
     };
+    telemetry::init_logging(config.log_format);
     let mailer = match Mailer::new(&config.mail) {
         Ok(mailer) => web::Data::new(mailer),
         Err(e) => {
-            log::error!("Invalid configuration: {e}");
+            tracing::error!("Invalid configuration: {e}");
             std::process::exit(2);
         }
     };
@@ -78,8 +160,12 @@ async fn main() -> std::io::Result<()> {
     .await
     .expect("Failed to start the job workers");
     let notifier = web::Data::new(workers.notifier());
+    let liveness = web::Data::new(workers.liveness());
+    if config.metrics_token.is_none() {
+        tracing::info!("METRICS_TOKEN is not set; GET /metrics is disabled");
+    }
 
-    log::info!("Starting HE SaaS Backend on {}", config.server_addr);
+    tracing::info!("Starting HE SaaS Backend on {}", config.server_addr);
 
     let config_data = web::Data::new(config.clone());
     let rate_limits = web::Data::new(RateLimits::new(&config));
@@ -94,6 +180,8 @@ async fn main() -> std::io::Result<()> {
         App::new()
             .wrap(security_headers())
             .wrap(build_cors(&config))
+            // Outermost: every response, CORS refusals included, gets an id.
+            .wrap(from_fn(telemetry::request_context))
             .app_data(web::Data::new(app_pool.clone()))
             .app_data(key_store.clone())
             .app_data(job_store.clone())
@@ -102,7 +190,8 @@ async fn main() -> std::io::Result<()> {
             .app_data(rate_limits.clone())
             .app_data(oauth_http.clone())
             .app_data(mailer.clone())
-            .route("/api/health", web::get().to(health))
+            .app_data(liveness.clone())
+            .configure(telemetry::configure)
             .configure(|cfg| api::configure(cfg, &config))
     })
     .bind(&server_addr)?
@@ -110,7 +199,7 @@ async fn main() -> std::io::Result<()> {
     .await?;
 
     // `run` returns once actix has stopped accepting requests (SIGTERM/SIGINT).
-    log::info!("Waiting for running jobs to finish");
+    tracing::info!("Waiting for running jobs to finish");
     workers.shutdown(SHUTDOWN_GRACE).await;
     pool.close().await;
     Ok(())
@@ -132,11 +221,13 @@ fn build_cors(config: &config::Config) -> Cors {
             header::CONTENT_TYPE,
             header::ACCEPT,
             header::HeaderName::from_static("idempotency-key"),
+            telemetry::REQUEST_ID_HEADER,
         ])
         .expose_headers([
             header::LOCATION,
             header::RETRY_AFTER,
             header::HeaderName::from_static("idempotent-replayed"),
+            telemetry::REQUEST_ID_HEADER,
         ])
         .supports_credentials()
         .max_age(3600)
@@ -167,8 +258,8 @@ async fn maintenance(pool: sqlx::SqlitePool, limits: web::Data<RateLimits>) {
         limits.purge();
         match api::auth::session::purge_expired(&pool).await {
             Ok(0) => {}
-            Ok(n) => log::info!("Deleted {n} expired sessions and login codes"),
-            Err(e) => log::error!("Failed to delete expired sessions: {e}"),
+            Ok(n) => tracing::info!("Deleted {n} expired sessions and login codes"),
+            Err(e) => tracing::error!("Failed to delete expired sessions: {e}"),
         }
     }
 }
@@ -183,7 +274,7 @@ mod tests {
         let app = test::init_service(
             App::new()
                 .wrap(security_headers())
-                .route("/api/health", web::get().to(health)),
+                .route("/api/health", web::get().to(api::health::health)),
         )
         .await;
         let resp = test::call_service(
@@ -212,7 +303,7 @@ mod tests {
         let app = test::init_service(
             App::new()
                 .wrap(build_cors(&config))
-                .route("/api/health", web::get().to(health)),
+                .route("/api/health", web::get().to(api::health::health)),
         )
         .await;
         let preflight = |origin: &str, method: &str, headers: &str| {

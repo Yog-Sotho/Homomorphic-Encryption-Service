@@ -5,8 +5,10 @@
 
 use crate::config::Config;
 use crate::errors::AppError;
+use actix_web::body::{BoxBody, MessageBody};
+use actix_web::dev::{ServiceRequest, ServiceResponse};
 use actix_web::middleware::Next;
-use actix_web::{dev::ServiceRequest, web, Error, HttpMessage};
+use actix_web::{web, Error, HttpMessage, ResponseError};
 use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -71,10 +73,12 @@ pub fn validate_access_token(token: &str, config: &Config) -> Option<Claims> {
     (data.claims.typ == TOKEN_TYPE).then_some(data.claims)
 }
 
-pub async fn jwt_validator<B: actix_web::body::MessageBody>(
+/// Admits requests with a valid access token. Refusals are answered here (not
+/// returned as errors) so outer middleware can still add headers to them.
+pub async fn jwt_validator(
     req: ServiceRequest,
-    next: Next<B>,
-) -> Result<actix_web::dev::ServiceResponse<B>, Error> {
+    next: Next<impl MessageBody + 'static>,
+) -> Result<ServiceResponse<BoxBody>, Error> {
     let config = req
         .app_data::<web::Data<Arc<Config>>>()
         .cloned()
@@ -91,9 +95,14 @@ pub async fn jwt_validator<B: actix_web::body::MessageBody>(
         Some(claims) => {
             req.extensions_mut().insert(AuthTime(claims.auth_time));
             req.extensions_mut().insert(claims.sub);
-            next.call(req).await
+            next.call(req)
+                .await
+                .map(ServiceResponse::map_into_boxed_body)
         }
-        None => Err(AppError::unauthorized("Invalid or missing token").into()),
+        None => {
+            let response = AppError::unauthorized("Invalid or missing token").error_response();
+            Ok(req.into_response(response))
+        }
     }
 }
 

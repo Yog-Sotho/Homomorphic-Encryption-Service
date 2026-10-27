@@ -253,7 +253,7 @@ pub async fn delete_account(
     let _ = web::block(move || {
         for (key_id,) in key_ids {
             if let Err(e) = store.remove(&key_id) {
-                log::error!("Failed to delete key file {key_id} for deleted account: {e}");
+                tracing::error!("Failed to delete key file {key_id} for deleted account: {e}");
             }
         }
         for (job_id,) in job_ids {

@@ -2,6 +2,7 @@ pub mod auth;
 #[cfg(test)]
 mod auth_tests;
 pub mod compute;
+pub mod health;
 #[cfg(test)]
 mod integration_tests;
 pub mod keys;
@@ -43,23 +44,6 @@ pub fn configure(cfg: &mut web::ServiceConfig, config: &Config) {
         );
 }
 
-#[derive(serde::Serialize, utoipa::ToSchema)]
-pub struct Health {
-    #[schema(example = "ok")]
-    status: &'static str,
-    /// The server's version.
-    version: &'static str,
-}
-
-/// Liveness.
-#[utoipa::path(get, path = "/health", tag = "meta", responses((status = 200, description = "The server is up", body = Health)))]
-async fn health() -> HttpResponse {
-    HttpResponse::Ok().json(Health {
-        status: "ok",
-        version: env!("CARGO_PKG_VERSION"),
-    })
-}
-
 async fn no_such_endpoint() -> Result<HttpResponse, AppError> {
     Err(AppError::not_found("No such endpoint"))
 }
@@ -74,7 +58,8 @@ fn api_scope(prefix: &str, config: &Config) -> actix_web::Scope {
         .error_handler(errors::json_error);
 
     web::scope(prefix)
-        .route("/health", web::get().to(health))
+        .route("/health", web::get().to(health::health))
+        .route("/health/ready", web::get().to(health::ready))
         .route("/he/params", web::get().to(params::get_params))
         .route("/openapi.json", web::get().to(openapi::openapi_json))
         .service(

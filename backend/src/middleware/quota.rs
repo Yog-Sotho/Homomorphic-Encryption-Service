@@ -9,7 +9,7 @@ pub struct QuotaCharge {
 }
 
 fn unavailable(err: sqlx::Error) -> AppError {
-    log::error!("Compute quota unavailable: {err}");
+    tracing::error!("Compute quota unavailable: {err}");
     AppError::service_unavailable("Compute quota is temporarily unavailable", 5)
 }
 
@@ -64,7 +64,7 @@ pub async fn refund_compute_quota(pool: &SqlitePool, user_id: &str, charge: &Quo
     .execute(pool)
     .await;
     if let Err(e) = refunded {
-        log::error!("Failed to refund compute quota for {user_id}: {e}");
+        tracing::error!("Failed to refund compute quota for {user_id}: {e}");
     }
 }
 

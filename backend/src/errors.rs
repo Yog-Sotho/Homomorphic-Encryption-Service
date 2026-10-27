@@ -138,7 +138,7 @@ impl ResponseError for AppError {
 
     fn error_response(&self) -> HttpResponse {
         if let AppError::Internal(msg) = self {
-            log::error!("Internal error: {}", msg);
+            tracing::error!("Internal error: {}", msg);
         }
         let mut response = HttpResponse::build(self.status_code());
         let retry_after = match self {
@@ -160,7 +160,7 @@ impl From<sqlx::Error> for AppError {
                 return AppError::Conflict("That already exists".to_string());
             }
         }
-        log::error!("Database error: {}", err);
+        tracing::error!("Database error: {}", err);
         AppError::Internal("Database operation failed".to_string())
     }
 }

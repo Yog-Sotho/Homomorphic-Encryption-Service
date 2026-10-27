@@ -1157,7 +1157,7 @@
         "tags": [
           "meta"
         ],
-        "summary": "Liveness.",
+        "summary": "Liveness: the process is up and answering.",
         "operationId": "health",
         "responses": {
           "200": {
@@ -1166,6 +1166,43 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Health"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {}
+        ]
+      }
+    },
+    "/health/ready": {
+      "get": {
+        "tags": [
+          "meta"
+        ],
+        "summary": "Readiness: the database answers, both stores accept new files and every\njob worker is running. Only `200` means the instance should get traffic.",
+        "operationId": "ready",
+        "responses": {
+          "200": {
+            "description": "Ready",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Ready"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Not ready; `checks` says what failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotReady"
                 }
               }
             }
@@ -1541,6 +1578,38 @@
           }
         }
       },
+      "Checks": {
+        "type": "object",
+        "description": "Each check: `\"ok\"`, or why it failed.",
+        "required": [
+          "database",
+          "key_store",
+          "job_store",
+          "workers"
+        ],
+        "properties": {
+          "database": {
+            "type": "string",
+            "description": "The database answers a query.",
+            "example": "ok"
+          },
+          "job_store": {
+            "type": "string",
+            "description": "Files can be created in the job store.",
+            "example": "ok"
+          },
+          "key_store": {
+            "type": "string",
+            "description": "Files can be created in the key store.",
+            "example": "ok"
+          },
+          "workers": {
+            "type": "string",
+            "description": "Running job workers out of those started, e.g. `2/2`.",
+            "example": "2/2"
+          }
+        }
+      },
       "CreateJobRequest": {
         "type": "object",
         "description": "`POST /api/v1/compute/jobs`: compute `operation(inputs[0], inputs[1])`.",
@@ -1903,6 +1972,22 @@
           }
         }
       },
+      "NotReady": {
+        "type": "object",
+        "description": "The error envelope, plus what failed.",
+        "required": [
+          "error",
+          "checks"
+        ],
+        "properties": {
+          "checks": {
+            "$ref": "#/components/schemas/Checks"
+          },
+          "error": {
+            "$ref": "#/components/schemas/ErrorDetail"
+          }
+        }
+      },
       "Operation": {
         "type": "string",
         "description": "Binary operations on `FheUint16`. Arithmetic wraps modulo 2^16.",
@@ -1926,6 +2011,22 @@
           },
           "google": {
             "type": "boolean"
+          }
+        }
+      },
+      "Ready": {
+        "type": "object",
+        "required": [
+          "status",
+          "checks"
+        ],
+        "properties": {
+          "checks": {
+            "$ref": "#/components/schemas/Checks"
+          },
+          "status": {
+            "type": "string",
+            "example": "ready"
           }
         }
       },

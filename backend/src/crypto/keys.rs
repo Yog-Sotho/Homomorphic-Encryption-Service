@@ -98,6 +98,10 @@ impl KeyStore {
         })
     }
 
+    pub fn probe_writable(&self) -> io::Result<()> {
+        crate::storage::probe_writable(&self.dir)
+    }
+
     /// Key ids are server-generated UUIDs; anything else never touches the filesystem.
     fn path_for(&self, key_id: &str) -> Result<PathBuf, KeyStoreError> {
         uuid::Uuid::parse_str(key_id).map_err(|_| KeyStoreError::NotFound)?;
@@ -114,8 +118,10 @@ impl KeyStore {
     /// (~0.5 s): call from a blocking thread.
     pub fn load(&self, key_id: &str) -> Result<Arc<UserServerKey>, KeyStoreError> {
         if let Some(key) = self.cached(key_id) {
+            crate::telemetry::METRICS.key_cache_lookup(true);
             return Ok(key);
         }
+        crate::telemetry::METRICS.key_cache_lookup(false);
         let bytes = fs::read(self.path_for(key_id)?)?;
         // Re-validated on load as well: the file is the only copy of the key.
         let compressed = validate_compressed_key(&bytes, self.max_key_bytes)?;

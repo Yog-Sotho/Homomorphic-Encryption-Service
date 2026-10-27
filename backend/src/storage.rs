@@ -37,6 +37,14 @@ pub fn sync_dir(_dir: &Path) -> io::Result<()> {
     Ok(())
 }
 
+/// Whether files can be created in `dir` (readiness): writes and removes a
+/// uniquely named probe file.
+pub fn probe_writable(dir: &Path) -> io::Result<()> {
+    let probe = dir.join(format!(".ready-{}", uuid::Uuid::new_v4()));
+    File::create(&probe)?.write_all(b"ok")?;
+    fs::remove_file(&probe)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

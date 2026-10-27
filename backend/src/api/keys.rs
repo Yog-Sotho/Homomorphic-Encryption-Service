@@ -117,7 +117,7 @@ pub async fn delete_key(
     }
     if let Err(e) = store.remove(&key_id) {
         // The row is gone, so the key is unusable; the orphaned file is only disk space.
-        log::error!("Failed to delete key file {key_id}: {e}");
+        tracing::error!("Failed to delete key file {key_id}: {e}");
     }
     Ok(HttpResponse::NoContent().finish())
 }

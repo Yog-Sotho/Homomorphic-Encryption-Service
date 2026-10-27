@@ -15,6 +15,8 @@ export JWT_SECRET="fullstack-test-secret-that-is-at-least-32-bytes"
 export ALLOWED_ORIGINS="http://localhost:4174"
 export APP_BASE_URL="http://localhost:4174"
 export RUST_LOG="${RUST_LOG:-info}"
+# The tests read emailed links from plain-text log lines.
+export LOG_FORMAT=pretty
 unset SMTP_HOST
 
 exec "$BIN" >"${FULLSTACK_LOG:-e2e-fullstack/.backend.log}" 2>&1

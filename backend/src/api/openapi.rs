@@ -27,7 +27,8 @@ use utoipa::{Modify, OpenApi};
     ),
     servers((url = "/api/v1")),
     paths(
-        super::health,
+        super::health::health,
+        super::health::ready,
         params::get_params,
         auth::password::register,
         auth::password::login,
@@ -263,8 +264,9 @@ mod tests {
                     op["responses"]["default"].is_object(),
                     "{method} {path} has no default response"
                 );
-                let public =
-                    path.starts_with("/auth/") || path == "/health" || path == "/he/params";
+                let public = path.starts_with("/auth/")
+                    || path.starts_with("/health")
+                    || path == "/he/params";
                 if !public {
                     assert_eq!(
                         op["security"][0]["bearer"],
