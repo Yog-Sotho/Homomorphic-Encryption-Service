@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 # The frontend: SvelteKit (adapter-node) behind server.js, which adds the
 # cross-origin isolation headers TFHE's WebAssembly needs. Runs as `node`.
-FROM node:22.23.4-alpine3.24 AS build
+FROM node:26.12.1-alpine3.24 AS build
 WORKDIR /app
 RUN corepack enable && corepack prepare pnpm@10.28.0 --activate
 COPY package.json pnpm-lock.yaml ./
@@ -9,7 +9,7 @@ RUN pnpm install --frozen-lockfile
 COPY . .
 RUN pnpm build && pnpm prune --prod
 
-FROM node:22.23.4-alpine3.24
+FROM node:26.12.1-alpine3.24
 WORKDIR /app
 ENV NODE_ENV=production \
     HOST=0.0.0.0 \
