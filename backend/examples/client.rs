@@ -89,10 +89,12 @@ async fn main() -> Result<()> {
         .to_string();
     println!("registered server key {key_id}");
 
-    // 4. Submit encrypted inputs.
+    // 4. Submit encrypted inputs. The Idempotency-Key makes a resend after a
+    //    network error return the same job instead of running (and charging) twice.
     let submit = http
         .post(format!("{base}/api/compute/jobs"))
         .bearer_auth(&token)
+        .header("Idempotency-Key", uuid::Uuid::new_v4().to_string())
         .json(&json!({
             "key_id": key_id,
             "operation": "multiply",
@@ -105,7 +107,7 @@ async fn main() -> Result<()> {
         .ok_or("no job id")?
         .to_string();
 
-    // 5. Poll until done, then decrypt locally.
+    // 5. Poll until done, then fetch the encrypted result and decrypt it locally.
     let job = loop {
         let resp = http
             .get(format!("{base}/api/compute/jobs/{job_id}"))
@@ -118,11 +120,17 @@ async fn main() -> Result<()> {
             _ => break job,
         }
     };
-    let result_b64 = job["result_b64"]
-        .as_str()
-        .ok_or_else(|| format!("job failed: {}", job["error_message"]))?;
-    let bytes = STANDARD.decode(result_b64)?;
-    let result: FheUint16 = safe_deserialize(bytes.as_slice(), MAX_CIPHERTEXT_BYTES)?;
+    if job["status"] != "completed" {
+        return Err(format!("job failed: {}", job["error_message"]).into());
+    }
+    let resp = http
+        .get(format!("{base}/api/compute/jobs/{job_id}/result"))
+        .bearer_auth(&token)
+        .send()
+        .await?
+        .error_for_status()?;
+    let bytes = resp.bytes().await?;
+    let result: FheUint16 = safe_deserialize(&bytes[..], MAX_CIPHERTEXT_BYTES)?;
     let value: u16 = result.decrypt(&client_key);
 
     println!("{a} × {b} mod 65536 = {value}");

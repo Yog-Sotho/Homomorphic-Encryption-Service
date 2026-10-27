@@ -29,6 +29,7 @@ type Body = { json: unknown } | { binary: Uint8Array<ArrayBuffer> };
 
 interface RequestOptions {
   body?: Body;
+  headers?: Record<string, string>;
   timeoutMs?: number;
 }
 
@@ -38,7 +39,7 @@ async function send(
   options: RequestOptions,
   token: string | null
 ): Promise<Response> {
-  const headers: Record<string, string> = { Accept: 'application/json' };
+  const headers: Record<string, string> = { Accept: 'application/json', ...options.headers };
   let payload: BodyInit | undefined;
   if (options.body && 'json' in options.body) {
     headers['Content-Type'] = 'application/json';
@@ -112,23 +113,35 @@ function redirectToLogin(): void {
   window.location.href = resolve('/login');
 }
 
-async function request<T>(method: Method, path: string, options: RequestOptions = {}): Promise<T> {
+/** Sends with the stored access token, refreshing it once on a 401. */
+async function authorized(method: Method, path: string, options: RequestOptions): Promise<Response> {
   const response = await send(method, path, options, localStorage.getItem('token'));
-  if (response.status !== 401 || path.startsWith('/auth/')) return parse<T>(response);
+  if (response.status !== 401 || path.startsWith('/auth/')) return response;
 
   const refreshToken = localStorage.getItem('refresh_token');
   if (!refreshToken) {
     redirectToLogin();
-    return parse<T>(response);
+    return response;
   }
   let newToken: string;
   try {
     newToken = await refreshAccessToken(refreshToken);
   } catch {
     redirectToLogin();
-    return parse<T>(response);
+    return response;
   }
-  return parse<T>(await send(method, path, options, newToken));
+  return send(method, path, options, newToken);
+}
+
+async function request<T>(method: Method, path: string, options: RequestOptions = {}): Promise<T> {
+  return parse<T>(await authorized(method, path, options));
+}
+
+/** Like `request`, for endpoints that answer with raw bytes. */
+async function requestBytes(path: string): Promise<Uint8Array<ArrayBuffer>> {
+  const response = await authorized('GET', path, {});
+  if (!response.ok) return parse<never>(response);
+  return new Uint8Array(await response.arrayBuffer());
 }
 
 export interface PublicUser {
@@ -176,11 +189,25 @@ export interface ServerKeyInfo {
 
 export type JobStatus = 'pending' | 'processing' | 'completed' | 'failed';
 
-export interface JobResponse {
+/** A job's metadata; the encrypted result is fetched separately. */
+export interface JobSummary {
   id: string;
   status: JobStatus;
-  result_b64: string | null;
+  operation: Operation;
+  key_id: string | null;
+  attempts: number;
   error_message: string | null;
+  input_bytes: number | null;
+  result_bytes: number | null;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+}
+
+export interface JobPage {
+  data: JobSummary[];
+  /** Pass to `listJobs` for the next (older) page; `null` on the last page. */
+  next_cursor: string | null;
 }
 
 const json = (value: unknown): RequestOptions => ({ body: { json: value } });
@@ -227,11 +254,35 @@ export const keys = {
   remove: (keyId: string) => request<void>('DELETE', `/keys/${encodeURIComponent(keyId)}`)
 };
 
+const jobPath = (jobId: string) => `/compute/jobs/${encodeURIComponent(jobId)}`;
+
 export const compute = {
-  /** `inputs` are base64 `safe_serialize`d FheUint16 ciphertexts. */
-  submitJob: (keyId: string, operation: Operation, inputs: [string, string]) =>
-    request<JobResponse>('POST', '/compute/jobs', json({ key_id: keyId, operation, inputs })),
-  getJobStatus: (jobId: string) =>
-    request<JobResponse>('GET', `/compute/jobs/${encodeURIComponent(jobId)}`),
-  listJobs: () => request<JobResponse[]>('GET', '/compute/jobs')
+  /**
+   * Queues a job. `inputs` are base64 `safe_serialize`d FheUint16 ciphertexts.
+   * A network failure is retried once with the same `Idempotency-Key`, so the
+   * job is never queued (or charged) twice.
+   */
+  submitJob: async (keyId: string, operation: Operation, inputs: [string, string]) => {
+    const options: RequestOptions = {
+      ...json({ key_id: keyId, operation, inputs }),
+      headers: { 'Idempotency-Key': crypto.randomUUID() }
+    };
+    try {
+      return await request<JobSummary>('POST', '/compute/jobs', options);
+    } catch (e) {
+      if (!(e instanceof ApiError) || e.status !== 0) throw e;
+      return request<JobSummary>('POST', '/compute/jobs', options);
+    }
+  },
+  getJobStatus: (jobId: string) => request<JobSummary>('GET', jobPath(jobId)),
+  /** The encrypted result of a completed job (a `safe_serialize`d FheUint16). */
+  getJobResult: (jobId: string) => requestBytes(`${jobPath(jobId)}/result`),
+  listJobs: (cursor?: string, limit?: number) => {
+    const query = new URLSearchParams();
+    if (cursor) query.set('cursor', cursor);
+    if (limit) query.set('limit', String(limit));
+    const qs = query.toString();
+    return request<JobPage>('GET', qs ? `/compute/jobs?${qs}` : '/compute/jobs');
+  },
+  deleteJob: (jobId: string) => request<void>('DELETE', jobPath(jobId))
 };

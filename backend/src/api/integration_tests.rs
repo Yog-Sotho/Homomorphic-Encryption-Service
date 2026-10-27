@@ -8,6 +8,8 @@ use crate::crypto::eval::Operation;
 use crate::crypto::keys::test_support::{client_key, compressed_server_key_bytes, temp_store_dir};
 use crate::crypto::keys::KeyStore;
 use crate::crypto::params::{MAX_CIPHERTEXT_BYTES, TFHE_VERSION};
+use crate::jobs::store::JobStore;
+use crate::jobs::worker::{JobNotifier, WorkerPool, WorkerSettings};
 use crate::middleware::rate_limit::RateLimiter;
 use actix_web::dev::{Service, ServiceResponse};
 use actix_web::http::StatusCode;
@@ -27,11 +29,25 @@ struct TestEnv {
     pool: SqlitePool,
     config: Arc<Config>,
     store: web::Data<KeyStore>,
+    jobs: web::Data<JobStore>,
+    notifier: web::Data<JobNotifier>,
+    /// Kept alive for the test; dropping it stops the workers.
+    _workers: Option<WorkerPool>,
     dir: PathBuf,
 }
 
 impl TestEnv {
+    /// An app with running workers: submitted jobs are evaluated.
     async fn new() -> Self {
+        Self::with(|_| {}, true).await
+    }
+
+    /// An app whose jobs stay queued, for testing the queue's limits.
+    async fn without_workers(adjust: impl FnOnce(&mut Config)) -> Self {
+        Self::with(adjust, false).await
+    }
+
+    async fn with(adjust: impl FnOnce(&mut Config), run_workers: bool) -> Self {
         // One connection: every connection to `sqlite::memory:` is its own database.
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
@@ -40,14 +56,46 @@ impl TestEnv {
             .unwrap();
         sqlx::migrate!("./migrations").run(&pool).await.unwrap();
         let dir = temp_store_dir();
-        let config = Arc::new(Config::for_tests(dir.clone()));
+        let mut config = Config::for_tests(dir.clone());
+        adjust(&mut config);
+        let config = Arc::new(config);
         let store = web::Data::new(
-            KeyStore::new(&dir, config.max_server_key_bytes, config.key_cache_capacity).unwrap(),
+            KeyStore::new(
+                &config.key_store_dir,
+                config.max_server_key_bytes,
+                config.key_cache_capacity,
+            )
+            .unwrap(),
+        );
+        let jobs = web::Data::new(JobStore::new(&config.job_store_dir).unwrap());
+        let workers = if run_workers {
+            let settings = WorkerSettings {
+                workers: config.he_workers,
+                job_timeout: config.job_timeout,
+                max_attempts: config.max_job_attempts,
+                retention_days: config.job_retention_days,
+            };
+            let processor = crate::jobs::evaluator(store.clone().into_inner());
+            Some(
+                WorkerPool::start(pool.clone(), jobs.clone().into_inner(), processor, settings)
+                    .await
+                    .unwrap(),
+            )
+        } else {
+            None
+        };
+        let notifier = web::Data::new(
+            workers
+                .as_ref()
+                .map_or_else(JobNotifier::default, WorkerPool::notifier),
         );
         TestEnv {
             pool,
             config,
             store,
+            jobs,
+            notifier,
+            _workers: workers,
             dir,
         }
     }
@@ -62,6 +110,8 @@ impl TestEnv {
                 .app_data(web::Data::new(self.pool.clone()))
                 .app_data(web::Data::new(self.config.clone()))
                 .app_data(self.store.clone())
+                .app_data(self.jobs.clone())
+                .app_data(self.notifier.clone())
                 .app_data(web::Data::new(RateLimiter::new()))
                 .configure(move |cfg| api::configure(cfg, &config)),
         )
@@ -99,10 +149,60 @@ fn encrypt_b64(value: u16) -> String {
     STANDARD.encode(bytes)
 }
 
-fn decrypt_b64(b64: &str) -> u16 {
-    let bytes = STANDARD.decode(b64).unwrap();
-    let ct: FheUint16 = safe_deserialize(bytes.as_slice(), MAX_CIPHERTEXT_BYTES).unwrap();
+fn decrypt(bytes: &[u8]) -> u16 {
+    let ct: FheUint16 = safe_deserialize(bytes, MAX_CIPHERTEXT_BYTES).unwrap();
     ct.decrypt(client_key())
+}
+
+async fn get(
+    app: &impl Service<actix_http::Request, Response = ServiceResponse, Error = actix_web::Error>,
+    token: &str,
+    uri: &str,
+) -> ServiceResponse {
+    let req = test::TestRequest::get()
+        .uri(uri)
+        .insert_header(("Authorization", token))
+        .to_request();
+    test::call_service(app, req).await
+}
+
+async fn delete(
+    app: &impl Service<actix_http::Request, Response = ServiceResponse, Error = actix_web::Error>,
+    token: &str,
+    uri: &str,
+) -> ServiceResponse {
+    let req = test::TestRequest::delete()
+        .uri(uri)
+        .insert_header(("Authorization", token))
+        .to_request();
+    test::call_service(app, req).await
+}
+
+/// Uploads the shared test key and returns its id.
+async fn register_key(
+    app: &impl Service<actix_http::Request, Response = ServiceResponse, Error = actix_web::Error>,
+    token: &str,
+) -> String {
+    let resp = upload_key(app, token, compressed_server_key_bytes()).await;
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let key: Value = test::read_body_json(resp).await;
+    key["id"].as_str().unwrap().to_string()
+}
+
+fn add_request(key_id: &str, a: u16, b: u16) -> Value {
+    json!({ "key_id": key_id, "operation": "add", "inputs": [encrypt_b64(a), encrypt_b64(b)] })
+}
+
+/// Submits a job that must be accepted and returns its id.
+async fn queue_job(
+    app: &impl Service<actix_http::Request, Response = ServiceResponse, Error = actix_web::Error>,
+    token: &str,
+    body: Value,
+) -> String {
+    let resp = submit_job(app, token, body).await;
+    assert_eq!(resp.status(), StatusCode::ACCEPTED);
+    let job: Value = test::read_body_json(resp).await;
+    job["id"].as_str().unwrap().to_string()
 }
 
 async fn upload_key(
@@ -206,8 +306,20 @@ async fn client_key_never_leaves_the_client_and_results_decrypt_correctly() {
         let done = wait_for_job(&app, &alice, job["id"].as_str().unwrap()).await;
         assert_eq!(done["status"], "completed", "{op:?}: {done}");
         assert_eq!(done["key_id"], key_id);
-        let result = decrypt_b64(done["result_b64"].as_str().unwrap());
-        assert_eq!(result, op.apply_plain(a, b), "{op:?}({a}, {b})");
+        assert_eq!(done["attempts"], 1);
+
+        let id = done["id"].as_str().unwrap();
+        let resp = get(&app, &alice, &format!("/api/compute/jobs/{id}/result")).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            resp.headers().get("content-type").unwrap(),
+            "application/octet-stream"
+        );
+        let bytes = test::read_body(resp).await;
+        assert_eq!(done["result_bytes"], bytes.len());
+        assert_eq!(decrypt(&bytes), op.apply_plain(a, b), "{op:?}({a}, {b})");
+        // Only the result is kept once a job has finished.
+        assert!(env.jobs.read_inputs(id, 2).is_err());
     }
 
     // Five submissions, many status polls: only submissions are charged.
@@ -296,7 +408,7 @@ async fn key_uploads_are_validated_limited_and_authenticated() {
     assert_eq!(resp.status(), StatusCode::CONFLICT);
 
     // Exactly the accepted keys are on disk; rejected uploads leave nothing behind.
-    let files = std::fs::read_dir(&env.dir)
+    let files = std::fs::read_dir(&env.config.key_store_dir)
         .unwrap()
         .filter_map(Result::ok)
         .count();
@@ -362,6 +474,9 @@ async fn deleting_a_key_or_the_account_removes_key_files() {
     let second: Value =
         test::read_body_json(upload_key(&app, &alice, compressed_server_key_bytes()).await).await;
     let second_id = second["id"].as_str().unwrap().to_string();
+    let job_id = queue_job(&app, &alice, add_request(&second_id, 1, 2)).await;
+    wait_for_job(&app, &alice, &job_id).await;
+    assert!(env.jobs.read_result(&job_id).is_ok());
     let req = test::TestRequest::delete()
         .uri("/api/user/account")
         .insert_header(("Authorization", alice.as_str()))
@@ -369,6 +484,222 @@ async fn deleting_a_key_or_the_account_removes_key_files() {
         .to_request();
     assert_eq!(test::call_service(&app, req).await.status(), StatusCode::OK);
     assert!(!env.store.contains_file(&second_id));
+    assert!(
+        !env.jobs.has_data(&job_id),
+        "job ciphertexts deleted with the account"
+    );
+}
+
+#[actix_web::test]
+async fn idempotency_keys_replay_the_original_job() {
+    let env = TestEnv::without_workers(|_| {}).await;
+    let app = env.app().await;
+    let alice = env.user("alice").await;
+    let key_id = register_key(&app, &alice).await;
+    let body = add_request(&key_id, 1, 2);
+
+    let send = |body: Value, key: &str| {
+        test::TestRequest::post()
+            .uri("/api/compute/jobs")
+            .insert_header(("Authorization", alice.as_str()))
+            .insert_header(("Idempotency-Key", key))
+            .set_json(body)
+            .to_request()
+    };
+    let first = test::call_service(&app, send(body.clone(), "retry-1")).await;
+    assert_eq!(first.status(), StatusCode::ACCEPTED);
+    assert!(first.headers().get("Idempotent-Replayed").is_none());
+    let location = first.headers().get("location").unwrap().clone();
+    let first: Value = test::read_body_json(first).await;
+
+    let again = test::call_service(&app, send(body.clone(), "retry-1")).await;
+    assert_eq!(again.status(), StatusCode::ACCEPTED);
+    assert_eq!(again.headers().get("Idempotent-Replayed").unwrap(), "true");
+    assert_eq!(again.headers().get("location").unwrap(), &location);
+    let again: Value = test::read_body_json(again).await;
+    assert_eq!(again["id"], first["id"]);
+    assert_eq!(usage_count(&env.pool, "alice").await, 1, "replays are free");
+
+    let other = test::call_service(&app, send(add_request(&key_id, 5, 6), "retry-1")).await;
+    assert_eq!(other.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let bad = test::call_service(&app, send(body, "has space")).await;
+    assert_eq!(bad.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(usage_count(&env.pool, "alice").await, 1);
+}
+
+#[actix_web::test]
+async fn full_queues_push_back_without_charging() {
+    let env = TestEnv::without_workers(|c| {
+        c.max_active_jobs_per_user = 2;
+        c.max_queued_jobs = 3;
+    })
+    .await;
+    let app = env.app().await;
+    let alice = env.user("alice").await;
+    let bob = env.user("bob").await;
+    let alice_key = register_key(&app, &alice).await;
+    let bob_key = register_key(&app, &bob).await;
+
+    for _ in 0..2 {
+        queue_job(&app, &alice, add_request(&alice_key, 1, 2)).await;
+    }
+    let resp = submit_job(&app, &alice, add_request(&alice_key, 1, 2)).await;
+    assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert!(resp.headers().get("retry-after").is_some());
+    assert_eq!(
+        usage_count(&env.pool, "alice").await,
+        2,
+        "refused job refunded"
+    );
+
+    queue_job(&app, &bob, add_request(&bob_key, 1, 2)).await;
+    let resp = submit_job(&app, &bob, add_request(&bob_key, 1, 2)).await;
+    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(resp.headers().get("retry-after").unwrap(), "10");
+    assert_eq!(usage_count(&env.pool, "bob").await, 1);
+
+    // Refused submissions leave no ciphertexts behind.
+    let stored = std::fs::read_dir(&env.config.job_store_dir)
+        .unwrap()
+        .count();
+    assert_eq!(stored, 3);
+}
+
+#[actix_web::test]
+async fn jobs_are_listed_in_pages_without_ciphertexts() {
+    let env = TestEnv::without_workers(|_| {}).await;
+    let app = env.app().await;
+    let alice = env.user("alice").await;
+    let bob = env.user("bob").await;
+    let key_id = register_key(&app, &alice).await;
+    let mut ids = Vec::new();
+    for i in 0..3 {
+        ids.push(queue_job(&app, &alice, add_request(&key_id, i, i)).await);
+    }
+
+    let page: Value =
+        test::read_body_json(get(&app, &alice, "/api/compute/jobs?limit=2").await).await;
+    let first = page["data"].as_array().unwrap();
+    assert_eq!(first.len(), 2);
+    for job in first {
+        let fields: Vec<&str> = job
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        for hidden in ["user_id", "input_data_b64", "result_b64", "idempotency_key"] {
+            assert!(!fields.contains(&hidden), "{hidden} leaked: {job}");
+        }
+        assert_eq!(job["status"], "pending");
+    }
+    let cursor = page["next_cursor"].as_str().unwrap();
+    let rest: Value = test::read_body_json(
+        get(
+            &app,
+            &alice,
+            &format!("/api/compute/jobs?limit=2&cursor={cursor}"),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(rest["data"].as_array().unwrap().len(), 1);
+    assert!(rest["next_cursor"].is_null());
+
+    let mut seen: Vec<String> = first
+        .iter()
+        .chain(rest["data"].as_array().unwrap())
+        .map(|j| j["id"].as_str().unwrap().to_string())
+        .collect();
+    seen.sort();
+    ids.sort();
+    assert_eq!(seen, ids, "every job exactly once");
+
+    let empty: Value = test::read_body_json(get(&app, &bob, "/api/compute/jobs").await).await;
+    assert_eq!(empty, json!({ "data": [], "next_cursor": null }));
+    for bad in ["limit=0", "limit=101", "cursor=garbage"] {
+        let resp = get(&app, &alice, &format!("/api/compute/jobs?{bad}")).await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "{bad}");
+    }
+}
+
+#[actix_web::test]
+async fn results_and_deletion_follow_the_job_state() {
+    let env = TestEnv::without_workers(|_| {}).await;
+    let app = env.app().await;
+    let alice = env.user("alice").await;
+    let mallory = env.user("mallory").await;
+    let key_id = register_key(&app, &alice).await;
+    let job_id = queue_job(&app, &alice, add_request(&key_id, 1, 2)).await;
+    let job_uri = format!("/api/compute/jobs/{job_id}");
+    let result_uri = format!("{job_uri}/result");
+
+    assert_eq!(
+        get(&app, &alice, &result_uri).await.status(),
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        get(&app, &mallory, &job_uri).await.status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        get(&app, &mallory, &result_uri).await.status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        delete(&app, &mallory, &job_uri).await.status(),
+        StatusCode::NOT_FOUND
+    );
+
+    sqlx::query("UPDATE jobs SET status = 'processing' WHERE id = ?")
+        .bind(&job_id)
+        .execute(&env.pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        delete(&app, &alice, &job_uri).await.status(),
+        StatusCode::CONFLICT
+    );
+
+    sqlx::query("UPDATE jobs SET status = 'failed' WHERE id = ?")
+        .bind(&job_id)
+        .execute(&env.pool)
+        .await
+        .unwrap();
+    assert!(env.jobs.has_data(&job_id));
+    assert_eq!(
+        delete(&app, &alice, &job_uri).await.status(),
+        StatusCode::NO_CONTENT
+    );
+    assert!(!env.jobs.has_data(&job_id));
+    assert_eq!(
+        get(&app, &alice, &job_uri).await.status(),
+        StatusCode::NOT_FOUND
+    );
+}
+
+#[actix_web::test]
+async fn results_stored_before_the_job_store_are_still_served() {
+    let env = TestEnv::without_workers(|_| {}).await;
+    let app = env.app().await;
+    let alice = env.user("alice").await;
+    sqlx::query(
+        "INSERT INTO jobs (id, user_id, status, input_data_b64, operation, result_b64)
+         VALUES ('6f1c1d4e-0000-4000-8000-000000000001', 'alice', 'completed', '', 'add', ?)",
+    )
+    .bind(encrypt_b64(42))
+    .execute(&env.pool)
+    .await
+    .unwrap();
+
+    let resp = get(
+        &app,
+        &alice,
+        "/api/compute/jobs/6f1c1d4e-0000-4000-8000-000000000001/result",
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(decrypt(&test::read_body(resp).await), 42);
 }
 
 #[actix_web::test]

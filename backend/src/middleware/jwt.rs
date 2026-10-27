@@ -41,3 +41,33 @@ pub async fn jwt_validator<B: actix_web::body::MessageBody>(
         "Invalid or missing token",
     ))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::api::auth::make_jwt;
+
+    /// jsonwebtoken 10+ panics at sign/verify time when no crypto backend feature
+    /// is enabled; this catches that (and secret mismatches) in a unit test.
+    #[test]
+    fn tokens_round_trip_and_reject_wrong_secret() {
+        let config = Config::for_tests(std::env::temp_dir());
+        let token = make_jwt("user-1", &config).unwrap();
+
+        let claims = decode::<Claims>(
+            &token,
+            &DecodingKey::from_secret(config.jwt_secret.as_ref()),
+            &Validation::default(),
+        )
+        .unwrap()
+        .claims;
+        assert_eq!(claims.sub, "user-1");
+
+        assert!(decode::<Claims>(
+            &token,
+            &DecodingKey::from_secret(b"a-different-secret-of-sufficient-length"),
+            &Validation::default(),
+        )
+        .is_err());
+    }
+}

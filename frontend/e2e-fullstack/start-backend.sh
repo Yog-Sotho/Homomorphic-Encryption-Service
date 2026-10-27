@@ -9,6 +9,7 @@ WORK="$(mktemp -d)"
 
 export DATABASE_URL="sqlite://$WORK/he_saas.db?mode=rwc"
 export KEY_STORE_DIR="$WORK/keys"
+export JOB_STORE_DIR="$WORK/jobs"
 export SERVER_ADDR="127.0.0.1:${FULLSTACK_BACKEND_PORT:-18081}"
 export JWT_SECRET="fullstack-test-secret-that-is-at-least-32-bytes"
 export ALLOWED_ORIGINS="http://localhost:4174"

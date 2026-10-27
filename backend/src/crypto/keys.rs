@@ -7,9 +7,10 @@
 //! small in-memory LRU (a decompressed key is ~180 MB).
 
 use crate::crypto::params::server_key_conformance;
-use std::fs::{self, File};
-use std::io::{self, Write};
-use std::path::{Path, PathBuf};
+use crate::storage::write_atomic;
+use std::fs;
+use std::io;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tfhe::safe_serialization::safe_deserialize_conformant;
 use tfhe::{CompressedServerKey, FheUint16ConformanceParams, ServerKey};
@@ -105,18 +106,7 @@ impl KeyStore {
 
     /// Writes a validated key durably: temp file, fsync, rename, fsync directory.
     pub fn save(&self, key_id: &str, bytes: &[u8]) -> Result<(), KeyStoreError> {
-        let path = self.path_for(key_id)?;
-        let tmp = self.dir.join(format!(".{key_id}.tmp"));
-        let write = || -> io::Result<()> {
-            let mut file = File::create(&tmp)?;
-            file.write_all(bytes)?;
-            file.sync_all()?;
-            fs::rename(&tmp, &path)?;
-            sync_dir(&self.dir)
-        };
-        write().inspect_err(|_| {
-            let _ = fs::remove_file(&tmp);
-        })?;
+        write_atomic(&self.path_for(key_id)?, bytes)?;
         Ok(())
     }
 
@@ -165,16 +155,6 @@ impl KeyStore {
     pub fn contains_file(&self, key_id: &str) -> bool {
         self.path_for(key_id).map(|p| p.exists()).unwrap_or(false)
     }
-}
-
-#[cfg(unix)]
-fn sync_dir(dir: &Path) -> io::Result<()> {
-    File::open(dir)?.sync_all()
-}
-
-#[cfg(not(unix))]
-fn sync_dir(_dir: &Path) -> io::Result<()> {
-    Ok(())
 }
 
 /// Shared, lazily generated TFHE keys for tests (key generation is slow).

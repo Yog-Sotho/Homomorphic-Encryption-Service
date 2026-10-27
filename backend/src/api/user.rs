@@ -2,6 +2,7 @@ use crate::api::validation::{is_strong_password, PASSWORD_REQUIREMENTS};
 use crate::config::Config;
 use crate::crypto::keys::KeyStore;
 use crate::errors::AppError;
+use crate::jobs::store::JobStore;
 use actix_web::{web, HttpMessage, HttpRequest, HttpResponse, Responder};
 use bcrypt::{hash, verify, DEFAULT_COST};
 use serde::{Deserialize, Serialize};
@@ -183,6 +184,7 @@ pub async fn change_password(
 pub async fn delete_account(
     pool: web::Data<SqlitePool>,
     store: web::Data<KeyStore>,
+    jobs: web::Data<JobStore>,
     body: web::Json<DeleteAccountRequest>,
     req: HttpRequest,
 ) -> Result<impl Responder, AppError> {
@@ -228,9 +230,9 @@ pub async fn delete_account(
         .execute(pool.get_ref())
         .await?;
 
-    sqlx::query("DELETE FROM jobs WHERE user_id = ?")
+    let job_ids: Vec<(String,)> = sqlx::query_as("DELETE FROM jobs WHERE user_id = ? RETURNING id")
         .bind(&user_id)
-        .execute(pool.get_ref())
+        .fetch_all(pool.get_ref())
         .await?;
 
     sqlx::query("DELETE FROM oauth_accounts WHERE user_id = ?")
@@ -253,13 +255,20 @@ pub async fn delete_account(
         .execute(pool.get_ref())
         .await?;
 
-    // Key files are removed once their rows are gone, so a failure here only
-    // leaves unreachable bytes on disk.
-    for (key_id,) in key_ids {
-        if let Err(e) = store.remove(&key_id) {
-            log::error!("Failed to delete key file {key_id} for deleted account: {e}");
+    // Files are removed once their rows are gone, so a failure here only leaves
+    // unreachable bytes on disk. A job still running finds its row gone and
+    // deletes its own data when it finishes.
+    let _ = web::block(move || {
+        for (key_id,) in key_ids {
+            if let Err(e) = store.remove(&key_id) {
+                log::error!("Failed to delete key file {key_id} for deleted account: {e}");
+            }
         }
-    }
+        for (job_id,) in job_ids {
+            jobs.remove_logged(&job_id);
+        }
+    })
+    .await;
 
     Ok(HttpResponse::Ok().json(serde_json::json!({
         "message": "Account deleted successfully."

@@ -4,12 +4,12 @@
     compute,
     errorMessage as messageOf,
     keys,
-    type JobResponse,
+    type JobSummary,
     type Operation,
     type ServerKeyInfo
   } from '#lib/api.js';
   import { FheClient } from '#lib/fhe/client.js';
-  import { base64ToBytes, bytesToBase64 } from '#lib/fhe/encoding.js';
+  import { bytesToBase64 } from '#lib/fhe/encoding.js';
   import { deleteClientKey, getClientKey, saveClientKey } from '#lib/fhe/keystore.js';
   import { OPERATIONS, UINT16_MAX, expectedResult, isUint16 } from '#lib/fhe/operations.js';
 
@@ -108,7 +108,7 @@
     }
   }
 
-  async function waitForJob(jobId: string): Promise<JobResponse> {
+  async function waitForJob(jobId: string): Promise<JobSummary> {
     const deadline = Date.now() + JOB_TIMEOUT_MS;
     for (;;) {
       const job = await compute.getJobStatus(jobId);
@@ -134,12 +134,12 @@
 
       step = 'computing';
       const done = await waitForJob(job.id);
-      if (done.status === 'failed' || !done.result_b64) {
+      if (done.status === 'failed') {
         throw new Error(done.error_message ?? 'The computation failed');
       }
+      const ciphertext = await compute.getJobResult(job.id);
 
       step = 'decrypting';
-      const ciphertext = base64ToBytes(done.result_b64);
       const value = await fhe.decrypt(ciphertext);
       result = { value, expected: want, jobId: job.id, ciphertextBytes: ciphertext.length };
     } catch (e) {

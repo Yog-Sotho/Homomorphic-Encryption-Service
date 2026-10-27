@@ -16,7 +16,10 @@ serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls", "sqlite", "chrono", "uuid", "macros", "migrate"] }
 chrono = { version = "0.4", features = ["serde"] }
-jsonwebtoken = "11"
+# jsonwebtoken 10+ needs exactly one crypto backend; without one every sign/verify
+# panics. aws-lc-rs has no open advisories (rust_crypto pulls in `rsa`, RUSTSEC-2023-0071).
+# PEM support is not needed: tokens are HS256 with a shared secret.
+jsonwebtoken = { version = "11", default-features = false, features = ["aws_lc_rs"] }
 bcrypt = "0.19"
 uuid = { version = "1", features = ["v4", "serde"] }
 env_logger = "0.11"

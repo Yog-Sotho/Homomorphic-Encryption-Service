@@ -18,6 +18,8 @@ pub fn configure(cfg: &mut web::ServiceConfig, config: &Config) {
     // Compressed server keys are tens of megabytes; only this route accepts that.
     let key_upload_limit =
         web::PayloadConfig::new(usize::try_from(config.max_server_key_bytes).unwrap_or(usize::MAX));
+    // Two base64 ciphertexts exceed actix's 2 MB JSON default at the size limit.
+    let submit_limit = web::JsonConfig::default().limit(compute::MAX_SUBMIT_BODY_BYTES);
 
     cfg.service(
         web::scope("/api")
@@ -66,9 +68,18 @@ pub fn configure(cfg: &mut web::ServiceConfig, config: &Config) {
             .service(
                 web::scope("/compute")
                     .wrap(from_fn(middleware::jwt::jwt_validator))
-                    .route("/jobs", web::post().to(compute::submit_job))
-                    .route("/jobs", web::get().to(compute::list_jobs))
-                    .route("/jobs/{id}", web::get().to(compute::get_job_status)),
+                    .service(
+                        web::resource("/jobs")
+                            .app_data(submit_limit)
+                            .route(web::post().to(compute::submit_job))
+                            .route(web::get().to(compute::list_jobs)),
+                    )
+                    .service(
+                        web::resource("/jobs/{id}")
+                            .route(web::get().to(compute::get_job_status))
+                            .route(web::delete().to(compute::delete_job)),
+                    )
+                    .route("/jobs/{id}/result", web::get().to(compute::get_job_result)),
             ),
     );
 }

@@ -5,6 +5,8 @@ services:
       dockerfile: Dockerfile
     ports:
       - "18080:8080"
+    # The backend drains running jobs for up to 30 s after SIGTERM.
+    stop_grace_period: 40s
     environment:
       - DATABASE_URL=sqlite:///usr/src/he-backend/data/he_saas.db
       - JWT_SECRET=${JWT_SECRET:?JWT_SECRET must be set in .env}
@@ -16,6 +18,11 @@ services:
       - MAX_KEYS_PER_USER=${MAX_KEYS_PER_USER:-2}
       # Decompressed keys kept in RAM, ~180 MB each.
       - KEY_CACHE_CAPACITY=${KEY_CACHE_CAPACITY:-2}
+      # Job ciphertexts (inputs and results), kept for JOB_RETENTION_DAYS.
+      - JOB_STORE_DIR=/usr/src/he-backend/data/jobs
+      - HE_WORKERS=${HE_WORKERS:-2}
+      - MAX_QUEUED_JOBS=${MAX_QUEUED_JOBS:-1000}
+      - JOB_RETENTION_DAYS=${JOB_RETENTION_DAYS:-7}
       - APP_BASE_URL=${APP_BASE_URL:-https://gibliz.taile5d4a8.ts.net}
       - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}
       - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET:-}
