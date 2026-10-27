@@ -1,8 +1,12 @@
 /**
  * Client (secret) keys, kept only in this browser's IndexedDB and keyed by the
  * id the server assigned to the matching server key. Nothing here is ever sent
- * to the server.
+ * to the server. Keys are stored sealed under the user's passphrase (see
+ * vault.ts); records from before passphrases existed hold the raw key and are
+ * sealed the next time they are unlocked.
  */
+
+import type { SealedKey } from './vault.js';
 
 const DB_NAME = 'heaas';
 const DB_VERSION = 1;
@@ -10,8 +14,18 @@ const STORE = 'client-keys';
 
 export interface StoredClientKey {
   keyId: string;
-  clientKey: Uint8Array;
   createdAt: string;
+  /** SHA-256 (hex) of the matching server key; `sealed` is bound to it. */
+  serverKeySha256?: string;
+  sealed?: SealedKey;
+  /** Unprotected key bytes: only on records stored before passphrases. */
+  clientKey?: Uint8Array<ArrayBuffer>;
+}
+
+export type ProtectedClientKey = StoredClientKey & { serverKeySha256: string; sealed: SealedKey };
+
+export function isProtected(record: StoredClientKey): record is ProtectedClientKey {
+  return record.sealed !== undefined && record.serverKeySha256 !== undefined;
 }
 
 function open(): Promise<IDBDatabase> {
@@ -43,8 +57,19 @@ async function run<T>(
   }
 }
 
-export async function saveClientKey(keyId: string, clientKey: Uint8Array): Promise<void> {
-  const record: StoredClientKey = { keyId, clientKey, createdAt: new Date().toISOString() };
+/** Stores (or replaces) a sealed key; a raw key stored under the id is dropped. */
+export async function saveSealedKey(
+  keyId: string,
+  serverKeySha256: string,
+  sealed: SealedKey,
+  createdAt = new Date().toISOString()
+): Promise<void> {
+  const record: ProtectedClientKey = { keyId, serverKeySha256, sealed, createdAt };
+  await run('readwrite', (store) => store.put(record));
+}
+
+/** Writes a record as is (tests use it to create records in the old format). */
+export async function putRecord(record: StoredClientKey): Promise<void> {
   await run('readwrite', (store) => store.put(record));
 }
 
@@ -56,7 +81,6 @@ export async function deleteClientKey(keyId: string): Promise<void> {
   await run('readwrite', (store) => store.delete(keyId));
 }
 
-export async function listClientKeyIds(): Promise<string[]> {
-  const keys = await run('readonly', (store) => store.getAllKeys());
-  return keys.map(String);
+export function listClientKeys(): Promise<StoredClientKey[]> {
+  return run<StoredClientKey[]>('readonly', (store) => store.getAll());
 }

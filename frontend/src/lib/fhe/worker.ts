@@ -7,6 +7,7 @@ import init, {
   TfheConfigBuilder
 } from 'tfhe';
 import { LIMITS, type WorkerRequest, type WorkerResponse, type WorkerResult } from './protocol.js';
+import { WrongPassphraseError, open, seal, sha256Hex } from './vault.js';
 
 declare const self: DedicatedWorkerGlobalScope;
 
@@ -24,8 +25,33 @@ function ensureReady(): Promise<void> {
 }
 
 function requireClientKey(): TfheClientKey {
-  if (!clientKey) throw new Error('No client key loaded');
+  if (!clientKey) throw new Error('Unlock your key first');
   return clientKey;
+}
+
+function useClientKey(key: TfheClientKey): void {
+  clientKey?.free();
+  clientKey = key;
+}
+
+/** Parses raw client key bytes, then overwrites them: no plaintext copy lingers. */
+function loadRawKey(bytes: Uint8Array<ArrayBuffer>): TfheClientKey {
+  try {
+    return TfheClientKey.safe_deserialize(bytes, LIMITS.clientKeyBytes);
+  } finally {
+    bytes.fill(0);
+  }
+}
+
+/**
+ * tfhe's bindings type their output as possibly shared memory; WebCrypto and
+ * transfers need a plain ArrayBuffer. They already return a fresh copy, so this
+ * only copies again if that ever changes.
+ */
+function owned(bytes: Uint8Array): Uint8Array<ArrayBuffer> {
+  return bytes.buffer instanceof ArrayBuffer
+    ? (bytes as Uint8Array<ArrayBuffer>)
+    : new Uint8Array(bytes);
 }
 
 function assertUint16(value: number): void {
@@ -42,20 +68,29 @@ async function handle(request: WorkerRequest): Promise<WorkerResult> {
       const config = TfheConfigBuilder.default().build();
       const key = TfheClientKey.generate(config);
       const serverKey = TfheCompressedServerKey.new(key);
-      const keys = {
-        clientKey: key.safe_serialize(LIMITS.clientKeyBytes),
-        compressedServerKey: serverKey.safe_serialize(LIMITS.serverKeyBytes)
-      };
+      const compressedServerKey = owned(serverKey.safe_serialize(LIMITS.serverKeyBytes));
       serverKey.free();
-      clientKey?.free();
-      clientKey = key;
-      return { kind: 'generateKeys', keys };
+      const serverKeySha256 = await sha256Hex(compressedServerKey);
+      const raw = owned(key.safe_serialize(LIMITS.clientKeyBytes));
+      const sealed = await seal(raw, request.passphrase, serverKeySha256);
+      raw.fill(0);
+      useClientKey(key);
+      return { kind: 'generateKeys', keys: { sealed, compressedServerKey, serverKeySha256 } };
     }
-    case 'loadClientKey': {
-      const key = TfheClientKey.safe_deserialize(request.clientKey, LIMITS.clientKeyBytes);
+    case 'unlock': {
+      const raw = await open(request.sealed, request.passphrase, request.serverKeySha256);
+      useClientKey(loadRawKey(raw));
+      return { kind: 'unlock' };
+    }
+    case 'protect': {
+      const sealed = await seal(request.clientKey, request.passphrase, request.serverKeySha256);
+      useClientKey(loadRawKey(request.clientKey));
+      return { kind: 'protect', sealed };
+    }
+    case 'lock': {
       clientKey?.free();
-      clientKey = key;
-      return { kind: 'loadClientKey' };
+      clientKey = null;
+      return { kind: 'lock' };
     }
     case 'encrypt': {
       const key = requireClientKey();
@@ -63,7 +98,7 @@ async function handle(request: WorkerRequest): Promise<WorkerResult> {
         assertUint16(value);
         const ct = FheUint16.encrypt_with_client_key(value, key);
         try {
-          return ct.safe_serialize(LIMITS.ciphertextBytes);
+          return owned(ct.safe_serialize(LIMITS.ciphertextBytes));
         } finally {
           ct.free();
         }
@@ -84,7 +119,7 @@ async function handle(request: WorkerRequest): Promise<WorkerResult> {
 function transferables(result: WorkerResult): Transferable[] {
   switch (result.kind) {
     case 'generateKeys':
-      return [result.keys.clientKey.buffer, result.keys.compressedServerKey.buffer];
+      return [result.keys.compressedServerKey.buffer];
     case 'encrypt':
       return result.ciphertexts.map((ct) => ct.buffer);
     default:
@@ -101,7 +136,12 @@ self.addEventListener('message', (event: MessageEvent<WorkerRequest>) => {
     },
     (error: unknown) => {
       const message = error instanceof Error ? error.message : String(error);
-      const response: WorkerResponse = { id: request.id, ok: false, error: message };
+      const response: WorkerResponse = {
+        id: request.id,
+        ok: false,
+        error: message,
+        wrongPassphrase: error instanceof WrongPassphraseError
+      };
       self.postMessage(response);
     }
   );

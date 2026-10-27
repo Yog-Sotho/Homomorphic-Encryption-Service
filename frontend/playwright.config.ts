@@ -12,7 +12,16 @@ export default defineConfig({
     baseURL: `http://localhost:${PORT}`,
     trace: 'retain-on-failure'
   },
-  projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
+  projects: [
+    {
+      name: 'chromium',
+      use: {
+        ...devices['Desktop Chrome'],
+        // Optional: a locally installed Chromium instead of Playwright's own build.
+        launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROMIUM_PATH || undefined }
+      }
+    }
+  ],
   // Serve the production build (adapter-node) so CSP and hydration match deployment.
   webServer: {
     command: `pnpm build && PORT=${PORT} node server.js`,
