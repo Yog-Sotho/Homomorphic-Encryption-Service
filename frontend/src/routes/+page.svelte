@@ -9,7 +9,7 @@
   });
 </script>
 
-<div class="loading">Redirecting...</div>
+<div class="loading" role="status">Redirecting…</div>
 
 <style>
   .loading { display: flex; justify-content: center; align-items: center; height: 50vh; color: var(--text-secondary); }

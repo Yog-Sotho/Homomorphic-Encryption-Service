@@ -35,7 +35,8 @@ key handling and encryption in the browser through TFHE-rs's WebAssembly build.
 ```
 
 - **Client key** (~31 KB): generated on your device, used to encrypt and decrypt.
-  It is never uploaded. In the dashboard it stays in the browser's IndexedDB.
+  It is never uploaded. In the dashboard it stays in the browser's IndexedDB,
+  encrypted with your passphrase (see [Your key in the browser](#your-key-in-the-browser)).
 - **Compressed server key** (~60 MB): an evaluation key derived from the client key.
   It lets the server compute on your ciphertexts but not decrypt them. You register
   it once with `POST /api/keys`; the server checks it against its parameters.
@@ -93,20 +94,40 @@ Know these limits too:
 - **The dashboard trusts its own JavaScript.** The browser code that generates and
   stores your key is served by the operator. If you don't want to trust that code,
   use your own client, such as [`backend/examples/client.rs`](backend/examples/client.rs).
-- **The client key in the browser is not backed up.** It is stored unencrypted in this
-  browser's IndexedDB. Clearing site data loses it, and anything encrypted under it
-  can then no longer be decrypted. (Passphrase-protected storage and export are planned.)
+- **Your passphrase cannot be recovered.** Nobody, including the operator, can reset
+  it. Without it (or without a backup file after clearing site data) the key and
+  everything encrypted under it is lost.
+
+### Your key in the browser
+
+- **Generated and used in a Web Worker.** Key generation, encryption and decryption run
+  in the TFHE worker; the page itself never holds the plaintext client key.
+- **Stored sealed.** The worker encrypts the client key with AES-256-GCM under a key
+  derived from your passphrase with PBKDF2-HMAC-SHA256 (600,000 iterations, the
+  [OWASP recommendation](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html);
+  WebCrypto offers no memory-hard KDF). The SHA-256 of the matching evaluation key is
+  authenticated alongside, so a sealed key only opens for its own server key.
+- **Unlocked per tab.** After a reload, the key must be unlocked with the passphrase
+  again. Signing out stops the worker and forgets the unlocked key.
+- **Backups.** *Export backup* on the Keys page downloads the sealed key as a JSON
+  file (`heaas-key-….json`); it is useless without the passphrase. *Import backup*
+  restores it in another browser after checking the passphrase and that the file
+  matches one of your registered evaluation keys.
+- Keys stored by earlier versions without a passphrase are sealed the first time they
+  are unlocked.
 
 ---
 
 ## Using the dashboard
 
 1. Register and verify your email, then sign in.
-2. On the dashboard, choose **Generate encryption key**. Your browser creates the key
-   pair (a few seconds) and uploads the ~60 MB evaluation key.
-3. Choose an operation, enter two numbers and choose **Run**. The browser encrypts
-   them, the server computes on the ciphertexts, and the browser decrypts the result
-   and checks it against the expected value.
+2. On **Keys**, choose a passphrase and **Generate encryption key**. Your browser
+   creates the key pair (a few seconds), seals the secret key with the passphrase and
+   uploads the ~60 MB evaluation key. Then **Export backup**.
+3. On the **Dashboard**, choose an operation, enter two numbers and choose **Run**. The
+   browser encrypts them, the server computes on the ciphertexts, and the browser
+   decrypts the result and checks it against the expected value.
+4. **Jobs** lists your past computations (paged) and decrypts their stored results.
 
 The dashboard needs a browser with WebAssembly, Web Workers and `SharedArrayBuffer`,
 and it must be served cross-origin isolated (see [Deployment](#deployment)).

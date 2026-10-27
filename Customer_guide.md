@@ -18,24 +18,32 @@ HEaaS uses two keys, both generated on your device:
 
 | Key | Size | Where it lives | What it can do |
 |---|---|---|---|
-| **Client key** (secret) | ~31 KB | Only on your device (in the dashboard, this browser's storage) | Encrypt and decrypt |
+| **Client key** (secret) | ~31 KB | Only on your device (in the dashboard, this browser's storage, encrypted with your passphrase) | Encrypt and decrypt |
 | **Server key** (evaluation key) | ~60 MB | Uploaded to HEaaS | Compute on your ciphertexts, but **not** decrypt them |
 
 The service never receives your client key, so it cannot read your data.
 
-**Keep your client key safe.** In the dashboard it is stored only in the browser you
-generated it in. Clearing that browser's site data deletes it, and anything encrypted
-under it can then no longer be decrypted. Another browser or device cannot use it.
+**Your passphrase protects your client key.** In the dashboard the key is stored only
+in the browser you generated it in, encrypted with a passphrase you choose. You enter
+the passphrase once per tab to unlock the key. Nobody can reset a forgotten
+passphrase, not even the operator.
+
+**Back up your key.** On the **Keys** page, **Export backup** downloads the encrypted
+key as a file. With that file and the passphrase you can **Import backup** in another
+browser or after clearing this one. Without either, the key and everything encrypted
+under it is lost.
 
 Each account can register up to 2 server keys (the operator can change this).
 
 ## 2. Using the dashboard
 
 1. **Create an account** and verify your email address through the link sent to you.
-2. **Sign in** and open the dashboard.
-3. **Generate a key.** Choose **Generate encryption key**. Your browser creates the key
-   pair in a few seconds, then uploads the ~60 MB server key. When the key shows
-   **Ready**, you can compute.
+2. **Sign in.**
+3. **Create a key.** On **Keys**, choose a passphrase (at least 10 characters), enter
+   it twice and choose **Generate encryption key**. Your browser creates the key pair
+   in a few seconds, then uploads the ~60 MB server key. Choose **Export backup** and
+   keep the file somewhere safe. On the **Dashboard** the key now shows **Ready**.
+   After a reload, enter the passphrase there to unlock it again.
 4. **Compute.** Choose an operation, enter two whole numbers between 0 and 65535, and
    choose **Run**. The dashboard shows each step:
    - *Encrypting in your browser*
@@ -49,9 +57,13 @@ Operations: **Add**, **Subtract**, **Multiply**, **Min**, **Max**. Values are un
 16-bit integers, so add, subtract and multiply wrap around modulo 65536. For example,
 300 × 300 = 90000, which wraps to 24464, and 3 − 10 wraps to 65529.
 
-**Keys from another browser.** If you registered keys elsewhere, the dashboard lists
-them under *key(s) registered from another browser*. It cannot use them because it
-does not have their client keys. Delete them there if you need room for a new key.
+**Past jobs.** **Jobs** lists your computations, newest first. Completed results can
+be decrypted there while their key is unlocked; finished jobs are deleted after a few
+days.
+
+**Keys from another browser.** The **Keys** page marks keys whose client key is not in
+this browser as *Not in this browser*. Use **Import backup** with the exported file
+and its passphrase, or delete the key if you need room for a new one.
 
 ## 3. Using the API
 
@@ -168,9 +180,10 @@ submit jobs, which operation each uses and how many you run.
 Not cryptographically: TFHE does not prove correctness. The dashboard compares each
 result with the value it expected, which catches errors for the values you test.
 
-**What if I lose my client key?**
-Nothing encrypted under it can be decrypted any more, by you or anyone else. Generate
-a new key; the old server key can be deleted.
+**What if I lose my client key or forget its passphrase?**
+Import your backup file if you have one (it needs the same passphrase). Otherwise
+nothing encrypted under the key can be decrypted any more, by you or anyone else.
+Generate a new key; the old server key can be deleted.
 
 **Which numbers are supported?**
 Unsigned 16-bit integers (0–65535) with add, subtract, multiply (all mod 65536), min

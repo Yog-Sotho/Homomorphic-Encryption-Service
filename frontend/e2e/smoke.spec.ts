@@ -54,7 +54,7 @@ test('signing in reaches the dashboard', async ({ page }) => {
   await expect(page).toHaveURL(/\/heaas\/dashboard$/);
   // The app shell (hidden on /login) must appear after client-side navigation.
   await expect(page.getByRole('button', { name: 'Sign out' })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Generate encryption key' })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Create a key' })).toBeVisible();
   expect(await cspViolations(page)).toEqual([]);
   expect(problems).toEqual([]);
 });

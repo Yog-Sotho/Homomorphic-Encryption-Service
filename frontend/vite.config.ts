@@ -71,7 +71,9 @@ export default defineConfig({
     }
   },
   build: {
-    target: 'es2022'
+    target: 'es2022',
+    // Serve fonts as files: inlined data: URIs would need `font-src data:` in the CSP.
+    assetsInlineLimit: (file) => (/\.woff2?$/.test(file) ? false : undefined)
   },
   // The TFHE worker spawns rayon sub-workers with `new Worker(new URL(...))`,
   // which needs ES-module workers; pre-bundling would break its relative imports.

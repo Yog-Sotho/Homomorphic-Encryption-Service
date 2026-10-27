@@ -4,8 +4,8 @@
   import { resolve } from '$app/paths';
   import { auth, errorMessage } from '#lib/api.js';
 
-  let status: 'working' | 'failed' = 'working';
-  let error = '';
+  let status = $state<'working' | 'failed'>('working');
+  let error = $state('');
 
   onMount(async () => {
     // The token is in the fragment, which never reaches a server; drop it from
@@ -27,6 +27,8 @@
   });
 </script>
 
+<svelte:head><title>Verify email · HEaaS</title></svelte:head>
+
 <div class="container">
   <h1>Verify your email</h1>
   {#if status === 'working'}
@@ -40,6 +42,5 @@
 
 <style>
   .container { max-width: 420px; margin: 4rem auto; padding: 2rem; }
-  .error { color: var(--danger, #ef4444); }
   .btn-primary { display: inline-block; margin-top: 1rem; text-decoration: none; }
 </style>

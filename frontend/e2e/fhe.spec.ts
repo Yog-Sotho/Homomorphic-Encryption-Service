@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { expect, test, type Page, type Request } from '@playwright/test';
 import { cspViolations, mockLogin, recordCspViolations, signIn, trackProblems } from './helpers.js';
 
@@ -6,6 +7,7 @@ import { cspViolations, mockLogin, recordCspViolations, signIn, trackProblems } 
 // back, which exercises keygen, encryption, serialization and decryption for real.
 
 const KEY_ID = '7f3c2a1e-0000-4000-8000-00000000c0de';
+const PASSPHRASE = 'tidy-lantern-orbit-42';
 
 interface Captured {
   keyUpload: Buffer | null;
@@ -16,7 +18,7 @@ interface Captured {
 
 async function mockFheApi(page: Page): Promise<Captured> {
   const captured: Captured = { keyUpload: null, bodies: [], jobs: [], idempotencyKeys: [] };
-  let registered = false;
+  let registered: { id: string; sha256: string; size_bytes: number; created_at: string } | null = null;
   let polls = 0;
 
   page.on('request', (req: Request) => {
@@ -24,32 +26,41 @@ async function mockFheApi(page: Page): Promise<Captured> {
     if (body) captured.bodies.push(body);
   });
 
+  await page.route('**/api/he/params', (route) => route.fulfill({ json: { max_keys_per_user: 2 } }));
   await page.route('**/api/keys', async (route) => {
     if (route.request().method() === 'POST') {
-      captured.keyUpload = route.request().postDataBuffer();
-      registered = true;
-      await route.fulfill({
-        status: 201,
-        json: {
-          id: KEY_ID,
-          sha256: 'ab'.repeat(32),
-          size_bytes: captured.keyUpload?.length ?? 0,
-          created_at: '2026-10-26T12:00:00'
-        }
-      });
+      const body = route.request().postDataBuffer() ?? Buffer.alloc(0);
+      captured.keyUpload = body;
+      // Like the server: the key's id and the SHA-256 of what was uploaded.
+      registered = {
+        id: KEY_ID,
+        sha256: createHash('sha256').update(body).digest('hex'),
+        size_bytes: body.length,
+        created_at: '2026-10-26T12:00:00'
+      };
+      await route.fulfill({ status: 201, json: registered });
       return;
     }
-    await route.fulfill({
-      json: registered
-        ? [{ id: KEY_ID, sha256: 'ab'.repeat(32), size_bytes: 60_228_265, created_at: '2026-10-26T12:00:00' }]
-        : []
-    });
+    await route.fulfill({ json: registered ? [registered] : [] });
   });
   await page.route(`**/api/keys/${KEY_ID}`, async (route) => {
-    registered = false;
+    registered = null;
     await route.fulfill({ status: 204, body: '' });
   });
 
+  const summary = (i: number) => ({
+    id: `job-${i + 1}`,
+    status: 'completed',
+    operation: captured.jobs[i].operation,
+    key_id: KEY_ID,
+    attempts: 1,
+    error_message: null,
+    input_bytes: 264_000,
+    result_bytes: 132_000,
+    created_at: '2026-10-27T10:00:00',
+    started_at: null,
+    finished_at: null
+  });
   await page.route('**/api/compute/jobs', async (route) => {
     const job = route.request().postDataJSON() as Captured['jobs'][number];
     captured.jobs.push(job);
@@ -60,14 +71,22 @@ async function mockFheApi(page: Page): Promise<Captured> {
       json: { id: `job-${captured.jobs.length}`, status: 'pending', error_message: null }
     });
   });
+  await page.route('**/api/compute/jobs?*', (route) =>
+    route.fulfill({ json: { data: captured.jobs.map((_, i) => summary(i)).reverse(), next_cursor: null } })
+  );
   await page.route('**/api/compute/jobs/job-*/result', async (route) => {
+    const index = Number(/job-(\d+)/.exec(route.request().url())![1]) - 1;
     // "Compute" by echoing the first input back: it decrypts to the first operand.
     await route.fulfill({
       contentType: 'application/octet-stream',
-      body: Buffer.from(captured.jobs.at(-1)!.inputs[0], 'base64')
+      body: Buffer.from(captured.jobs[index].inputs[0], 'base64')
     });
   });
   await page.route('**/api/compute/jobs/job-*', async (route) => {
+    if (route.request().method() === 'DELETE') {
+      await route.fulfill({ status: 204, body: '' });
+      return;
+    }
     polls += 1;
     await route.fulfill({
       json: { id: 'job', status: polls < 2 ? 'processing' : 'completed', error_message: null }
@@ -76,47 +95,114 @@ async function mockFheApi(page: Page): Promise<Captured> {
   return captured;
 }
 
-async function storedClientKey(page: Page): Promise<Buffer> {
-  const bytes = await page.evaluate(
+interface StoredRecord {
+  keyId: string;
+  serverKeySha256?: string;
+  clientKey?: unknown;
+  sealed?: { iterations: number; salt: string; iv: string; ciphertext: string };
+}
+
+async function storedRecords(page: Page): Promise<StoredRecord[]> {
+  return page.evaluate(
     () =>
-      new Promise<number[]>((resolve, reject) => {
+      new Promise<StoredRecord[]>((resolve, reject) => {
         const open = indexedDB.open('heaas');
         open.onerror = () => reject(open.error);
         open.onsuccess = () => {
-          const get = open.result.transaction('client-keys').objectStore('client-keys').getAll();
-          get.onsuccess = () => resolve(Array.from(get.result[0].clientKey as Uint8Array));
-          get.onerror = () => reject(get.error);
+          const all = open.result.transaction('client-keys').objectStore('client-keys').getAll();
+          all.onsuccess = () => resolve(all.result as StoredRecord[]);
+          all.onerror = () => reject(all.error);
         };
       })
   );
+}
+
+/**
+ * Opens the stored key with WebCrypto in the page, independently of the app's
+ * code: PBKDF2-SHA256 → AES-256-GCM, bound to the server key's SHA-256.
+ */
+async function openStoredKey(page: Page, passphrase: string): Promise<Buffer> {
+  const bytes = await page.evaluate(async (pass) => {
+    const db = await new Promise<IDBDatabase>((resolve, reject) => {
+      const open = indexedDB.open('heaas');
+      open.onsuccess = () => resolve(open.result);
+      open.onerror = () => reject(open.error);
+    });
+    const [record] = await new Promise<StoredRecord[]>((resolve) => {
+      const all = db.transaction('client-keys').objectStore('client-keys').getAll();
+      all.onsuccess = () => resolve(all.result as StoredRecord[]);
+    });
+    const sealed = record.sealed!;
+    const b64 = (s: string) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
+    const enc = new TextEncoder();
+    const material = await crypto.subtle.importKey('raw', enc.encode(pass), 'PBKDF2', false, ['deriveKey']);
+    const key = await crypto.subtle.deriveKey(
+      { name: 'PBKDF2', hash: 'SHA-256', salt: b64(sealed.salt), iterations: sealed.iterations },
+      material,
+      { name: 'AES-GCM', length: 256 },
+      false,
+      ['decrypt']
+    );
+    const plain = await crypto.subtle.decrypt(
+      {
+        name: 'AES-GCM',
+        iv: b64(sealed.iv),
+        additionalData: enc.encode(`heaas-client-key/v1\0${record.serverKeySha256}`)
+      },
+      key,
+      b64(sealed.ciphertext)
+    );
+    return Array.from(new Uint8Array(plain));
+  }, passphrase);
   return Buffer.from(bytes);
+}
+
+/** Creates a key on the Keys page and waits until it is unlocked. */
+async function createKey(page: Page) {
+  await page.getByRole('link', { name: 'Keys', exact: true }).click();
+  await expect(page).toHaveURL(/\/heaas\/keys$/);
+  await page.getByLabel('Passphrase', { exact: true }).fill(PASSPHRASE);
+  await page.getByLabel('Repeat the passphrase').fill(PASSPHRASE);
+  await page.getByRole('button', { name: 'Generate encryption key' }).click();
+  await expect(page.getByTestId('key-entry').getByText('Unlocked')).toBeVisible({ timeout: 120_000 });
+}
+
+async function run(page: Page, op: string, a: string, b: string) {
+  await page.getByRole('button', { name: op, exact: true }).click();
+  await page.getByLabel('Value A').fill(a);
+  await page.getByLabel('Value B').fill(b);
+  await page.getByRole('button', { name: 'Run' }).click();
 }
 
 test.beforeEach(async ({ page }) => {
   await recordCspViolations(page);
 });
 
-test('keys are generated and used in the browser; only the evaluation key is uploaded', async ({ page }) => {
-  test.setTimeout(180_000);
+test('keys are made and sealed in the browser; only the evaluation key is uploaded', async ({ page }) => {
+  test.setTimeout(240_000);
   const problems = trackProblems(page);
   await mockLogin(page);
   const captured = await mockFheApi(page);
 
   await signIn(page);
   await expect(page).toHaveURL(/\/heaas\/dashboard$/);
-  await page.getByRole('button', { name: 'Generate encryption key' }).click();
-  await expect(page.getByText('Ready')).toBeVisible({ timeout: 120_000 });
+  await createKey(page);
 
   // The upload is the ~60 MB compressed server key, not the ~31 KB client key.
   expect(captured.keyUpload?.length ?? 0).toBeGreaterThan(10_000_000);
-  const clientKey = await storedClientKey(page);
+  // Stored sealed under the passphrase only, with OWASP's PBKDF2 work factor.
+  const [record] = await storedRecords(page);
+  expect(record.keyId).toBe(KEY_ID);
+  expect(record.clientKey).toBeUndefined();
+  expect(record.sealed?.iterations).toBe(600_000);
+  const clientKey = await openStoredKey(page, PASSPHRASE);
   expect(clientKey.length).toBeGreaterThan(10_000);
   expect(clientKey.length).toBeLessThan(1_000_000);
 
-  await page.getByRole('button', { name: 'Max', exact: true }).click();
-  await page.getByLabel('Value A').fill('51234');
-  await page.getByLabel('Value B').fill('7');
-  await page.getByRole('button', { name: 'Run' }).click();
+  // The unlocked key carries over to the dashboard (no second unlock).
+  await page.getByRole('link', { name: 'Dashboard', exact: true }).click();
+  await expect(page.getByText('Ready')).toBeVisible();
+  await run(page, 'Max', '51234', '7');
 
   // Decrypted in the browser: the mock echoed input A, and max(51234, 7) = 51234.
   await expect(page.getByTestId('result-value')).toHaveText('51234', { timeout: 60_000 });
@@ -133,44 +219,119 @@ test('keys are generated and used in the browser; only the evaluation key is upl
     expect(bytes.includes(Buffer.from('51234'))).toBe(false);
   }
 
-  // No request body ever contains the client key's secret material.
+  // The jobs page decrypts stored results too.
+  await page.getByRole('link', { name: 'Jobs', exact: true }).click();
+  await page.getByTestId('job-row').getByRole('button', { name: 'Decrypt' }).click();
+  await expect(page.getByTestId('job-value')).toHaveText('51234', { timeout: 30_000 });
+
+  // No request body ever contains the client key or the passphrase.
   const secret = clientKey.subarray(clientKey.length / 2, clientKey.length / 2 + 64);
-  for (const body of captured.bodies) expect(body.includes(secret)).toBe(false);
+  for (const body of captured.bodies) {
+    expect(body.includes(secret)).toBe(false);
+    expect(body.includes(Buffer.from(PASSPHRASE))).toBe(false);
+  }
 
   expect(await cspViolations(page)).toEqual([]);
   expect(problems).toEqual([]);
 });
 
-test('the key survives a reload and can be deleted', async ({ page }) => {
-  test.setTimeout(180_000);
+test('a reload needs the passphrase; keys can be backed up, restored and deleted', async ({ page }) => {
+  test.setTimeout(240_000);
   await mockLogin(page);
   await mockFheApi(page);
 
   await signIn(page);
-  await page.getByRole('button', { name: 'Generate encryption key' }).click();
-  await expect(page.getByText('Ready')).toBeVisible({ timeout: 120_000 });
+  await createKey(page);
 
-  await page.reload();
+  // Export a backup (the sealed key; no passphrase needed).
+  const [download] = await Promise.all([
+    page.waitForEvent('download'),
+    page.getByRole('button', { name: 'Export backup' }).click()
+  ]);
+  expect(download.suggestedFilename()).toBe('heaas-key-7f3c2a1e.json');
+  const backup = await (await download.createReadStream()).toArray().then((c) => Buffer.concat(c));
+  expect(JSON.parse(backup.toString())).toMatchObject({ format: 'heaas-client-key', keyId: KEY_ID });
+
+  // After a reload the key is locked; a wrong passphrase is refused.
+  await page.goto('/heaas/dashboard');
+  await page.getByLabel('Passphrase').fill('not-the-passphrase');
+  await page.getByRole('button', { name: 'Unlock key' }).click();
+  await expect(page.getByRole('alert')).toHaveText('Wrong passphrase.');
+  await page.getByLabel('Passphrase').fill(PASSPHRASE);
+  await page.getByRole('button', { name: 'Unlock key' }).click();
   await expect(page.getByText('Ready')).toBeVisible({ timeout: 30_000 });
-  await page.getByLabel('Value A').fill('300');
-  await page.getByLabel('Value B').fill('300');
-  await page.getByRole('button', { name: 'Run' }).click();
+  await run(page, 'Add', '300', '300');
   // Echoed input A decrypts to 300; 300 + 300 = 600 is expected, so it must flag a mismatch.
   await expect(page.getByTestId('result-value')).toHaveText('300', { timeout: 60_000 });
   await expect(page.getByText('Does not match 600')).toBeVisible();
 
-  await page.getByRole('button', { name: 'Delete key' }).click();
-  await expect(page.getByRole('button', { name: 'Generate encryption key' })).toBeVisible();
-  expect(
-    await page.evaluate(
-      () =>
-        new Promise<number>((resolve) => {
-          const open = indexedDB.open('heaas');
-          open.onsuccess = () => {
-            const count = open.result.transaction('client-keys').objectStore('client-keys').count();
-            count.onsuccess = () => resolve(count.result);
-          };
-        })
-    )
-  ).toBe(0);
+  // A browser without the key (site data cleared) restores it from the backup.
+  await page.evaluate(
+    () =>
+      new Promise<void>((resolve) => {
+        const open = indexedDB.open('heaas');
+        open.onsuccess = () => {
+          const tx = open.result.transaction('client-keys', 'readwrite');
+          tx.objectStore('client-keys').clear();
+          tx.oncomplete = () => resolve();
+        };
+      })
+  );
+  await page.goto('/heaas/keys');
+  const entry = page.getByTestId('key-entry');
+  await expect(entry.getByText('Not in this browser')).toBeVisible();
+  await entry.getByRole('button', { name: 'Import backup' }).click();
+  await entry.getByLabel('Key backup file').setInputFiles({
+    name: 'heaas-key-7f3c2a1e.json',
+    mimeType: 'application/json',
+    buffer: backup
+  });
+  await entry.getByLabel('Its passphrase').fill(PASSPHRASE);
+  await entry.getByRole('button', { name: 'Import', exact: true }).click();
+  await expect(entry.getByText('Unlocked')).toBeVisible({ timeout: 30_000 });
+  expect((await openStoredKey(page, PASSPHRASE)).length).toBeGreaterThan(10_000);
+
+  await entry.getByRole('button', { name: 'Delete', exact: true }).click();
+  await entry.getByRole('button', { name: 'Delete key' }).click();
+  await expect(page.getByText('No keys yet.')).toBeVisible();
+  expect(await storedRecords(page)).toEqual([]);
+});
+
+test('keys stored before passphrases are protected when next unlocked', async ({ page }) => {
+  test.setTimeout(240_000);
+  await mockLogin(page);
+  await mockFheApi(page);
+  await signIn(page);
+  await createKey(page);
+
+  // Turn the stored key back into the old, unprotected format.
+  const raw = await openStoredKey(page, PASSPHRASE);
+  await page.evaluate(
+    (bytes) =>
+      new Promise<void>((resolve) => {
+        const open = indexedDB.open('heaas');
+        open.onsuccess = () => {
+          const tx = open.result.transaction('client-keys', 'readwrite');
+          tx.objectStore('client-keys').put({
+            keyId: '7f3c2a1e-0000-4000-8000-00000000c0de',
+            clientKey: new Uint8Array(bytes),
+            createdAt: '2026-10-01T00:00:00Z'
+          });
+          tx.oncomplete = () => resolve();
+        };
+      }),
+    Array.from(raw)
+  );
+
+  await page.goto('/heaas/dashboard');
+  await expect(page.getByText('is not protected')).toBeVisible();
+  const newPassphrase = 'brand-new-passphrase-7';
+  await page.getByLabel('New passphrase').fill(newPassphrase);
+  await page.getByLabel('Repeat the passphrase').fill(newPassphrase);
+  await page.getByRole('button', { name: 'Protect and unlock' }).click();
+  await expect(page.getByText('Ready')).toBeVisible({ timeout: 30_000 });
+
+  const [record] = await storedRecords(page);
+  expect(record.clientKey).toBeUndefined();
+  expect((await openStoredKey(page, newPassphrase)).equals(raw)).toBe(true);
 });

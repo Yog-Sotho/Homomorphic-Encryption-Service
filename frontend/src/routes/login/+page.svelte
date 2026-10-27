@@ -7,12 +7,17 @@
 
   type Mode = 'login' | 'register' | 'forgot';
 
-  let mode: Mode = 'login';
-  let email = '', password = '', error = '', notice = '', loading = false, showPassword = false;
-  let registeredEmail = '';
-  let providers = { google: false, github: false };
+  let mode = $state<Mode>('login');
+  let email = $state('');
+  let password = $state('');
+  let error = $state('');
+  let notice = $state('');
+  let loading = $state(false);
+  let showPassword = $state(false);
+  let registeredEmail = $state('');
+  let providers = $state({ google: false, github: false });
 
-  $: passwordHint = mode === 'register' && password.length > 0 && !isStrongPassword(password);
+  const passwordHint = $derived(mode === 'register' && password.length > 0 && !isStrongPassword(password));
 
   /** Reads and removes `#code=` / `#error=` / `#notice=` left by redirects. */
   function takeFragment(): URLSearchParams {
@@ -53,8 +58,11 @@
     notice = '';
   }
 
-  async function handleSubmit() {
-    loading = true; error = ''; notice = '';
+  async function handleSubmit(event: SubmitEvent) {
+    event.preventDefault();
+    loading = true;
+    error = '';
+    notice = '';
     try {
       if (mode === 'login') {
         await auth.login(email, password);
@@ -70,16 +78,21 @@
       }
     } catch (e) {
       error = errorMessage(e, mode === 'login' ? 'Login failed' : 'Request failed');
-    } finally { loading = false; }
+    } finally {
+      loading = false;
+    }
   }
 
   async function resend() {
-    loading = true; error = '';
+    loading = true;
+    error = '';
     try {
       notice = (await auth.resendVerification(registeredEmail)).message;
     } catch (e) {
       error = errorMessage(e, 'Could not resend the email');
-    } finally { loading = false; }
+    } finally {
+      loading = false;
+    }
   }
 
   const TITLES: Record<Mode, string> = {
@@ -87,7 +100,10 @@
     register: 'Create an Account',
     forgot: 'Reset your password'
   };
+  const SUBMIT: Record<Mode, string> = { login: 'Login', register: 'Register', forgot: 'Send reset link' };
 </script>
+
+<svelte:head><title>Sign in · HEaaS</title></svelte:head>
 
 <div class="container">
   <h1>{TITLES[mode]}</h1>
@@ -96,19 +112,12 @@
   {#if registeredEmail && mode === 'login'}
     <p class="toggle-text">
       No email?
-      <button class="btn-link" type="button" on:click={resend} disabled={loading}>Resend verification email</button>
+      <button class="btn-link" type="button" onclick={resend} disabled={loading}>Resend verification email</button>
     </p>
   {/if}
-  <form on:submit|preventDefault={handleSubmit}>
+  <form onsubmit={handleSubmit}>
     <label for="email">Email <span class="required" aria-hidden="true">*</span></label>
-    <input
-      id="email"
-      type="email"
-      bind:value={email}
-      placeholder="email@example.com"
-      autocomplete="email"
-      required
-    />
+    <input id="email" type="email" bind:value={email} placeholder="email@example.com" autocomplete="email" required />
 
     {#if mode !== 'forgot'}
       <label for="password">Password <span class="required" aria-hidden="true">*</span></label>
@@ -124,7 +133,7 @@
         <button
           type="button"
           class="toggle-password"
-          on:click={() => (showPassword = !showPassword)}
+          onclick={() => (showPassword = !showPassword)}
           aria-label={showPassword ? 'Hide password' : 'Show password'}
           aria-pressed={showPassword}
         >
@@ -143,18 +152,14 @@
       </ul>
     {/if}
 
-    <button
-      type="submit"
-      disabled={loading || (mode === 'register' && !isStrongPassword(password))}
-      class="btn-primary"
-    >
-      {loading ? 'Processing...' : { login: 'Login', register: 'Register', forgot: 'Send reset link' }[mode]}
+    <button type="submit" disabled={loading || (mode === 'register' && !isStrongPassword(password))} class="btn-primary">
+      {loading ? 'Processing...' : SUBMIT[mode]}
     </button>
   </form>
 
   {#if mode === 'login'}
     <p class="toggle-text">
-      <button class="btn-link" type="button" on:click={() => switchTo('forgot')}>Forgot password?</button>
+      <button class="btn-link" type="button" onclick={() => switchTo('forgot')}>Forgot password?</button>
     </p>
     {#if providers.google || providers.github}
       <div class="oauth">
@@ -168,29 +173,32 @@
   <p class="toggle-text">
     {#if mode === 'register'}
       Already have an account?
-      <button class="btn-link" on:click={() => switchTo('login')} type="button">Login</button>
+      <button class="btn-link" onclick={() => switchTo('login')} type="button">Login</button>
     {:else if mode === 'forgot'}
       Remembered it?
-      <button class="btn-link" on:click={() => switchTo('login')} type="button">Back to login</button>
+      <button class="btn-link" onclick={() => switchTo('login')} type="button">Back to login</button>
     {:else}
       Don't have an account?
-      <button class="btn-link" on:click={() => switchTo('register')} type="button">Register</button>
+      <button class="btn-link" onclick={() => switchTo('register')} type="button">Register</button>
     {/if}
   </p>
 </div>
 
 <style>
-  .notice { color: var(--success, #22c55e); margin: 0.5rem 0; }
+  .notice { color: var(--success); margin: 0.5rem 0; }
   .oauth { display: flex; flex-direction: column; gap: 0.5rem; margin-top: 1rem; }
   .btn-oauth {
     display: block; text-align: center; padding: 0.65rem 1rem; border-radius: 8px;
-    border: 1px solid var(--border); color: inherit; text-decoration: none;
+    border: 1px solid var(--border-strong); color: inherit; text-decoration: none;
   }
   .btn-oauth:hover { border-color: var(--accent); }
   .container { max-width: 420px; margin: 3rem auto; padding: 2rem; }
   h1 { margin-bottom: 1.25rem; font-size: 1.375rem; text-align: center; }
   .toggle-text { margin-top: 1.5rem; text-align: center; font-size: 0.875rem; color: var(--text-secondary); }
-  .btn-link { background: none; border: none; color: var(--accent); cursor: pointer; text-decoration: underline; padding: 0; font-size: inherit; }
+  .btn-link {
+    background: none; border: none; color: var(--link); cursor: pointer;
+    text-decoration: underline; padding: 0; font-size: inherit;
+  }
 
   /* ── Hint ── */
   .hint {
@@ -199,7 +207,7 @@
     display: flex; flex-direction: column; gap: 0.2rem;
   }
   .hint li { color: var(--text-secondary); }
-  .hint li::before { content: '✗ '; color: #ef4444; }
-  .hint li.ok { color: #22c55e; }
+  .hint li::before { content: '✗ '; color: var(--error); }
+  .hint li.ok { color: var(--success); }
   .hint li.ok::before { content: '✓ '; }
 </style>

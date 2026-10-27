@@ -1,4 +1,5 @@
 import type { GeneratedKeys, WorkerRequest, WorkerResponse, WorkerResult } from './protocol.js';
+import { WrongPassphraseError, type SealedKey } from './vault.js';
 
 type Pending = {
   resolve: (result: WorkerResult) => void;
@@ -9,7 +10,8 @@ type RequestBody = WorkerRequest extends infer R ? (R extends { id: number } ? O
 
 /**
  * Main-thread handle to the TFHE Web Worker. The worker is created lazily on first
- * use; the client key only ever lives inside it (and in local storage on this device).
+ * use. The plaintext client key only ever exists inside it; the page handles it
+ * sealed under the user's passphrase.
  */
 export class FheClient {
   #worker: Worker | null = null;
@@ -38,7 +40,7 @@ export class FheClient {
       if (!pending) return;
       this.#pending.delete(response.id);
       if (response.ok) pending.resolve(response.result);
-      else pending.reject(new Error(response.error));
+      else pending.reject(response.wrongPassphrase ? new WrongPassphraseError() : new Error(response.error));
     });
     worker.addEventListener('error', (event) => {
       const error = new Error(event.message || 'Encryption worker crashed');
@@ -59,26 +61,48 @@ export class FheClient {
     });
   }
 
-  /** Generates a fresh client key (kept in the worker) and its compressed server key. */
-  async generateKeys(): Promise<GeneratedKeys> {
-    const result = await this.#call({ kind: 'generateKeys' });
+  /**
+   * Generates a key pair. The client key stays loaded in the worker and comes
+   * back only sealed under `passphrase`.
+   */
+  async generateKeys(passphrase: string): Promise<GeneratedKeys> {
+    const result = await this.#call({ kind: 'generateKeys', passphrase });
     if (result.kind !== 'generateKeys') throw new Error('Unexpected worker reply');
     return result.keys;
   }
 
-  async loadClientKey(clientKey: Uint8Array): Promise<void> {
-    // Copy so the caller's buffer survives the transfer.
-    const copy = clientKey.slice();
-    await this.#call({ kind: 'loadClientKey', clientKey: copy }, [copy.buffer]);
+  /** Loads a sealed key; rejects with `WrongPassphraseError` if it does not open. */
+  async unlock(sealed: SealedKey, serverKeySha256: string, passphrase: string): Promise<void> {
+    await this.#call({ kind: 'unlock', sealed, serverKeySha256, passphrase });
   }
 
-  async encrypt(values: number[]): Promise<Uint8Array[]> {
+  /** Seals and loads a raw key stored before passphrases; returns the sealed form. */
+  async protect(
+    clientKey: Uint8Array<ArrayBuffer>,
+    serverKeySha256: string,
+    passphrase: string
+  ): Promise<SealedKey> {
+    const copy = clientKey.slice();
+    const result = await this.#call(
+      { kind: 'protect', clientKey: copy, serverKeySha256, passphrase },
+      [copy.buffer]
+    );
+    if (result.kind !== 'protect') throw new Error('Unexpected worker reply');
+    return result.sealed;
+  }
+
+  /** Forgets the loaded client key. */
+  async lock(): Promise<void> {
+    await this.#call({ kind: 'lock' });
+  }
+
+  async encrypt(values: number[]): Promise<Uint8Array<ArrayBuffer>[]> {
     const result = await this.#call({ kind: 'encrypt', values });
     if (result.kind !== 'encrypt') throw new Error('Unexpected worker reply');
     return result.ciphertexts;
   }
 
-  async decrypt(ciphertext: Uint8Array): Promise<number> {
+  async decrypt(ciphertext: Uint8Array<ArrayBuffer>): Promise<number> {
     const result = await this.#call({ kind: 'decrypt', ciphertext });
     if (result.kind !== 'decrypt') throw new Error('Unexpected worker reply');
     return result.value;

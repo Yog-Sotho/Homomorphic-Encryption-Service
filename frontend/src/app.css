@@ -9,8 +9,10 @@
   --accent-muted:      #312e81;
   --accent-glow:       rgba(99, 102, 241, 0.18);
   --text-primary:      #e2e8f0;
-  --text-secondary:    #64748b;
-  --text-muted:        #475569;
+  /* Text colours meet WCAG AA (4.5:1) on every surface below. */
+  --text-secondary:    #94a3b8;
+  --text-muted:        #8492a6;
+  --link:              #a5b4fc;
   --border:            rgba(255, 255, 255, 0.06);
   --border-strong:     rgba(255, 255, 255, 0.10);
   --success:           #10b981;
@@ -19,8 +21,8 @@
   --radius-sm:         6px;
   --radius:            10px;
   --radius-lg:         16px;
-  --font-sans:         'Inter', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
-  --font-mono:         'JetBrains Mono', 'Fira Code', monospace;
+  --font-sans:         'Inter Variable', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-mono:         'JetBrains Mono Variable', ui-monospace, monospace;
 }
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -87,14 +89,15 @@ button { cursor: pointer; font-family: var(--font-sans); border: none; }
 .btn-primary {
   display: inline-flex; align-items: center; justify-content: center; gap: 0.5rem;
   width: 100%; padding: 0.6875rem 1.5rem;
-  background: var(--accent); color: #fff;
+  /* --accent itself is too light for white text at AA contrast. */
+  background: var(--accent-hover); color: #fff;
   font-size: 0.9375rem; font-weight: 600;
   border-radius: var(--radius-sm);
   letter-spacing: 0.01em;
   transition: background 0.15s, box-shadow 0.15s, transform 0.1s;
   margin-top: 0.25rem;
 }
-.btn-primary:hover:not(:disabled) { background: var(--accent-hover); box-shadow: 0 0 24px var(--accent-glow); }
+.btn-primary:hover:not(:disabled) { background: #4338ca; box-shadow: 0 0 24px var(--accent-glow); }
 .btn-primary:active:not(:disabled) { transform: scale(0.99); }
 .btn-primary:disabled { opacity: 0.4; cursor: not-allowed; }
 
@@ -171,9 +174,12 @@ button { cursor: pointer; font-family: var(--font-sans); border: none; }
   transform: translateY(-50%);
   background: none;
   border: none;
-  color: var(--accent);
+  color: var(--link);
   font-size: 0.75rem;
   font-weight: 700;
+  /* WCAG 2.2 target size: at least 24 × 24 px. */
+  min-width: 2.75rem;
+  min-height: 1.75rem;
   padding: 0.25rem;
   cursor: pointer;
   transition: color 0.15s;

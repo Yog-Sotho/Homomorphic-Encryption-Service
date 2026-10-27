@@ -3,48 +3,52 @@
   import { goto } from '$app/navigation';
   import { resolve } from '$app/paths';
   import { ApiError, errorMessage, session, user, type UserProfile } from '#lib/api.js';
+  import { fheSession } from '#lib/fhe/session.svelte.js';
   import { isStrongPassword as isValidPassword } from '#lib/password-policy.js';
-  import { userStore } from '#lib/stores.js';
 
-  let profile: UserProfile | null = null;
-  let loadError = '';
+  let profile = $state<UserProfile | null>(null);
+  let loadError = $state('');
 
   // Change password
-  let currentPassword = '';
-  let newPassword = '';
-  let confirmPassword = '';
-  let showCurrentPassword = false;
-  let showNewPassword = false;
-  let showConfirmPassword = false;
-  let passwordLoading = false;
-  let passwordError = '';
+  let currentPassword = $state('');
+  let newPassword = $state('');
+  let confirmPassword = $state('');
+  let showCurrentPassword = $state(false);
+  let showNewPassword = $state(false);
+  let showConfirmPassword = $state(false);
+  let passwordLoading = $state(false);
+  let passwordError = $state('');
 
   // Delete account
-  let showDeleteConfirm = false;
-  let deleteConfirmText = '';
-  let deletePassword = '';
-  let showDeletePassword = false;
-  let deleteLoading = false;
-  let deleteError = '';
+  let showDeleteConfirm = $state(false);
+  let deleteConfirmText = $state('');
+  let deletePassword = $state('');
+  let showDeletePassword = $state(false);
+  let deleteLoading = $state(false);
+  let deleteError = $state('');
 
-  $: passwordHint = newPassword.length > 0 && !isValidPassword(newPassword);
-  $: passwordMismatch = newPassword.length > 0 && confirmPassword.length > 0 && newPassword !== confirmPassword;
-  $: usagePercent = profile ? Math.min(100, Math.round((profile.daily_usage.count / Math.max(profile.daily_usage.quota, 1)) * 100)) : 0;
-  $: memberSince = profile ? formatDate(profile.created_at) : '';
+  const passwordHint = $derived(newPassword.length > 0 && !isValidPassword(newPassword));
+  const passwordMismatch = $derived(
+    newPassword.length > 0 && confirmPassword.length > 0 && newPassword !== confirmPassword
+  );
+  const usagePercent = $derived(
+    profile
+      ? Math.min(100, Math.round((profile.daily_usage.count / Math.max(profile.daily_usage.quota, 1)) * 100))
+      : 0
+  );
+  const memberSince = $derived(profile ? formatDate(profile.created_at) : '');
 
   function formatDate(iso: string): string {
     try {
       return new Date(iso).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
-    } catch { return iso; }
+    } catch {
+      return iso;
+    }
   }
 
   onMount(async () => {
     try {
-      const res = await user.me();
-      profile = res;
-      if (profile && $userStore) {
-        userStore.set({ ...$userStore, email: profile.email });
-      }
+      profile = await user.me();
     } catch (e) {
       if (e instanceof ApiError && e.status === 401) {
         goto(resolve('/login'));
@@ -54,23 +58,30 @@
     }
   });
 
-  async function handleChangePassword() {
-    passwordLoading = true; passwordError = '';
+  async function handleChangePassword(event: SubmitEvent) {
+    event.preventDefault();
+    passwordLoading = true;
+    passwordError = '';
     try {
       const res = await user.changePassword(currentPassword, newPassword);
       // The server ended every session, this one included.
+      fheSession.reset();
       session.clear();
       goto(resolve('/login') + '#notice=' + encodeURIComponent(res.message));
     } catch (e) {
       passwordError = errorMessage(e, 'Failed to change password.');
-    } finally { passwordLoading = false; }
+    } finally {
+      passwordLoading = false;
+    }
   }
 
   async function handleDeleteAccount() {
     if (deleteConfirmText !== 'DELETE') return;
-    deleteLoading = true; deleteError = '';
+    deleteLoading = true;
+    deleteError = '';
     try {
       await user.deleteAccount(deletePassword);
+      fheSession.reset();
       session.clear();
       goto(resolve('/login'));
     } catch (e) {
@@ -78,7 +89,17 @@
       deleteLoading = false;
     }
   }
+
+  function cancelDelete() {
+    showDeleteConfirm = false;
+    deleteConfirmText = '';
+    deletePassword = '';
+    deleteError = '';
+  }
 </script>
+
+<svelte:head><title>Account · HEaaS</title></svelte:head>
+
 
 <div class="page">
   <div class="page-header">
@@ -92,14 +113,14 @@
     </div>
   {:else if !profile}
     <div class="card loading-card">
-      <span class="spinner"></span>
+      <span class="spinner" aria-hidden="true"></span>
       <span class="loading-text">Loading…</span>
     </div>
   {:else}
     <!-- Profile section -->
     <div class="card">
       <div class="section-header">
-        <span class="section-label">Profile</span>
+        <h2 class="section-label">Profile</h2>
       </div>
       <div class="profile-grid">
         <div class="profile-row">
@@ -125,11 +146,11 @@
     <!-- Daily usage section -->
     <div class="card">
       <div class="section-header">
-        <span class="section-label">Daily Usage</span>
+        <h2 class="section-label">Daily Usage</h2>
         <span class="usage-count mono">{profile.daily_usage.count} / {profile.daily_usage.quota}</span>
       </div>
       <p class="section-desc">Homomorphic compute operations used today</p>
-      <div class="progress-track" role="progressbar" aria-valuenow={profile.daily_usage.count} aria-valuemin={0} aria-valuemax={profile.daily_usage.quota}>
+      <div class="progress-track" role="progressbar" aria-label="Daily compute quota used" aria-valuenow={profile.daily_usage.count} aria-valuemin={0} aria-valuemax={profile.daily_usage.quota}>
         <div class="progress-fill" style="width: {usagePercent}%" class:progress-warn={usagePercent >= 80} class:progress-full={usagePercent >= 100}></div>
       </div>
       <p class="progress-label">{usagePercent}% of daily quota used</p>
@@ -139,10 +160,10 @@
     {#if profile.oauth_providers && profile.oauth_providers.length > 0}
       <div class="card">
         <div class="section-header">
-          <span class="section-label">Linked Accounts</span>
+          <h2 class="section-label">Linked Accounts</h2>
         </div>
         <div class="providers-list">
-          {#each profile.oauth_providers as provider}
+          {#each profile.oauth_providers as provider (provider)}
             <div class="provider-item">
               {#if provider === 'google'}
                 <svg width="16" height="16" viewBox="0 0 18 18" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
@@ -167,13 +188,13 @@
     <!-- Change password section -->
     <div class="card">
       <div class="section-header">
-        <span class="section-label">Change Password</span>
+        <h2 class="section-label">Change Password</h2>
       </div>
-      <form on:submit|preventDefault={handleChangePassword} class="settings-form">
+      <form onsubmit={handleChangePassword} class="settings-form">
         <label for="current-password">Current Password</label>
         <div class="password-wrapper">
           <input id="current-password" type={showCurrentPassword ? 'text' : 'password'} bind:value={currentPassword} placeholder="••••••••" required autocomplete="current-password" />
-          <button type="button" class="toggle-password" on:click={() => showCurrentPassword = !showCurrentPassword} aria-label={showCurrentPassword ? 'Hide current password' : 'Show current password'} aria-pressed={showCurrentPassword}>
+          <button type="button" class="toggle-password" onclick={() => (showCurrentPassword = !showCurrentPassword)} aria-label={showCurrentPassword ? 'Hide current password' : 'Show current password'} aria-pressed={showCurrentPassword}>
             {showCurrentPassword ? 'HIDE' : 'SHOW'}
           </button>
         </div>
@@ -181,7 +202,7 @@
         <label for="new-password">New Password</label>
         <div class="password-wrapper">
           <input id="new-password" type={showNewPassword ? 'text' : 'password'} bind:value={newPassword} placeholder="••••••••" required autocomplete="new-password" />
-          <button type="button" class="toggle-password" on:click={() => showNewPassword = !showNewPassword} aria-label={showNewPassword ? 'Hide new password' : 'Show new password'} aria-pressed={showNewPassword}>
+          <button type="button" class="toggle-password" onclick={() => (showNewPassword = !showNewPassword)} aria-label={showNewPassword ? 'Hide new password' : 'Show new password'} aria-pressed={showNewPassword}>
             {showNewPassword ? 'HIDE' : 'SHOW'}
           </button>
         </div>
@@ -189,17 +210,17 @@
         {#if passwordHint}
           <ul class="hint" aria-live="polite">
             <li class:ok={newPassword.length >= 10 && newPassword.length <= 128}>Between 10 and 128 characters</li>
-            <li class:ok={/[A-Z]/.test(newPassword)}>One uppercase letter</li>
-            <li class:ok={/[a-z]/.test(newPassword)}>One lowercase letter</li>
+            <li class:ok={/\p{Lu}/u.test(newPassword)}>One uppercase letter</li>
+            <li class:ok={/\p{Ll}/u.test(newPassword)}>One lowercase letter</li>
             <li class:ok={/[0-9]/.test(newPassword)}>One digit</li>
-            <li class:ok={/[^A-Za-z0-9]/.test(newPassword)}>One special character</li>
+            <li class:ok={/[^\p{L}\p{N}]/u.test(newPassword)}>One special character</li>
           </ul>
         {/if}
 
         <label for="confirm-password">Confirm New Password</label>
         <div class="password-wrapper">
           <input id="confirm-password" type={showConfirmPassword ? 'text' : 'password'} bind:value={confirmPassword} placeholder="••••••••" required autocomplete="new-password" />
-          <button type="button" class="toggle-password" on:click={() => showConfirmPassword = !showConfirmPassword} aria-label={showConfirmPassword ? 'Hide confirm password' : 'Show confirm password'} aria-pressed={showConfirmPassword}>
+          <button type="button" class="toggle-password" onclick={() => (showConfirmPassword = !showConfirmPassword)} aria-label={showConfirmPassword ? 'Hide confirm password' : 'Show confirm password'} aria-pressed={showConfirmPassword}>
             {showConfirmPassword ? 'HIDE' : 'SHOW'}
           </button>
         </div>
@@ -224,7 +245,7 @@
     <!-- Danger zone -->
     <div class="card danger-card">
       <div class="section-header">
-        <span class="section-label danger-label">Danger Zone</span>
+        <h2 class="section-label danger-label">Danger Zone</h2>
       </div>
 
       {#if !showDeleteConfirm}
@@ -233,7 +254,7 @@
             <p class="danger-title">Delete account</p>
             <p class="danger-desc">Permanently delete your account and all associated data. This action cannot be undone.</p>
           </div>
-          <button type="button" class="btn-danger" on:click={() => showDeleteConfirm = true}>
+          <button type="button" class="btn-danger" onclick={() => (showDeleteConfirm = true)}>
             Delete account
           </button>
         </div>
@@ -248,7 +269,7 @@
             <label for="delete-password">Your password</label>
             <div class="password-wrapper">
               <input id="delete-password" type={showDeletePassword ? 'text' : 'password'} bind:value={deletePassword} placeholder="••••••••" autocomplete="current-password" />
-              <button type="button" class="toggle-password" on:click={() => showDeletePassword = !showDeletePassword} aria-label={showDeletePassword ? 'Hide delete password' : 'Show delete password'} aria-pressed={showDeletePassword}>
+              <button type="button" class="toggle-password" onclick={() => (showDeletePassword = !showDeletePassword)} aria-label={showDeletePassword ? 'Hide delete password' : 'Show delete password'} aria-pressed={showDeletePassword}>
                 {showDeletePassword ? 'HIDE' : 'SHOW'}
               </button>
             </div>
@@ -259,12 +280,12 @@
           {/if}
 
           <div class="delete-actions">
-            <button type="button" class="btn-secondary" on:click={() => { showDeleteConfirm = false; deleteConfirmText = ''; deletePassword = ''; deleteError = ''; }}>
+            <button type="button" class="btn-secondary" onclick={cancelDelete}>
               Cancel
             </button>
             <button type="button" class="btn-danger"
               disabled={deleteLoading || deleteConfirmText !== 'DELETE'}
-              on:click={handleDeleteAccount}>
+              onclick={handleDeleteAccount}>
               {deleteLoading ? 'Deleting…' : 'Confirm delete'}
             </button>
           </div>
@@ -348,8 +369,8 @@
     display: flex; flex-direction: column; gap: 0.2rem;
   }
   .hint li { color: var(--text-secondary); }
-  .hint li::before { content: '✗ '; color: #ef4444; }
-  .hint li.ok { color: #22c55e; }
+  .hint li::before { content: '✗ '; color: var(--error); }
+  .hint li.ok { color: var(--success); }
   .hint li.ok::before { content: '✓ '; }
 
   /* ── Messages ── */
