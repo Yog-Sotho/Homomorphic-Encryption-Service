@@ -55,6 +55,30 @@ Uploaded keys and ciphertexts are deserialized with TFHE-rs's size-limited,
 conformance-checked `safe_deserialize_conformant`, so keys made with other
 parameters and malformed or foreign ciphertexts are rejected, not computed on.
 
+### Accounts and sessions
+
+- **Sessions.** Signing in returns a 15-minute access token and sets a refresh token
+  as an `HttpOnly; Secure; SameSite=Strict` cookie scoped to `/api/auth`. The
+  dashboard keeps the access token in memory only, so page scripts can never read
+  a long-lived credential. Every refresh rotates the cookie; replaying an old one
+  (more than 10 seconds after it was rotated) revokes that whole session.
+- **Cross-site requests.** Cookie-authenticated endpoints also refuse requests whose
+  `Origin` is not the app's own (`APP_BASE_URL` or `ALLOWED_ORIGINS`).
+- **Email links** (verification, password reset) open frontend pages that carry the
+  token in the URL fragment and submit it with a POST. Opening a link (or a mail
+  scanner prefetching it) changes nothing. Links work once; verification links
+  expire after 24 hours and reset links after 1 hour. Tokens are stored hashed.
+- **Google and GitHub sign-in** use the authorization-code flow with PKCE and a
+  signed state cookie. Only provider-verified email addresses are accepted (GitHub:
+  the verified primary address). The callback hands the browser a one-time code,
+  never a token, which the page exchanges with `POST /api/auth/exchange`.
+- **Rate limits** are keyed on the client IP (the rightmost `X-Forwarded-For` hop not
+  added by a `TRUSTED_PROXIES` address, so clients cannot choose their own) and on
+  the target email address for sign-in attempts and outgoing email.
+- **Sensitive changes.** Changing or resetting the password signs out every session.
+  Deleting an account needs its password, or, for Google/GitHub-only accounts, a
+  sign-in within the last 5 minutes.
+
 ### What the server can and cannot learn
 
 The server **cannot** decrypt inputs or results: it only ever holds evaluation keys.
@@ -102,7 +126,7 @@ HEAAS_URL=http://localhost:8080 HEAAS_EMAIL=you@example.com HEAAS_PASSWORD='…'
 | Method & path | Auth | Purpose |
 |---|---|---|
 | `GET /api/he/params` | — | Scheme, TFHE-rs version, integer type, operations, size limits |
-| `POST /api/auth/register`, `POST /api/auth/login` | — | Account and bearer token (`token`, valid 1 h; refresh with `POST /api/auth/refresh`) |
+| `POST /api/auth/register`, `POST /api/auth/login` | — | Account and session: `{token, expires_in, user}` plus an `HttpOnly` refresh cookie. `token` is a bearer token valid 15 minutes; `POST /api/auth/refresh` (with the cookie) renews it |
 | `POST /api/keys` | Bearer | Body: `safe_serialize`d `CompressedServerKey` (`application/octet-stream`). Returns `201 {id, sha256, size_bytes, created_at}`. `409` when you already have the maximum number of keys |
 | `GET /api/keys`, `DELETE /api/keys/{id}` | Bearer | List or remove your keys |
 | `POST /api/compute/jobs` | Bearer | `{"key_id", "operation", "inputs": [b64, b64]}` (standard base64 of `safe_serialize`d `FheUint16`). Optional `Idempotency-Key` header. Returns `202` + `Location` and the job |
@@ -161,7 +185,7 @@ evaluation key and ciphertexts. CI (`.github/workflows/ci.yml`) runs all of the 
 
 | Variable | Default | |
 |---|---|---|
-| `JWT_SECRET` | — (required) | Token signing secret |
+| `JWT_SECRET` | — (required, ≥ 32 bytes) | Secret from which token-signing and OAuth-state keys are derived (e.g. `openssl rand -base64 48`) |
 | `DATABASE_URL` | `sqlite://./he_saas.db` | SQLite database |
 | `KEY_STORE_DIR` | `./data/keys` | Uploaded server keys (~60 MB each) |
 | `MAX_SERVER_KEY_BYTES` | 80 MiB | Largest accepted key upload |
@@ -175,16 +199,29 @@ evaluation key and ciphertexts. CI (`.github/workflows/ci.yml`) runs all of the 
 | `MAX_QUEUED_JOBS` | 1000 | Waiting + running jobs before submissions get `503` |
 | `MAX_ACTIVE_JOBS_PER_USER` | 10 | Waiting + running jobs per user before submissions get `429` |
 | `JOB_RETENTION_DAYS` | 7 | Finished jobs and their ciphertexts are deleted after this |
-| `ALLOWED_ORIGINS` | — (required in release builds) | CORS origins |
-| `APP_BASE_URL`, `SMTP_*`, `FROM_EMAIL`, `GOOGLE_*`, `GITHUB_*` | | Email and OAuth |
+| `APP_BASE_URL` | `http://localhost:3000` | Public URL of the site; its origin may use the API and the session cookie, and email links point to it |
+| `ALLOWED_ORIGINS` | — (debug builds: `localhost:3000`, `:5173`) | Further browser origins allowed to call the API |
+| `TRUSTED_PROXIES` | — | Comma-separated CIDRs of reverse proxies whose `X-Forwarded-For` is believed. Without it the TCP peer is the client, so behind nginx every user would share one rate-limit bucket |
+| `COOKIE_SECURE` | `true` | `Secure` session cookies (HTTPS only; browsers also accept them on `http://localhost`) |
+| `LOG_EMAIL_LINKS` | debug builds only | Without SMTP, log verification and reset links (they are credentials) |
+| `RATE_LIMIT_AUTH_PER_MINUTE` | 30 | `/api/auth` requests per client IP |
+| `RATE_LIMIT_LOGINS_PER_EMAIL` | 5 | Sign-in attempts per address per 15 minutes |
+| `RATE_LIMIT_EMAILS_PER_IP_PER_HOUR` | 10 | Register / resend / forgot-password requests per client IP |
+| `RATE_LIMIT_EMAILS_PER_ADDRESS_PER_HOUR` | 3 | Emails sent to one address (further ones are skipped silently) |
+| `SMTP_*`, `FROM_EMAIL`, `GOOGLE_*`, `GITHUB_*` | | Email and OAuth (callback URLs: `<APP_BASE_URL>/api/auth/google/callback`, `…/github/callback`) |
 
 ### Deployment
 
-`docker-compose.yml` runs the backend and the frontend. On `SIGTERM` the backend
-stops accepting requests and gives running jobs up to 30 seconds to finish
-(compose waits 40); anything cut off is requeued at the next start. nginx (`nginx-heaas.conf`)
+`docker-compose.yml` runs the backend and the frontend, published on `127.0.0.1` only.
+On `SIGTERM` the backend stops accepting requests and gives running jobs up to 30
+seconds to finish (compose waits 40); anything cut off is requeued at the next start.
+
+nginx (`nginx-heaas.conf`) is the only public entry point. It terminates TLS (set
+your certificate paths and `server_name`), sends HSTS, redirects HTTP to HTTPS,
 serves the app under `/heaas/` and the API under `/api/`, and accepts request bodies
-up to 96 MB for key uploads.
+up to 96 MB for key uploads. Sessions use `Secure` cookies, so the site must be
+served over HTTPS. Compose sets `TRUSTED_PROXIES` to cover nginx on the host and
+the Docker networks; adjust it if your proxies live elsewhere.
 
 TFHE's WebAssembly build uses shared memory, so **every** frontend response must be
 sent with `Cross-Origin-Opener-Policy: same-origin` and

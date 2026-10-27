@@ -1,5 +1,12 @@
 import { expect, test } from '@playwright/test';
-import { cspViolations, mockLogin, recordCspViolations, signIn, trackProblems } from './helpers.js';
+import {
+  cspViolations,
+  mockLogin,
+  mockPublicAuthApi,
+  recordCspViolations,
+  signIn,
+  trackProblems
+} from './helpers.js';
 
 test.beforeEach(async ({ page }) => {
   await recordCspViolations(page);
@@ -7,6 +14,7 @@ test.beforeEach(async ({ page }) => {
 
 test('login page is served with a CSP header and hydrates without violations', async ({ page }) => {
   const problems = trackProblems(page);
+  await mockPublicAuthApi(page);
   const response = await page.goto('/heaas/login');
 
   expect(response?.status()).toBe(200);
@@ -52,6 +60,7 @@ test('signing in reaches the dashboard', async ({ page }) => {
 });
 
 test('API errors are shown to the user', async ({ page }) => {
+  await mockPublicAuthApi(page);
   await page.route('**/api/auth/login', (route) =>
     route.fulfill({ status: 401, json: { message: 'Invalid credentials' } })
   );
@@ -62,4 +71,65 @@ test('API errors are shown to the user', async ({ page }) => {
   await page.getByRole('button', { name: 'Login' }).click();
 
   await expect(page.getByRole('alert')).toHaveText('Invalid credentials');
+});
+
+test('OAuth sign-in is completed by exchanging the one-time code', async ({ page }) => {
+  const problems = trackProblems(page);
+  await mockLogin(page);
+  await page.route('**/api/keys', (route) => route.fulfill({ json: [] }));
+  let exchanged = '';
+  await page.route('**/api/auth/exchange', async (route) => {
+    exchanged = (route.request().postDataJSON() as { code: string }).code;
+    const user = { id: 'u1', email: 'alice@example.com', created_at: '2026-10-25T00:00:00' };
+    await route.fulfill({ json: { token: 'access-token', expires_in: 900, user } });
+  });
+
+  await page.goto('/heaas/login#code=one-time-code');
+
+  await expect(page).toHaveURL(/\/heaas\/dashboard$/);
+  expect(exchanged).toBe('one-time-code');
+  expect(problems).toEqual([]);
+});
+
+test('OAuth errors are shown and the fragment is cleared', async ({ page }) => {
+  await mockPublicAuthApi(page);
+  await page.goto('/heaas/login#error=Sign-in%20was%20cancelled.');
+  await expect(page.getByRole('alert')).toHaveText('Sign-in was cancelled.');
+  await expect(page).toHaveURL(/\/heaas\/login$/);
+});
+
+test('verification links sign the user in without the token reaching the server in a URL', async ({ page }) => {
+  await mockLogin(page);
+  await page.route('**/api/keys', (route) => route.fulfill({ json: [] }));
+  const urls: string[] = [];
+  page.on('request', (r) => urls.push(r.url()));
+  let posted = '';
+  await page.route('**/api/auth/verify', async (route) => {
+    posted = (route.request().postDataJSON() as { token: string }).token;
+    const user = { id: 'u1', email: 'alice@example.com', created_at: '2026-10-25T00:00:00' };
+    await route.fulfill({ json: { token: 'access-token', expires_in: 900, user } });
+  });
+
+  await page.goto('/heaas/verify#token=secret-verify-token');
+
+  await expect(page).toHaveURL(/\/heaas\/dashboard$/);
+  expect(posted).toBe('secret-verify-token');
+  expect(urls.some((u) => u.includes('secret-verify-token'))).toBe(false);
+});
+
+test('password reset pages post the token from the fragment', async ({ page }) => {
+  let body: { token?: string; new_password?: string } = {};
+  await page.route('**/api/auth/reset-password', async (route) => {
+    body = route.request().postDataJSON();
+    await route.fulfill({ json: { message: 'Password reset. You can now sign in.' } });
+  });
+
+  await page.goto('/heaas/reset#token=reset-token');
+  await expect(page).toHaveURL(/\/heaas\/reset$/);
+  await page.getByLabel('New password').fill('Brand-New-Pass-7');
+  await page.getByLabel('Repeat it').fill('Brand-New-Pass-7');
+  await page.getByRole('button', { name: 'Set password' }).click();
+
+  await expect(page.getByRole('status')).toContainText('Password reset');
+  expect(body).toEqual({ token: 'reset-token', new_password: 'Brand-New-Pass-7' });
 });

@@ -62,9 +62,12 @@ ciphertexts with `tfhe::safe_serialization::safe_serialize`.
 
 ### Authentication
 
-`POST /api/auth/login` with `{"email", "password"}` returns `{"token", "refresh_token", "user"}`.
-Send `Authorization: Bearer <token>` on every request below. Tokens last one hour;
-renew them with `POST /api/auth/refresh` and `{"refresh_token"}`.
+`POST /api/auth/login` with `{"email", "password"}` returns `{"token", "expires_in", "user"}`
+and sets a refresh cookie (`heaas_refresh`). Send `Authorization: Bearer <token>` on
+every request below. Tokens last 15 minutes (`expires_in` seconds). To renew one,
+`POST /api/auth/refresh` with the cookie (keep a cookie jar in your HTTP client),
+or simply sign in again. Each refresh replaces the cookie; reusing an old one ends
+the session.
 
 ### Parameters
 
@@ -144,6 +147,9 @@ not charged.
 | `413 Payload Too Large` | The upload is over the size limit | Upload only the compressed server key, never the full server key |
 | Job `failed`: "Input 1 is not a valid FheUint16 ciphertext for this key" | The input is not an `FheUint16`, is corrupted, or was made with other parameters | Encrypt with the client key that belongs to `key_id` and `safe_serialize` the result |
 | `404` "Server key not found" | The key id is wrong, deleted, or belongs to another account | List your keys with `GET /api/keys` |
+| `429` "Too many sign-in attempts for this account" | Several failed sign-ins in a short time | Wait the `Retry-After` seconds, or reset your password |
+| Verification or reset link says "Invalid or expired" | Links work once; verification links last 24 hours, reset links 1 hour | Request a new one from the sign-in page |
+| "For your security, sign in again" when deleting a Google/GitHub account | Deleting an account without a password needs a fresh sign-in | Sign out, sign in again, then delete within 5 minutes |
 | `429` "Daily compute quota … reached" | You submitted the maximum number of jobs today | Wait until midnight UTC (`Retry-After` says how long) |
 | `429` "You have N jobs waiting or running" | Too many of your jobs are unfinished | Wait for some to finish, then resubmit |
 | `503` "The job queue is full" | The service is busy | Retry after the `Retry-After` seconds |

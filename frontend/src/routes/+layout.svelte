@@ -5,44 +5,26 @@
   import { userStore } from '#lib/stores.js';
   import { goto } from '$app/navigation';
   import { page } from '$app/state';
-  import { auth } from '#lib/api.js';
+  import { session } from '#lib/api.js';
 
-  function isTokenExpired(token: string): boolean {
-    try {
-      const [, p] = token.split('.');
-      const payload = JSON.parse(atob(p));
-      return typeof payload.exp !== 'number' || payload.exp * 1000 < Date.now();
-    } catch { return true; }
-  }
+  /** Pages that work signed out and render without the app shell. */
+  const PUBLIC: string[] = [resolve('/login'), resolve('/verify'), resolve('/reset')];
 
-  onMount(() => {
-    // An expired access token is fine while a refresh token exists: the API client
-    // refreshes it on the first 401.
-    const token = localStorage.getItem('token');
-    const hasSession = (token && !isTokenExpired(token)) || localStorage.getItem('refresh_token');
-    if (!hasSession) {
-      localStorage.removeItem('token');
-      localStorage.removeItem('refresh_token');
-      userStore.set(null);
-      if (page.url.pathname !== resolve('/login')) goto(resolve('/login'));
-    }
+  onMount(async () => {
+    if (PUBLIC.includes(page.url.pathname)) return;
+    // The session lives in an HttpOnly cookie; this turns it into an access token.
+    if (!(await session.restore())) goto(resolve('/login'));
   });
 
   async function logout() {
-    const refreshToken = localStorage.getItem('refresh_token');
-    if (refreshToken) {
-      try { await auth.logout(refreshToken); } catch {}
-    }
-    localStorage.removeItem('token');
-    localStorage.removeItem('refresh_token');
-    userStore.set(null);
+    await session.end().catch(() => {});
     goto(resolve('/login'));
   }
 </script>
 
 <!-- Read `page` in the template, not in a `$:` statement: legacy reactive
      statements do not track `$app/state`, so the shell would never update. -->
-{#if page.url.pathname === resolve('/login')}
+{#if PUBLIC.includes(page.url.pathname)}
   <slot />
 {:else}
   <div class="app">

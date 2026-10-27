@@ -1,10 +1,12 @@
+use crate::api::auth::password::{hash_password, verify_password};
+use crate::api::auth::session::{clear_refresh_cookie, revoke_all};
 use crate::api::validation::{is_strong_password, PASSWORD_REQUIREMENTS};
 use crate::config::Config;
 use crate::crypto::keys::KeyStore;
 use crate::errors::AppError;
 use crate::jobs::store::JobStore;
+use crate::middleware::jwt::AuthTime;
 use actix_web::{web, HttpMessage, HttpRequest, HttpResponse, Responder};
-use bcrypt::{hash, verify, DEFAULT_COST};
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 use std::sync::Arc;
@@ -55,11 +57,7 @@ pub async fn get_me(
     config: web::Data<Arc<Config>>,
     req: HttpRequest,
 ) -> Result<impl Responder, AppError> {
-    let user_id = req
-        .extensions()
-        .get::<String>()
-        .cloned()
-        .ok_or_else(|| AppError::unauthorized("Not authenticated"))?;
+    let user_id = user_id(&req)?;
 
     let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
 
@@ -111,149 +109,138 @@ pub async fn get_me(
     }))
 }
 
+/// The signed-in user's id, set by the JWT middleware.
+fn user_id(req: &HttpRequest) -> Result<String, AppError> {
+    req.extensions()
+        .get::<String>()
+        .cloned()
+        .ok_or_else(|| AppError::unauthorized("Not authenticated"))
+}
+
+/// How recently an account without a password must have signed in to delete
+/// itself: there is no password to re-enter, so a fresh sign-in stands in.
+const RECENT_AUTH_SECS: i64 = 5 * 60;
+
+fn signed_out_response(config: &Config, message: &str) -> HttpResponse {
+    HttpResponse::Ok()
+        .cookie(clear_refresh_cookie(config))
+        .json(serde_json::json!({ "message": message }))
+}
+
+/// `PUT /api/user/password` — changes the password and signs out every session.
 pub async fn change_password(
     pool: web::Data<SqlitePool>,
+    config: web::Data<Arc<Config>>,
     body: web::Json<ChangePasswordRequest>,
     req: HttpRequest,
-) -> Result<impl Responder, AppError> {
+) -> Result<HttpResponse, AppError> {
+    let body = body.into_inner();
     if body.current_password.len() > 128 || body.new_password.len() > 128 {
         return Err(AppError::bad_request(
             "Password exceeds maximum allowed length of 128 characters",
         ));
     }
+    let user_id = user_id(&req)?;
 
-    let user_id = req
-        .extensions()
-        .get::<String>()
-        .cloned()
-        .ok_or_else(|| AppError::unauthorized("Not authenticated"))?;
-
-    let row: Option<(String,)> = sqlx::query_as("SELECT password_hash FROM users WHERE id = ?")
-        .bind(&user_id)
-        .fetch_optional(pool.get_ref())
-        .await?;
-
-    let (password_hash,) = match row {
-        None => return Err(AppError::not_found("User not found")),
-        Some(r) => r,
-    };
-
+    let (password_hash,): (String,) =
+        sqlx::query_as("SELECT password_hash FROM users WHERE id = ?")
+            .bind(&user_id)
+            .fetch_optional(pool.get_ref())
+            .await?
+            .ok_or_else(|| AppError::not_found("User not found"))?;
     if password_hash.is_empty() {
         return Err(AppError::bad_request(
             "This account uses social login, no password to change",
         ));
     }
-
-    // Offload CPU-intensive bcrypt verification to a blocking thread.
-    let current_password = body.current_password.clone();
-    let valid = tokio::task::spawn_blocking(move || verify(current_password, &password_hash))
-        .await
-        .map_err(|e| AppError::internal(format!("Task join error: {}", e)))?
-        .map_err(|e| AppError::internal(e.to_string()))?;
-    if !valid {
+    if !verify_password(body.current_password, password_hash.clone()).await? {
         return Err(AppError::unauthorized("Current password is incorrect"));
     }
-
     if !is_strong_password(&body.new_password) {
         return Err(AppError::bad_request(PASSWORD_REQUIREMENTS));
     }
+    let new_hash = hash_password(body.new_password).await?;
 
-    // Offload CPU-intensive bcrypt hashing to a blocking thread.
-    let new_password = body.new_password.clone();
-    let new_hash = tokio::task::spawn_blocking(move || hash(new_password, DEFAULT_COST))
-        .await
-        .map_err(|e| AppError::internal(format!("Task join error: {}", e)))?
-        .map_err(|e| AppError::internal(e.to_string()))?;
+    let mut tx = pool.begin().await?;
+    // Only if the password is still the one just verified (no concurrent change).
+    let changed =
+        sqlx::query("UPDATE users SET password_hash = ? WHERE id = ? AND password_hash = ?")
+            .bind(&new_hash)
+            .bind(&user_id)
+            .bind(&password_hash)
+            .execute(&mut *tx)
+            .await?;
+    if changed.rows_affected() != 1 {
+        return Err(AppError::conflict(
+            "Your password was changed meanwhile. Try again.",
+        ));
+    }
+    revoke_all(&mut *tx, &user_id).await?;
+    tx.commit().await?;
 
-    sqlx::query("UPDATE users SET password_hash = ? WHERE id = ?")
-        .bind(&new_hash)
-        .bind(&user_id)
-        .execute(pool.get_ref())
-        .await?;
-
-    sqlx::query("DELETE FROM refresh_tokens WHERE user_id = ?")
-        .bind(&user_id)
-        .execute(pool.get_ref())
-        .await?;
-
-    Ok(HttpResponse::Ok().json(serde_json::json!({
-        "message": "Password changed. Please sign in again."
-    })))
+    Ok(signed_out_response(
+        &config,
+        "Password changed. Please sign in again.",
+    ))
 }
 
+/// `DELETE /api/user/account` — deletes the account and everything it owns.
 pub async fn delete_account(
     pool: web::Data<SqlitePool>,
+    config: web::Data<Arc<Config>>,
     store: web::Data<KeyStore>,
     jobs: web::Data<JobStore>,
     body: web::Json<DeleteAccountRequest>,
     req: HttpRequest,
-) -> Result<impl Responder, AppError> {
-    let user_id = req
-        .extensions()
-        .get::<String>()
-        .cloned()
-        .ok_or_else(|| AppError::unauthorized("Not authenticated"))?;
+) -> Result<HttpResponse, AppError> {
+    let user_id = user_id(&req)?;
+    let (password_hash,): (String,) =
+        sqlx::query_as("SELECT password_hash FROM users WHERE id = ?")
+            .bind(&user_id)
+            .fetch_optional(pool.get_ref())
+            .await?
+            .ok_or_else(|| AppError::not_found("User not found"))?;
 
-    let row: Option<(String,)> = sqlx::query_as("SELECT password_hash FROM users WHERE id = ?")
-        .bind(&user_id)
-        .fetch_optional(pool.get_ref())
-        .await?;
-
-    let (password_hash,) = match row {
-        None => return Err(AppError::not_found("User not found")),
-        Some(r) => r,
-    };
-
-    if !password_hash.is_empty() {
-        if body.password.len() > 128 {
-            return Err(AppError::forbidden("Invalid password"));
+    if password_hash.is_empty() {
+        let auth_time = req.extensions().get::<AuthTime>().map_or(0, |t| t.0);
+        if chrono::Utc::now().timestamp() - auth_time > RECENT_AUTH_SECS {
+            return Err(AppError::forbidden(
+                "For your security, sign in again, then delete your account within 5 minutes.",
+            ));
         }
-        // Offload CPU-intensive bcrypt verification to a blocking thread.
-        let password = body.password.clone();
-        let valid = tokio::task::spawn_blocking(move || verify(password, &password_hash))
-            .await
-            .map_err(|e| AppError::internal(format!("Task join error: {}", e)))?
-            .map_err(|e| AppError::internal(e.to_string()))?;
-        if !valid {
-            return Err(AppError::forbidden("Invalid password"));
-        }
+    } else if body.password.len() > 128
+        || !verify_password(body.password.clone(), password_hash).await?
+    {
+        return Err(AppError::forbidden("Invalid password"));
     }
 
+    let mut tx = pool.begin().await?;
     let key_ids: Vec<(String,)> = sqlx::query_as("SELECT id FROM server_keys WHERE user_id = ?")
         .bind(&user_id)
-        .fetch_all(pool.get_ref())
+        .fetch_all(&mut *tx)
         .await?;
-
-    // Revoke all sessions immediately (belt-and-suspenders alongside FK cascade)
-    sqlx::query("DELETE FROM refresh_tokens WHERE user_id = ?")
-        .bind(&user_id)
-        .execute(pool.get_ref())
-        .await?;
-
     let job_ids: Vec<(String,)> = sqlx::query_as("DELETE FROM jobs WHERE user_id = ? RETURNING id")
         .bind(&user_id)
-        .fetch_all(pool.get_ref())
+        .fetch_all(&mut *tx)
         .await?;
-
-    sqlx::query("DELETE FROM oauth_accounts WHERE user_id = ?")
-        .bind(&user_id)
-        .execute(pool.get_ref())
-        .await?;
-
-    sqlx::query("DELETE FROM daily_compute_usage WHERE user_id = ?")
-        .bind(&user_id)
-        .execute(pool.get_ref())
-        .await?;
-
-    sqlx::query("DELETE FROM server_keys WHERE user_id = ?")
-        .bind(&user_id)
-        .execute(pool.get_ref())
-        .await?;
-
+    // Most of these also cascade; deleting explicitly keeps the intent visible.
+    for table in [
+        "refresh_tokens",
+        "login_codes",
+        "oauth_accounts",
+        "daily_compute_usage",
+        "server_keys",
+    ] {
+        sqlx::query(&format!("DELETE FROM {table} WHERE user_id = ?"))
+            .bind(&user_id)
+            .execute(&mut *tx)
+            .await?;
+    }
     sqlx::query("DELETE FROM users WHERE id = ?")
         .bind(&user_id)
-        .execute(pool.get_ref())
+        .execute(&mut *tx)
         .await?;
+    tx.commit().await?;
 
     // Files are removed once their rows are gone, so a failure here only leaves
     // unreachable bytes on disk. A job still running finds its row gone and
@@ -270,9 +257,10 @@ pub async fn delete_account(
     })
     .await;
 
-    Ok(HttpResponse::Ok().json(serde_json::json!({
-        "message": "Account deleted successfully."
-    })))
+    Ok(signed_out_response(
+        &config,
+        "Account deleted successfully.",
+    ))
 }
 
 #[cfg(test)]

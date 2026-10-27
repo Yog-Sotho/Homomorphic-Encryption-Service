@@ -1,4 +1,6 @@
 pub mod auth;
+#[cfg(test)]
+mod auth_tests;
 pub mod compute;
 #[cfg(test)]
 mod integration_tests;
@@ -11,6 +13,7 @@ use crate::crypto::params;
 use crate::middleware;
 use actix_web::middleware::from_fn;
 use actix_web::web;
+use auth::{oauth, password, session};
 
 /// Registers every `/api` route. Shared by `main` and the integration tests so
 /// both exercise the same routing, guards and body limits.
@@ -26,26 +29,33 @@ pub fn configure(cfg: &mut web::ServiceConfig, config: &Config) {
             .route("/he/params", web::get().to(params::get_params))
             .service(
                 web::scope("/auth")
-                    .wrap(from_fn(middleware::rate_limit::rate_limit_middleware))
-                    .route("/register", web::post().to(auth::register))
-                    .route("/login", web::post().to(auth::login))
-                    .route("/verify", web::get().to(auth::verify_email))
+                    .wrap(from_fn(middleware::rate_limit::limit_auth_requests))
+                    .wrap(from_fn(middleware::origin::require_allowed_origin))
+                    .route("/register", web::post().to(password::register))
+                    .route("/login", web::post().to(password::login))
+                    .route("/verify", web::post().to(password::verify_email))
+                    .route("/verify", web::get().to(password::verify_link))
                     .route(
                         "/resend-verification",
-                        web::post().to(auth::resend_verification),
+                        web::post().to(password::resend_verification),
                     )
-                    .route("/google", web::get().to(auth::google_redirect))
-                    .route("/google/callback", web::get().to(auth::google_callback))
-                    .route("/github", web::get().to(auth::github_redirect))
-                    .route("/github/callback", web::get().to(auth::github_callback))
-                    .route("/forgot-password", web::post().to(auth::forgot_password))
+                    .route(
+                        "/forgot-password",
+                        web::post().to(password::forgot_password),
+                    )
                     .route(
                         "/forgot-password/redirect",
-                        web::get().to(auth::forgot_password_redirect),
+                        web::get().to(password::reset_link),
                     )
-                    .route("/reset-password", web::post().to(auth::reset_password))
-                    .route("/refresh", web::post().to(auth::refresh_token_endpoint))
-                    .route("/logout", web::post().to(auth::logout)),
+                    .route("/reset-password", web::post().to(password::reset_password))
+                    .route("/refresh", web::post().to(session::refresh))
+                    .route("/logout", web::post().to(session::logout))
+                    .route("/exchange", web::post().to(session::exchange))
+                    .route("/providers", web::get().to(oauth::providers))
+                    .route("/google", web::get().to(oauth::google_start))
+                    .route("/google/callback", web::get().to(oauth::google_callback))
+                    .route("/github", web::get().to(oauth::github_start))
+                    .route("/github/callback", web::get().to(oauth::github_callback)),
             )
             .service(
                 web::scope("/user")

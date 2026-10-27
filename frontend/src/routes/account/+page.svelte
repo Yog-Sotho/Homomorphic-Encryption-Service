@@ -2,7 +2,8 @@
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
   import { resolve } from '$app/paths';
-  import { ApiError, errorMessage, user, type UserProfile } from '#lib/api.js';
+  import { ApiError, errorMessage, session, user, type UserProfile } from '#lib/api.js';
+  import { isStrongPassword as isValidPassword } from '#lib/password-policy.js';
   import { userStore } from '#lib/stores.js';
 
   let profile: UserProfile | null = null;
@@ -17,7 +18,6 @@
   let showConfirmPassword = false;
   let passwordLoading = false;
   let passwordError = '';
-  let passwordSuccess = false;
 
   // Delete account
   let showDeleteConfirm = false;
@@ -31,10 +31,6 @@
   $: passwordMismatch = newPassword.length > 0 && confirmPassword.length > 0 && newPassword !== confirmPassword;
   $: usagePercent = profile ? Math.min(100, Math.round((profile.daily_usage.count / Math.max(profile.daily_usage.quota, 1)) * 100)) : 0;
   $: memberSince = profile ? formatDate(profile.created_at) : '';
-
-  function isValidPassword(p: string): boolean {
-    return p.length >= 10 && p.length <= 128 && /[A-Z]/.test(p) && /[a-z]/.test(p) && /[0-9]/.test(p) && /[^A-Za-z0-9]/.test(p);
-  }
 
   function formatDate(iso: string): string {
     try {
@@ -59,11 +55,12 @@
   });
 
   async function handleChangePassword() {
-    passwordLoading = true; passwordError = ''; passwordSuccess = false;
+    passwordLoading = true; passwordError = '';
     try {
-      await user.changePassword(currentPassword, newPassword);
-      passwordSuccess = true;
-      currentPassword = ''; newPassword = ''; confirmPassword = '';
+      const res = await user.changePassword(currentPassword, newPassword);
+      // The server ended every session, this one included.
+      session.clear();
+      goto(resolve('/login') + '#notice=' + encodeURIComponent(res.message));
     } catch (e) {
       passwordError = errorMessage(e, 'Failed to change password.');
     } finally { passwordLoading = false; }
@@ -74,9 +71,7 @@
     deleteLoading = true; deleteError = '';
     try {
       await user.deleteAccount(deletePassword);
-      localStorage.removeItem('token');
-      localStorage.removeItem('refresh_token');
-      userStore.set(null);
+      session.clear();
       goto(resolve('/login'));
     } catch (e) {
       deleteError = errorMessage(e, 'Failed to delete account.');
@@ -215,9 +210,6 @@
 
         {#if passwordError}
           <p class="field-error" role="alert">{passwordError}</p>
-        {/if}
-        {#if passwordSuccess}
-          <p class="field-success">Password updated successfully.</p>
         {/if}
 
         <div class="form-actions">
@@ -362,7 +354,6 @@
 
   /* ── Messages ── */
   .field-error { font-size: 0.8rem; color: var(--error); margin-bottom: 0.75rem; }
-  .field-success { font-size: 0.8rem; color: var(--success); margin-bottom: 0.75rem; }
   .err-text { color: var(--error); font-size: 0.9rem; }
 
   /* ── Danger zone ── */

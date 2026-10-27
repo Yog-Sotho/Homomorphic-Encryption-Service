@@ -5,32 +5,38 @@ import { BACKEND_LOG } from '../playwright.fullstack.config.js';
 
 const PASSWORD = 'Correct-horse-battery-1';
 
-/** Registers through the real API and follows the verification link from the backend log. */
-async function registerVerifiedUser(request: import('@playwright/test').APIRequestContext) {
+/**
+ * Registers through the real API and returns the verification link the backend
+ * logged (SMTP is not configured in this suite).
+ */
+async function register(request: import('@playwright/test').APIRequestContext) {
   const email = `e2e-${Date.now()}@example.com`;
-  const register = await request.post('/api/auth/register', { data: { email, password: PASSWORD } });
-  expect(register.status()).toBe(202);
+  const response = await request.post('/api/auth/register', { data: { email, password: PASSWORD } });
+  expect(response.status()).toBe(202);
 
   let link: string | undefined;
   for (let i = 0; i < 50 && !link; i++) {
     const log = await readFile(BACKEND_LOG, 'utf8').catch(() => '');
-    link = log.match(new RegExp(`verification URL for ${email.replace('.', '\\.')}: (\\S+)`))?.[1];
+    link = log.match(new RegExp(`for ${email.replace('.', '\\.')}: (\\S+)`))?.[1];
     if (!link) await new Promise((r) => setTimeout(r, 100));
   }
-  expect(link, 'verification link in backend log').toBeTruthy();
-  const verify = await request.get(new URL(link!).pathname + new URL(link!).search, {
-    maxRedirects: 0
-  });
-  expect(verify.status()).toBe(302);
-  return email;
+  expect(link, 'verification link in backend log').toMatch(/\/heaas\/verify#token=/);
+  return { email, link: link! };
 }
 
 test('register, generate a key in the browser and compute on encrypted data', async ({ page, request }) => {
   const problems = trackProblems(page);
-  const email = await registerVerifiedUser(request);
+  const { email, link } = await register(request);
 
-  await signIn(page, email, PASSWORD);
+  // Following the emailed link verifies the address and signs in.
+  await page.goto(link);
   await expect(page).toHaveURL(/\/heaas\/dashboard$/);
+  // The session survives a reload through the HttpOnly refresh cookie alone.
+  await page.reload();
+  await expect(page).toHaveURL(/\/heaas\/dashboard$/);
+  await expect(page.locator('.user-chip')).toHaveText(email);
+  const scriptVisible = await page.evaluate(() => document.cookie);
+  expect(scriptVisible).not.toContain('heaas_refresh');
 
   await page.getByRole('button', { name: 'Generate encryption key' }).click();
   await expect(page.getByText('Ready')).toBeVisible({ timeout: 180_000 });
@@ -51,5 +57,15 @@ test('register, generate a key in the browser and compute on encrypted data', as
   await expect(page.getByTestId('result-value')).toHaveText('65529', { timeout: 120_000 });
   await expect(page.getByText('Matches expected')).toBeVisible();
 
-  expect(problems).toEqual([]);
+  // Signing out ends the session for good: a reload goes back to sign-in.
+  await page.getByRole('button', { name: 'Sign out' }).click();
+  await expect(page).toHaveURL(/\/heaas\/login$/);
+  await page.goto('/heaas/dashboard');
+  await expect(page).toHaveURL(/\/heaas\/login$/);
+
+  // Password sign-in works for the verified account.
+  await signIn(page, email, PASSWORD);
+  await expect(page).toHaveURL(/\/heaas\/dashboard$/);
+
+  expect(problems.filter((p) => !p.includes('401'))).toEqual([]);
 });

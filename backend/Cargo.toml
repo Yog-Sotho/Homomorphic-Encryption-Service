@@ -27,17 +27,26 @@ log = "0.4"
 dotenvy = "0.15"
 thiserror = "2"
 base64 = "0.22"
-dashmap = "6"
 num_cpus = "1"
 tfhe = { version = "1.8", features = ["integer"] }
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
 url = "2"
 lettre = { version = "0.11", default-features = false, features = ["smtp-transport", "tokio1-rustls-tls", "builder", "hostname", "pool"] }
 sha2 = "0.10"
+# Session and OAuth hardening: keyed rate limits, trusted-proxy CIDRs, HMAC-signed
+# OAuth cookies with keys derived from JWT_SECRET (HKDF), OS randomness for tokens.
+governor = "0.10"
+ipnet = "2"
+hmac = "0.12"
+hkdf = "0.12"
+subtle = "2"
+getrandom = "0.3"
 
 [dev-dependencies]
 # Already in the tree via actix-web; named here for the test service request type.
 actix-http = "3"
+# Stands in for the Google and GitHub OAuth endpoints.
+wiremock = "0.6"
 
 # TFHE-rs is unusably slow without optimisation, so dependencies are built
 # release-like in dev/test while our own crate stays fast to compile. Debuginfo,
