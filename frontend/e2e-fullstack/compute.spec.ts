@@ -12,7 +12,7 @@ const KEY_PASSPHRASE = 'quiet-meadow-lantern-9';
  */
 async function register(request: import('@playwright/test').APIRequestContext) {
   const email = `e2e-${Date.now()}@example.com`;
-  const response = await request.post('/api/auth/register', { data: { email, password: PASSWORD } });
+  const response = await request.post('/api/v1/auth/register', { data: { email, password: PASSWORD } });
   expect(response.status()).toBe(202);
 
   let link: string | undefined;

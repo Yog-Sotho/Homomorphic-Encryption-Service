@@ -1,9 +1,13 @@
 use dotenvy::dotenv;
 use hkdf::Hkdf;
 use ipnet::IpNet;
+use lettre::message::Mailbox;
 use sha2::Sha256;
 use std::env;
+use std::fmt;
+use std::ops::RangeInclusive;
 use std::path::PathBuf;
+use std::str::FromStr;
 use std::time::Duration;
 
 /// HS256 needs a key at least as long as its 256-bit output to be full strength.
@@ -35,7 +39,7 @@ impl SecretKeys {
 /// Requests per client before the limiters answer 429 (see `middleware::rate_limit`).
 #[derive(Clone)]
 pub struct RateLimitSettings {
-    /// Any `/api/auth` request, per client IP, per minute.
+    /// Any `/api/v1/auth` request, per client IP, per minute.
     pub auth_per_minute: u32,
     /// Sign-in attempts per email address, per 15 minutes.
     pub logins_per_email: u32,
@@ -92,16 +96,70 @@ pub fn parse_trusted_proxies(value: &str) -> Result<Vec<IpNet>, String> {
         .collect()
 }
 
-fn env_flag(name: &str, default: bool) -> bool {
-    match env::var(name).map(|v| v.trim().to_ascii_lowercase()) {
-        Ok(v) if ["1", "true", "yes", "on"].contains(&v.as_str()) => true,
-        Ok(v) if ["0", "false", "no", "off"].contains(&v.as_str()) => false,
-        _ => default,
+/// Compressed TFHE server keys are ~60 MB with the default parameters.
+const DEFAULT_MAX_SERVER_KEY_BYTES: u64 = 80 * 1024 * 1024;
+
+/// How long the credentials the server hands out stay valid.
+#[derive(Clone)]
+pub struct TokenLifetimes {
+    /// Access tokens cannot be revoked, so they stay short.
+    pub access_token_secs: i64,
+    /// A sign-in lasts this long without a password (refresh cookie).
+    pub session_days: i64,
+    pub verify_link_hours: i64,
+    pub reset_link_minutes: i64,
+}
+
+impl Default for TokenLifetimes {
+    fn default() -> Self {
+        TokenLifetimes {
+            access_token_secs: 15 * 60,
+            session_days: 30,
+            verify_link_hours: 24,
+            reset_link_minutes: 60,
+        }
     }
 }
 
-/// Compressed TFHE server keys are ~60 MB with the default parameters.
-const DEFAULT_MAX_SERVER_KEY_BYTES: u64 = 80 * 1024 * 1024;
+/// How the SMTP connection is secured.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SmtpTls {
+    /// Plain connection upgraded with STARTTLS, which is required (port 587).
+    StartTls,
+    /// TLS from the first byte (port 465).
+    Implicit,
+    /// No encryption: only for a relay on the same host or network.
+    None,
+}
+
+impl SmtpTls {
+    fn default_port(self) -> u16 {
+        match self {
+            SmtpTls::StartTls => 587,
+            SmtpTls::Implicit => 465,
+            SmtpTls::None => 25,
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct SmtpSettings {
+    pub host: String,
+    pub port: u16,
+    pub tls: SmtpTls,
+    /// User name and password, when the relay requires them.
+    pub credentials: Option<(String, String)>,
+}
+
+#[derive(Clone)]
+pub struct MailSettings {
+    pub from: Mailbox,
+    /// `None`: no email is sent (links may be logged, see `log_links`).
+    pub smtp: Option<SmtpSettings>,
+    /// Log verification and reset links when SMTP is not configured. On by
+    /// default in debug builds only: the links are credentials.
+    pub log_links: bool,
+}
 
 pub struct Config {
     pub database_url: String,
@@ -115,11 +173,10 @@ pub struct Config {
     /// Mark session cookies `Secure` (sent over HTTPS only; browsers also accept
     /// them on http://localhost). Turn off only for plain-HTTP test setups.
     pub cookie_secure: bool,
-    /// Log verification and reset links when SMTP is not configured. On by
-    /// default in debug builds only: the links are credentials.
-    pub log_email_links: bool,
     pub rate_limits: RateLimitSettings,
+    pub ttl: TokenLifetimes,
     pub oauth: OAuthEndpoints,
+    pub mail: MailSettings,
     /// Directory holding users' uploaded compressed server keys.
     pub key_store_dir: PathBuf,
     /// Largest accepted compressed server key upload.
@@ -148,138 +205,326 @@ pub struct Config {
     pub google_client_secret: Option<String>,
     pub github_client_id: Option<String>,
     pub github_client_secret: Option<String>,
-    pub smtp_host: Option<String>,
-    pub smtp_port: u16,
-    pub smtp_user: Option<String>,
-    pub smtp_pass: Option<String>,
-    pub from_email: String,
     pub daily_compute_quota: usize,
 }
 
-impl Config {
-    pub fn init() -> Self {
-        dotenv().ok();
+/// Every problem found in the environment, so one start reports them all.
+#[derive(Debug)]
+pub struct ConfigError(pub Vec<String>);
 
-        let jwt_secret =
-            env::var("JWT_SECRET").expect("FATAL: JWT_SECRET environment variable must be set.");
-        assert!(
-            jwt_secret.len() >= MIN_JWT_SECRET_BYTES,
-            "FATAL: JWT_SECRET must be at least {MIN_JWT_SECRET_BYTES} bytes \
-             (e.g. `openssl rand -base64 48`)."
-        );
+impl fmt::Display for ConfigError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for problem in &self.0 {
+            writeln!(f, "  - {problem}")?;
+        }
+        Ok(())
+    }
+}
 
-        let app_base_url = env::var("APP_BASE_URL")
-            .unwrap_or_else(|_| "http://localhost:3000".to_string())
-            .trim_end_matches('/')
-            .to_string();
-        let mut allowed_origins: Vec<String> =
-            vec![origin_of(&app_base_url).expect("FATAL: APP_BASE_URL must be an http(s) URL")];
-        let extra_origins = env::var("ALLOWED_ORIGINS").unwrap_or_else(|_| {
-            if cfg!(debug_assertions) {
-                "http://localhost:3000,http://localhost:5173".to_string()
-            } else {
-                String::new()
-            }
-        });
-        for origin in parse_list(&extra_origins) {
-            let origin = origin_of(origin)
-                .unwrap_or_else(|| panic!("FATAL: invalid ALLOWED_ORIGINS entry {origin:?}"));
-            if !allowed_origins.contains(&origin) {
-                allowed_origins.push(origin);
+impl std::error::Error for ConfigError {}
+
+/// Reads settings from environment variables, recording what is invalid
+/// instead of stopping at (or silently defaulting past) the first problem.
+/// Empty values count as unset, as Compose passes `VAR=${VAR:-}` through.
+struct Vars<F> {
+    lookup: F,
+    errors: Vec<String>,
+}
+
+impl<F: Fn(&str) -> Option<String>> Vars<F> {
+    fn get(&self, name: &str) -> Option<String> {
+        (self.lookup)(name)
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+    }
+
+    fn text(&self, name: &str, default: &str) -> String {
+        self.get(name).unwrap_or_else(|| default.to_string())
+    }
+
+    fn required(&mut self, name: &str, hint: &str) -> Option<String> {
+        let value = self.get(name);
+        if value.is_none() {
+            self.errors.push(format!("{name} must be set ({hint})"));
+        }
+        value
+    }
+
+    fn number<T>(&mut self, name: &str, default: T, range: RangeInclusive<T>) -> T
+    where
+        T: FromStr + PartialOrd + fmt::Display + Copy,
+    {
+        let Some(raw) = self.get(name) else {
+            return default;
+        };
+        match raw.parse::<T>() {
+            Ok(value) if range.contains(&value) => value,
+            _ => {
+                self.errors.push(format!(
+                    "{name} must be a whole number from {} to {}, not {raw:?}",
+                    range.start(),
+                    range.end()
+                ));
+                default
             }
         }
-        let trusted_proxies =
-            parse_trusted_proxies(&env::var("TRUSTED_PROXIES").unwrap_or_default())
-                .unwrap_or_else(|e| panic!("FATAL: {e}"));
+    }
 
-        let limit = |name: &str, default: u32| {
-            env::var(name)
-                .ok()
-                .and_then(|v| v.parse::<u32>().ok())
-                .unwrap_or(default)
-                .max(1)
+    fn flag(&mut self, name: &str, default: bool) -> bool {
+        let Some(raw) = self.get(name) else {
+            return default;
         };
+        match raw.to_ascii_lowercase().as_str() {
+            "1" | "true" | "yes" | "on" => true,
+            "0" | "false" | "no" | "off" => false,
+            _ => {
+                self.errors
+                    .push(format!("{name} must be true or false, not {raw:?}"));
+                default
+            }
+        }
+    }
+
+    /// Both or neither of a client id and its secret.
+    fn pair(&mut self, id: &str, secret: &str) -> (Option<String>, Option<String>) {
+        match (self.get(id), self.get(secret)) {
+            (Some(a), Some(b)) => (Some(a), Some(b)),
+            (None, None) => (None, None),
+            _ => {
+                self.errors
+                    .push(format!("{id} and {secret} must be set together"));
+                (None, None)
+            }
+        }
+    }
+}
+
+impl Config {
+    /// Reads the configuration from the environment (and `.env`).
+    pub fn from_env() -> Result<Self, ConfigError> {
+        dotenv().ok();
+        Self::from_vars(|name| env::var(name).ok(), cfg!(debug_assertions))
+    }
+
+    /// `debug_build` relaxes what local development needs: a default
+    /// APP_BASE_URL, the Vite dev server's origins, logged email links.
+    fn from_vars(
+        lookup: impl Fn(&str) -> Option<String>,
+        debug_build: bool,
+    ) -> Result<Self, ConfigError> {
+        let mut vars = Vars {
+            lookup,
+            errors: Vec::new(),
+        };
+
+        let jwt_secret = vars
+            .required("JWT_SECRET", "e.g. `openssl rand -base64 48`")
+            .unwrap_or_default();
+        if !jwt_secret.is_empty() && jwt_secret.len() < MIN_JWT_SECRET_BYTES {
+            vars.errors.push(format!(
+                "JWT_SECRET must be at least {MIN_JWT_SECRET_BYTES} bytes (e.g. `openssl rand -base64 48`)"
+            ));
+        }
+
+        let app_base_url = if debug_build {
+            Some(vars.text("APP_BASE_URL", "http://localhost:3000"))
+        } else {
+            vars.required(
+                "APP_BASE_URL",
+                "the public URL of the app, used in emailed links and OAuth callbacks",
+            )
+        }
+        .map(|url| url.trim_end_matches('/').to_string())
+        .unwrap_or_default();
+        let mut allowed_origins = Vec::new();
+        if !app_base_url.is_empty() {
+            match url::Url::parse(&app_base_url) {
+                Ok(url)
+                    if url.query().is_none()
+                        && url.fragment().is_none()
+                        && origin_of(&app_base_url).is_some() =>
+                {
+                    allowed_origins.push(origin_of(&app_base_url).unwrap_or_default())
+                }
+                _ => vars.errors.push(format!(
+                    "APP_BASE_URL must be an http(s) URL without query or fragment, not {app_base_url:?}"
+                )),
+            }
+        }
+        let default_origins = if debug_build {
+            "http://localhost:3000,http://localhost:5173"
+        } else {
+            ""
+        };
+        for entry in parse_list(&vars.text("ALLOWED_ORIGINS", default_origins)) {
+            match origin_of(entry) {
+                Some(origin) if !allowed_origins.contains(&origin) => allowed_origins.push(origin),
+                Some(_) => {}
+                None => vars
+                    .errors
+                    .push(format!("invalid ALLOWED_ORIGINS entry {entry:?}")),
+            }
+        }
+        let trusted_proxies = parse_trusted_proxies(&vars.text("TRUSTED_PROXIES", ""))
+            .unwrap_or_else(|e| {
+                vars.errors.push(e);
+                Vec::new()
+            });
+
+        let database_url = vars.text("DATABASE_URL", "sqlite://./he_saas.db");
+        if !database_url.starts_with("sqlite:") {
+            vars.errors.push(format!(
+                "DATABASE_URL must be a sqlite: URL, not {database_url:?}"
+            ));
+        }
+        let server_addr = vars.text("SERVER_ADDR", "127.0.0.1:8080");
+        if !server_addr
+            .rsplit_once(':')
+            .is_some_and(|(host, port)| !host.is_empty() && port.parse::<u16>().is_ok())
+        {
+            vars.errors.push(format!(
+                "SERVER_ADDR must be host:port, not {server_addr:?}"
+            ));
+        }
+
         let rate_limits = RateLimitSettings {
-            auth_per_minute: limit("RATE_LIMIT_AUTH_PER_MINUTE", 30),
-            logins_per_email: limit("RATE_LIMIT_LOGINS_PER_EMAIL", 5),
-            emails_per_ip_per_hour: limit("RATE_LIMIT_EMAILS_PER_IP_PER_HOUR", 10),
-            emails_per_address_per_hour: limit("RATE_LIMIT_EMAILS_PER_ADDRESS_PER_HOUR", 3),
+            auth_per_minute: vars.number("RATE_LIMIT_AUTH_PER_MINUTE", 30, 1..=100_000),
+            logins_per_email: vars.number("RATE_LIMIT_LOGINS_PER_EMAIL", 5, 1..=1_000),
+            emails_per_ip_per_hour: vars.number(
+                "RATE_LIMIT_EMAILS_PER_IP_PER_HOUR",
+                10,
+                1..=10_000,
+            ),
+            emails_per_address_per_hour: vars.number(
+                "RATE_LIMIT_EMAILS_PER_ADDRESS_PER_HOUR",
+                3,
+                1..=1_000,
+            ),
+        };
+        let defaults = TokenLifetimes::default();
+        let ttl = TokenLifetimes {
+            access_token_secs: vars.number(
+                "ACCESS_TOKEN_TTL_SECS",
+                defaults.access_token_secs,
+                60..=3_600,
+            ),
+            session_days: vars.number("SESSION_TTL_DAYS", defaults.session_days, 1..=365),
+            verify_link_hours: vars.number(
+                "VERIFY_LINK_TTL_HOURS",
+                defaults.verify_link_hours,
+                1..=168,
+            ),
+            reset_link_minutes: vars.number(
+                "RESET_LINK_TTL_MINUTES",
+                defaults.reset_link_minutes,
+                5..=1_440,
+            ),
         };
 
-        let max_server_key_bytes = env::var("MAX_SERVER_KEY_BYTES")
-            .ok()
-            .and_then(|v| v.parse::<u64>().ok())
-            .unwrap_or(DEFAULT_MAX_SERVER_KEY_BYTES);
+        let mail = Self::mail_settings(&mut vars, debug_build);
+        let (google_client_id, google_client_secret) =
+            vars.pair("GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET");
+        let (github_client_id, github_client_secret) =
+            vars.pair("GITHUB_CLIENT_ID", "GITHUB_CLIENT_SECRET");
 
-        let max_keys_per_user = env::var("MAX_KEYS_PER_USER")
-            .ok()
-            .and_then(|v| v.parse::<i64>().ok())
-            .unwrap_or(2)
-            .max(1);
-
-        let job_number = |name: &str, default: i64| {
-            env::var(name)
-                .ok()
-                .and_then(|v| v.parse::<i64>().ok())
-                .unwrap_or(default)
-                .max(1)
-        };
-
-        let key_cache_capacity = env::var("KEY_CACHE_CAPACITY")
-            .ok()
-            .and_then(|v| v.parse::<usize>().ok())
-            .unwrap_or(2)
-            .max(1);
-
-        let smtp_port = env::var("SMTP_PORT")
-            .ok()
-            .and_then(|v| v.parse::<u16>().ok())
-            .unwrap_or(587);
-
-        let daily_compute_quota = env::var("DAILY_COMPUTE_QUOTA")
-            .ok()
-            .and_then(|v| v.parse::<usize>().ok())
-            .unwrap_or(100);
-
-        Config {
-            database_url: env::var("DATABASE_URL")
-                .unwrap_or_else(|_| "sqlite://./he_saas.db".to_string()),
+        let config = Config {
+            database_url,
             keys: SecretKeys::derive(&jwt_secret),
-            server_addr: env::var("SERVER_ADDR").unwrap_or_else(|_| "127.0.0.1:8080".to_string()),
+            server_addr,
             allowed_origins,
             trusted_proxies,
-            cookie_secure: env_flag("COOKIE_SECURE", true),
-            log_email_links: env_flag("LOG_EMAIL_LINKS", cfg!(debug_assertions)),
+            cookie_secure: vars.flag("COOKIE_SECURE", true),
             rate_limits,
+            ttl,
             oauth: OAuthEndpoints::default(),
-            key_store_dir: env::var("KEY_STORE_DIR")
-                .unwrap_or_else(|_| "./data/keys".to_string())
-                .into(),
-            max_server_key_bytes,
-            max_keys_per_user,
-            key_cache_capacity,
-            job_store_dir: env::var("JOB_STORE_DIR")
-                .unwrap_or_else(|_| "./data/jobs".to_string())
-                .into(),
-            he_workers: job_number("HE_WORKERS", 2) as usize,
-            job_timeout: Duration::from_secs(job_number("JOB_TIMEOUT_SECS", 300) as u64),
-            max_job_attempts: job_number("MAX_JOB_ATTEMPTS", 3),
-            max_queued_jobs: job_number("MAX_QUEUED_JOBS", 1000),
-            max_active_jobs_per_user: job_number("MAX_ACTIVE_JOBS_PER_USER", 10),
-            job_retention_days: job_number("JOB_RETENTION_DAYS", 7),
+            mail,
+            key_store_dir: vars.text("KEY_STORE_DIR", "./data/keys").into(),
+            max_server_key_bytes: vars.number(
+                "MAX_SERVER_KEY_BYTES",
+                DEFAULT_MAX_SERVER_KEY_BYTES,
+                1024 * 1024..=heaas_core::params::MAX_SERVER_KEY_BYTES,
+            ),
+            max_keys_per_user: vars.number("MAX_KEYS_PER_USER", 2, 1..=100),
+            key_cache_capacity: vars.number("KEY_CACHE_CAPACITY", 2, 1..=64),
+            job_store_dir: vars.text("JOB_STORE_DIR", "./data/jobs").into(),
+            he_workers: vars.number("HE_WORKERS", 2, 1..=256),
+            job_timeout: Duration::from_secs(vars.number("JOB_TIMEOUT_SECS", 300, 1..=86_400)),
+            max_job_attempts: vars.number("MAX_JOB_ATTEMPTS", 3, 1..=10),
+            max_queued_jobs: vars.number("MAX_QUEUED_JOBS", 1000, 1..=1_000_000),
+            max_active_jobs_per_user: vars.number("MAX_ACTIVE_JOBS_PER_USER", 10, 1..=10_000),
+            job_retention_days: vars.number("JOB_RETENTION_DAYS", 7, 1..=3_650),
             app_base_url,
-            google_client_id: env::var("GOOGLE_CLIENT_ID").ok(),
-            google_client_secret: env::var("GOOGLE_CLIENT_SECRET").ok(),
-            github_client_id: env::var("GITHUB_CLIENT_ID").ok(),
-            github_client_secret: env::var("GITHUB_CLIENT_SECRET").ok(),
-            smtp_host: env::var("SMTP_HOST").ok(),
-            smtp_port,
-            smtp_user: env::var("SMTP_USER").ok(),
-            smtp_pass: env::var("SMTP_PASS").ok(),
-            from_email: env::var("FROM_EMAIL")
-                .unwrap_or_else(|_| "noreply@heaas.local".to_string()),
-            daily_compute_quota,
+            google_client_id,
+            google_client_secret,
+            github_client_id,
+            github_client_secret,
+            daily_compute_quota: vars.number("DAILY_COMPUTE_QUOTA", 100, 1..=1_000_000),
+        };
+        if vars.errors.is_empty() {
+            Ok(config)
+        } else {
+            Err(ConfigError(vars.errors))
         }
+    }
+
+    fn mail_settings(
+        vars: &mut Vars<impl Fn(&str) -> Option<String>>,
+        debug_build: bool,
+    ) -> MailSettings {
+        let smtp_host = vars.get("SMTP_HOST");
+        let from = match vars.get("FROM_EMAIL") {
+            Some(raw) => raw.parse::<Mailbox>().unwrap_or_else(|_| {
+                vars.errors.push(format!(
+                    "FROM_EMAIL must be an address like \"HEaaS <noreply@example.com>\", not {raw:?}"
+                ));
+                Self::placeholder_sender()
+            }),
+            None => {
+                if smtp_host.is_some() {
+                    vars.errors
+                        .push("FROM_EMAIL must be set when SMTP_HOST is".to_string());
+                }
+                Self::placeholder_sender()
+            }
+        };
+        let tls = match vars
+            .get("SMTP_TLS")
+            .map(|v| v.to_ascii_lowercase())
+            .as_deref()
+        {
+            None | Some("starttls") => SmtpTls::StartTls,
+            Some("implicit") | Some("tls") => SmtpTls::Implicit,
+            Some("none") => SmtpTls::None,
+            Some(other) => {
+                vars.errors.push(format!(
+                    "SMTP_TLS must be starttls, implicit or none, not {other:?}"
+                ));
+                SmtpTls::StartTls
+            }
+        };
+        let port = vars.number("SMTP_PORT", tls.default_port(), 1..=u16::MAX);
+        let credentials = match vars.pair("SMTP_USER", "SMTP_PASS") {
+            (Some(user), Some(pass)) => Some((user, pass)),
+            _ => None,
+        };
+        MailSettings {
+            from,
+            smtp: smtp_host.map(|host| SmtpSettings {
+                host,
+                port,
+                tls,
+                credentials,
+            }),
+            log_links: vars.flag("LOG_EMAIL_LINKS", debug_build),
+        }
+    }
+
+    /// The sender when no email is sent at all (SMTP unset).
+    fn placeholder_sender() -> Mailbox {
+        Mailbox::new(
+            None,
+            lettre::Address::new("noreply", "heaas.local").expect("valid address"),
+        )
     }
 }
 
@@ -295,7 +540,6 @@ impl Config {
             allowed_origins: vec!["http://localhost:3000".to_string()],
             trusted_proxies: vec![],
             cookie_secure: true,
-            log_email_links: true,
             // High enough that functional tests never hit them; the rate-limit
             // tests set their own.
             rate_limits: RateLimitSettings {
@@ -304,7 +548,13 @@ impl Config {
                 emails_per_ip_per_hour: 10_000,
                 emails_per_address_per_hour: 10_000,
             },
+            ttl: TokenLifetimes::default(),
             oauth: OAuthEndpoints::default(),
+            mail: MailSettings {
+                from: Self::placeholder_sender(),
+                smtp: None,
+                log_links: true,
+            },
             key_store_dir: data_dir.join("keys"),
             max_server_key_bytes: DEFAULT_MAX_SERVER_KEY_BYTES,
             max_keys_per_user: 2,
@@ -321,11 +571,6 @@ impl Config {
             google_client_secret: None,
             github_client_id: None,
             github_client_secret: None,
-            smtp_host: None,
-            smtp_port: 587,
-            smtp_user: None,
-            smtp_pass: None,
-            from_email: "noreply@heaas.local".to_string(),
             daily_compute_quota: 100,
         }
     }
@@ -364,5 +609,148 @@ mod tests {
         assert!(proxies[1].contains(&"127.0.0.1".parse::<std::net::IpAddr>().unwrap()));
         assert!(parse_trusted_proxies("10.0.0.0/33").is_err());
         assert!(parse_trusted_proxies("").unwrap().is_empty());
+    }
+
+    const SECRET: &str = "a-secret-that-is-at-least-32-bytes-long";
+
+    fn from(vars: &[(&str, &str)], debug_build: bool) -> Result<Config, ConfigError> {
+        let vars: std::collections::HashMap<String, String> = vars
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        Config::from_vars(|name| vars.get(name).cloned(), debug_build)
+    }
+
+    fn problems(vars: &[(&str, &str)], debug_build: bool) -> Vec<String> {
+        match from(vars, debug_build) {
+            Ok(_) => Vec::new(),
+            Err(e) => e.0,
+        }
+    }
+
+    #[test]
+    fn defaults_apply_to_unset_and_empty_variables() {
+        let config = from(
+            &[
+                ("JWT_SECRET", SECRET),
+                ("HE_WORKERS", ""),
+                ("SMTP_PORT", " "),
+            ],
+            true,
+        )
+        .unwrap();
+        assert_eq!(config.he_workers, 2);
+        assert_eq!(config.app_base_url, "http://localhost:3000");
+        assert_eq!(config.ttl.access_token_secs, 900);
+        assert_eq!(config.rate_limits.auth_per_minute, 30);
+        assert!(config.mail.smtp.is_none());
+        assert!(config.mail.log_links);
+        assert!(config
+            .allowed_origins
+            .contains(&"http://localhost:5173".to_string()));
+    }
+
+    #[test]
+    fn every_invalid_value_is_reported_at_once() {
+        let found = problems(
+            &[
+                ("JWT_SECRET", "short"),
+                ("HE_WORKERS", "0"),
+                ("JOB_TIMEOUT_SECS", "5m"),
+                ("RATE_LIMIT_AUTH_PER_MINUTE", "-1"),
+                ("SESSION_TTL_DAYS", "1000"),
+                ("COOKIE_SECURE", "maybe"),
+                ("ALLOWED_ORIGINS", "https://ok.example,nonsense"),
+                ("TRUSTED_PROXIES", "10.0.0.0/33"),
+                ("GOOGLE_CLIENT_ID", "id-without-secret"),
+                ("DATABASE_URL", "postgres://db"),
+                ("SERVER_ADDR", "8080"),
+            ],
+            true,
+        );
+        for name in [
+            "JWT_SECRET",
+            "HE_WORKERS",
+            "JOB_TIMEOUT_SECS",
+            "RATE_LIMIT_AUTH_PER_MINUTE",
+            "SESSION_TTL_DAYS",
+            "COOKIE_SECURE",
+            "ALLOWED_ORIGINS",
+            "TRUSTED_PROXIES",
+            "GOOGLE_CLIENT_ID",
+            "DATABASE_URL",
+            "SERVER_ADDR",
+        ] {
+            assert!(
+                found.iter().any(|p| p.contains(name)),
+                "{name} not reported in {found:#?}"
+            );
+        }
+        assert_eq!(found.len(), 11, "{found:#?}");
+    }
+
+    #[test]
+    fn release_builds_need_the_public_url_and_never_log_links() {
+        assert_eq!(
+            problems(&[("JWT_SECRET", SECRET)], false),
+            vec!["APP_BASE_URL must be set (the public URL of the app, used in emailed links and OAuth callbacks)"]
+        );
+        let config = from(
+            &[
+                ("JWT_SECRET", SECRET),
+                ("APP_BASE_URL", "https://heaas.example/"),
+            ],
+            false,
+        )
+        .unwrap();
+        assert_eq!(config.app_base_url, "https://heaas.example");
+        assert_eq!(config.allowed_origins, vec!["https://heaas.example"]);
+        assert!(!config.mail.log_links);
+        assert!(!problems(
+            &[
+                ("JWT_SECRET", SECRET),
+                ("APP_BASE_URL", "https://heaas.example/?x=1")
+            ],
+            false
+        )
+        .is_empty());
+    }
+
+    #[test]
+    fn smtp_settings_are_checked_together() {
+        let base = [("JWT_SECRET", SECRET), ("SMTP_HOST", "smtp.example")];
+        assert_eq!(
+            problems(&base, true),
+            vec!["FROM_EMAIL must be set when SMTP_HOST is"]
+        );
+
+        let config = from(
+            &[
+                base[0],
+                base[1],
+                ("FROM_EMAIL", "HEaaS <noreply@heaas.example>"),
+                ("SMTP_TLS", "implicit"),
+                ("SMTP_USER", "mailer"),
+                ("SMTP_PASS", "hunter2"),
+            ],
+            true,
+        )
+        .unwrap();
+        let smtp = config.mail.smtp.unwrap();
+        assert_eq!((smtp.tls, smtp.port), (SmtpTls::Implicit, 465));
+        assert_eq!(smtp.credentials.unwrap().0, "mailer");
+        assert_eq!(config.mail.from.email.to_string(), "noreply@heaas.example");
+
+        let found = problems(
+            &[
+                base[0],
+                base[1],
+                ("FROM_EMAIL", "not an address"),
+                ("SMTP_TLS", "ssl3"),
+                ("SMTP_USER", "mailer"),
+            ],
+            true,
+        );
+        assert_eq!(found.len(), 3, "{found:#?}");
     }
 }

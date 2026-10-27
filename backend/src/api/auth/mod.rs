@@ -1,4 +1,4 @@
-//! `/api/auth`: accounts, sessions and sign-in.
+//! `/api/v1/auth`: accounts, sessions and sign-in.
 //!
 //! - [`session`]: access tokens, the refresh cookie and its rotation.
 //! - [`password`]: email/password accounts, email verification, password reset.
@@ -15,7 +15,6 @@ pub use session::make_jwt;
 
 use crate::config::Config;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 /// Longest token accepted from a client; real ones are 43 characters.
@@ -39,12 +38,7 @@ pub(crate) fn app_url(config: &Config, path: &str) -> String {
     format!("{}/heaas{path}", config.app_base_url)
 }
 
-#[derive(Debug, Serialize, sqlx::FromRow)]
-pub struct UserPublic {
-    pub id: String,
-    pub email: String,
-    pub created_at: chrono::NaiveDateTime,
-}
+pub use heaas_core::api::UserPublic;
 
 #[cfg(test)]
 mod tests {

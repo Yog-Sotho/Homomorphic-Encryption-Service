@@ -114,6 +114,9 @@ impl TestEnv {
                 .app_data(self.notifier.clone())
                 .app_data(web::Data::new(RateLimits::new(&self.config)))
                 .app_data(web::Data::new(crate::api::auth::oauth::http_client()))
+                .app_data(web::Data::new(
+                    crate::api::auth::email::Mailer::new(&self.config.mail).unwrap(),
+                ))
                 .configure(move |cfg| api::configure(cfg, &config)),
         )
         .await
@@ -212,7 +215,7 @@ async fn upload_key(
     body: &[u8],
 ) -> ServiceResponse {
     let req = test::TestRequest::post()
-        .uri("/api/keys")
+        .uri("/api/v1/keys")
         .insert_header(("Authorization", token))
         .insert_header(("Content-Type", "application/octet-stream"))
         .set_payload(body.to_vec())
@@ -226,7 +229,7 @@ async fn submit_job(
     body: Value,
 ) -> ServiceResponse {
     let req = test::TestRequest::post()
-        .uri("/api/compute/jobs")
+        .uri("/api/v1/compute/jobs")
         .insert_header(("Authorization", token))
         .set_json(body)
         .to_request();
@@ -242,7 +245,7 @@ async fn wait_for_job(
     let deadline = Instant::now() + Duration::from_secs(120);
     loop {
         let req = test::TestRequest::get()
-            .uri(&format!("/api/compute/jobs/{job_id}"))
+            .uri(&format!("/api/v1/compute/jobs/{job_id}"))
             .insert_header(("Authorization", token))
             .to_request();
         let job: Value = test::call_and_read_body_json(app, req).await;
@@ -282,7 +285,7 @@ async fn client_key_never_leaves_the_client_and_results_decrypt_correctly() {
     assert!(env.store.contains_file(&key_id));
 
     let req = test::TestRequest::get()
-        .uri("/api/keys")
+        .uri("/api/v1/keys")
         .insert_header(("Authorization", alice.as_str()))
         .to_request();
     let keys: Value = test::call_and_read_body_json(&app, req).await;
@@ -310,7 +313,7 @@ async fn client_key_never_leaves_the_client_and_results_decrypt_correctly() {
         assert_eq!(done["attempts"], 1);
 
         let id = done["id"].as_str().unwrap();
-        let resp = get(&app, &alice, &format!("/api/compute/jobs/{id}/result")).await;
+        let resp = get(&app, &alice, &format!("/api/v1/compute/jobs/{id}/result")).await;
         assert_eq!(resp.status(), StatusCode::OK);
         assert_eq!(
             resp.headers().get("content-type").unwrap(),
@@ -352,7 +355,7 @@ async fn keys_are_private_to_their_owner() {
     );
 
     let req = test::TestRequest::delete()
-        .uri(&format!("/api/keys/{key_id}"))
+        .uri(&format!("/api/v1/keys/{key_id}"))
         .insert_header(("Authorization", mallory.as_str()))
         .to_request();
     assert_eq!(
@@ -361,7 +364,7 @@ async fn keys_are_private_to_their_owner() {
     );
 
     let req = test::TestRequest::get()
-        .uri("/api/keys")
+        .uri("/api/v1/keys")
         .insert_header(("Authorization", mallory.as_str()))
         .to_request();
     let keys: Value = test::call_and_read_body_json(&app, req).await;
@@ -385,7 +388,7 @@ async fn key_uploads_are_validated_limited_and_authenticated() {
     );
     // The JWT guard rejects with a service error rather than a response.
     let unauthenticated = test::TestRequest::post()
-        .uri("/api/keys")
+        .uri("/api/v1/keys")
         .insert_header(("Authorization", "Bearer nope"))
         .set_payload(compressed_server_key_bytes().to_vec())
         .to_request();
@@ -432,8 +435,11 @@ async fn invalid_ciphertexts_fail_the_job_with_a_clear_message() {
     )
     .await;
     assert_eq!(bad_shape.status(), StatusCode::BAD_REQUEST);
+    // Valid JSON of the wrong shape (an unknown operation) is 422.
     let bad_op = submit_job(&app, &alice, json!({ "key_id": key["id"], "operation": "divide", "inputs": [encrypt_b64(1), encrypt_b64(2)] })).await;
-    assert_eq!(bad_op.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(bad_op.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let body: Value = test::read_body_json(bad_op).await;
+    assert_eq!(body["error"]["code"], "unprocessable");
 
     // Well-formed request, but input 1 is not a ciphertext: the job fails cleanly.
     let resp = submit_job(
@@ -461,7 +467,7 @@ async fn deleting_a_key_or_the_account_removes_key_files() {
         test::read_body_json(upload_key(&app, &alice, compressed_server_key_bytes()).await).await;
     let first_id = first["id"].as_str().unwrap().to_string();
     let req = test::TestRequest::delete()
-        .uri(&format!("/api/keys/{first_id}"))
+        .uri(&format!("/api/v1/keys/{first_id}"))
         .insert_header(("Authorization", alice.as_str()))
         .to_request();
     assert_eq!(
@@ -479,7 +485,7 @@ async fn deleting_a_key_or_the_account_removes_key_files() {
     wait_for_job(&app, &alice, &job_id).await;
     assert!(env.jobs.read_result(&job_id).is_ok());
     let req = test::TestRequest::delete()
-        .uri("/api/user/account")
+        .uri("/api/v1/user/account")
         .insert_header(("Authorization", alice.as_str()))
         .set_json(json!({ "password": "" }))
         .to_request();
@@ -501,7 +507,7 @@ async fn idempotency_keys_replay_the_original_job() {
 
     let send = |body: Value, key: &str| {
         test::TestRequest::post()
-            .uri("/api/compute/jobs")
+            .uri("/api/v1/compute/jobs")
             .insert_header(("Authorization", alice.as_str()))
             .insert_header(("Idempotency-Key", key))
             .set_json(body)
@@ -579,7 +585,7 @@ async fn jobs_are_listed_in_pages_without_ciphertexts() {
     }
 
     let page: Value =
-        test::read_body_json(get(&app, &alice, "/api/compute/jobs?limit=2").await).await;
+        test::read_body_json(get(&app, &alice, "/api/v1/compute/jobs?limit=2").await).await;
     let first = page["data"].as_array().unwrap();
     assert_eq!(first.len(), 2);
     for job in first {
@@ -599,7 +605,7 @@ async fn jobs_are_listed_in_pages_without_ciphertexts() {
         get(
             &app,
             &alice,
-            &format!("/api/compute/jobs?limit=2&cursor={cursor}"),
+            &format!("/api/v1/compute/jobs?limit=2&cursor={cursor}"),
         )
         .await,
     )
@@ -616,10 +622,10 @@ async fn jobs_are_listed_in_pages_without_ciphertexts() {
     ids.sort();
     assert_eq!(seen, ids, "every job exactly once");
 
-    let empty: Value = test::read_body_json(get(&app, &bob, "/api/compute/jobs").await).await;
+    let empty: Value = test::read_body_json(get(&app, &bob, "/api/v1/compute/jobs").await).await;
     assert_eq!(empty, json!({ "data": [], "next_cursor": null }));
     for bad in ["limit=0", "limit=101", "cursor=garbage"] {
-        let resp = get(&app, &alice, &format!("/api/compute/jobs?{bad}")).await;
+        let resp = get(&app, &alice, &format!("/api/v1/compute/jobs?{bad}")).await;
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "{bad}");
     }
 }
@@ -632,7 +638,7 @@ async fn results_and_deletion_follow_the_job_state() {
     let mallory = env.user("mallory").await;
     let key_id = register_key(&app, &alice).await;
     let job_id = queue_job(&app, &alice, add_request(&key_id, 1, 2)).await;
-    let job_uri = format!("/api/compute/jobs/{job_id}");
+    let job_uri = format!("/api/v1/compute/jobs/{job_id}");
     let result_uri = format!("{job_uri}/result");
 
     assert_eq!(
@@ -696,7 +702,7 @@ async fn results_stored_before_the_job_store_are_still_served() {
     let resp = get(
         &app,
         &alice,
-        "/api/compute/jobs/6f1c1d4e-0000-4000-8000-000000000001/result",
+        "/api/v1/compute/jobs/6f1c1d4e-0000-4000-8000-000000000001/result",
     )
     .await;
     assert_eq!(resp.status(), StatusCode::OK);
@@ -707,7 +713,9 @@ async fn results_stored_before_the_job_store_are_still_served() {
 async fn params_endpoint_describes_what_clients_must_match() {
     let env = TestEnv::new().await;
     let app = env.app().await;
-    let req = test::TestRequest::get().uri("/api/he/params").to_request();
+    let req = test::TestRequest::get()
+        .uri("/api/v1/he/params")
+        .to_request();
     let params: Value = test::call_and_read_body_json(&app, req).await;
     assert_eq!(params["tfhe_version"], TFHE_VERSION);
     assert_eq!(params["integer_type"], "FheUint16");
@@ -716,4 +724,118 @@ async fn params_endpoint_describes_what_clients_must_match() {
         json!(["add", "subtract", "multiply", "min", "max"])
     );
     assert_eq!(params["max_keys_per_user"], env.config.max_keys_per_user);
+}
+
+#[actix_web::test]
+async fn every_error_uses_the_same_envelope() {
+    let env = TestEnv::without_workers(|c| c.max_server_key_bytes = 1024).await;
+    let app = env.app().await;
+    let alice = env.user("alice").await;
+
+    async fn envelope(resp: ServiceResponse) -> (StatusCode, Value) {
+        let status = resp.status();
+        let content_type = resp.headers().get("content-type").cloned();
+        let body: Value = test::read_body_json(resp).await;
+        assert_eq!(
+            content_type.unwrap().to_str().unwrap(),
+            "application/json",
+            "{body}"
+        );
+        assert!(
+            body["error"]["message"]
+                .as_str()
+                .is_some_and(|m| !m.is_empty()),
+            "{body}"
+        );
+        (status, body["error"]["code"].clone())
+    }
+    let call = |req: test::TestRequest| test::call_service(&app, req.to_request());
+
+    // Unknown route and wrong method: produced by actix itself.
+    let (status, code) = envelope(call(test::TestRequest::get().uri("/api/v1/nope")).await).await;
+    assert_eq!((status, code), (StatusCode::NOT_FOUND, json!("not_found")));
+    let wrong_method = test::TestRequest::patch()
+        .uri(&format!("/api/v1/compute/jobs/{}", uuid::Uuid::new_v4()))
+        .insert_header(("Authorization", alice.as_str()));
+    let (status, code) = envelope(call(wrong_method).await).await;
+    assert_eq!(
+        (status, code),
+        (StatusCode::METHOD_NOT_ALLOWED, json!("method_not_allowed"))
+    );
+
+    // Body problems: malformed JSON, wrong content type, oversized upload.
+    let malformed = test::TestRequest::post()
+        .uri("/api/v1/auth/login")
+        .insert_header(("content-type", "application/json"))
+        .set_payload("{not json");
+    let (status, code) = envelope(call(malformed).await).await;
+    assert_eq!(
+        (status, code),
+        (StatusCode::BAD_REQUEST, json!("bad_request"))
+    );
+    let form = test::TestRequest::post()
+        .uri("/api/v1/auth/login")
+        .insert_header(("content-type", "text/plain"))
+        .set_payload("email=a");
+    let (status, code) = envelope(call(form).await).await;
+    assert_eq!(
+        (status, code),
+        (
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            json!("unsupported_media_type")
+        )
+    );
+    let oversized = test::TestRequest::post()
+        .uri("/api/v1/keys")
+        .insert_header(("Authorization", alice.as_str()))
+        .insert_header(("content-type", "application/octet-stream"))
+        .set_payload(vec![0u8; 4096]);
+    let (status, code) = envelope(call(oversized).await).await;
+    assert_eq!(
+        (status, code),
+        (StatusCode::PAYLOAD_TOO_LARGE, json!("payload_too_large"))
+    );
+
+    // Handler errors and bad query strings.
+    let missing = test::TestRequest::get()
+        .uri(&format!("/api/v1/compute/jobs/{}", uuid::Uuid::new_v4()))
+        .insert_header(("Authorization", alice.as_str()));
+    let (status, code) = envelope(call(missing).await).await;
+    assert_eq!((status, code), (StatusCode::NOT_FOUND, json!("not_found")));
+    let bad_query = test::TestRequest::get()
+        .uri("/api/v1/compute/jobs?limit=lots")
+        .insert_header(("Authorization", alice.as_str()));
+    let (status, code) = envelope(call(bad_query).await).await;
+    assert_eq!(
+        (status, code),
+        (StatusCode::BAD_REQUEST, json!("bad_request"))
+    );
+}
+
+#[actix_web::test]
+async fn the_unversioned_api_still_answers_but_is_marked_deprecated() {
+    let env = TestEnv::without_workers(|_| {}).await;
+    let app = env.app().await;
+
+    let legacy = test::call_service(
+        &app,
+        test::TestRequest::get().uri("/api/he/params").to_request(),
+    )
+    .await;
+    assert_eq!(legacy.status(), StatusCode::OK);
+    assert_eq!(legacy.headers().get("deprecation").unwrap(), "@1793059200");
+    assert_eq!(
+        legacy.headers().get("link").unwrap(),
+        "</api/v1>; rel=\"successor-version\""
+    );
+
+    let current = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri("/api/v1/he/params")
+            .to_request(),
+    )
+    .await;
+    assert_eq!(current.status(), StatusCode::OK);
+    assert!(current.headers().get("deprecation").is_none());
 }

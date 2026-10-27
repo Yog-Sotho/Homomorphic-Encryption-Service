@@ -8,7 +8,7 @@
 //!
 //! Responses never reveal whether an address has an account.
 
-use super::email::{self, LinkEmail};
+use super::email::{Email, Mailer};
 use super::session::{revoke_all, start_session};
 use super::{app_url, hash_token, random_token, UserPublic, MAX_TOKEN_LEN};
 use crate::api::validation::{is_strong_password, is_valid_email, PASSWORD_REQUIREMENTS};
@@ -28,8 +28,6 @@ const DUMMY_HASH: &str = "$2b$12$WXQEq5YBFxVkx2j5bVBNNOLIGgWS0DVOvt0gp8b2ioY6O3S
 /// bcrypt only uses the first 72 bytes; longer inputs only cost CPU.
 const MAX_PASSWORD_LEN: usize = 128;
 const MAX_EMAIL_LEN: usize = 254;
-const VERIFY_TTL: &str = "+24 hours";
-const RESET_TTL: &str = "+1 hour";
 
 const REGISTERED: &str =
     "Account created. Check your inbox to verify your email before signing in.";
@@ -68,32 +66,35 @@ fn message(text: &str) -> serde_json::Value {
     serde_json::json!({ "message": text })
 }
 
-async fn send_verification(config: &Config, to: &str, token: &str) {
+/// SQLite `datetime('now', ?)` modifiers for when emailed links expire.
+fn verify_link_expiry(config: &Config) -> String {
+    format!("+{} hours", config.ttl.verify_link_hours)
+}
+
+fn reset_link_expiry(config: &Config) -> String {
+    format!("+{} minutes", config.ttl.reset_link_minutes)
+}
+
+async fn send_verification(mailer: &Mailer, config: &Config, to: &str, token: &str) {
     let url = app_url(config, &format!("/verify#token={token}"));
-    email::send(
-        config,
-        to,
-        LinkEmail {
-            subject: "Verify your HEaaS account",
-            intro:
-                "Open the link below to activate your account and sign in. It expires in 24 hours.",
-            url: &url,
-            footer: "If you did not create this account, ignore this email.",
-        },
-    )
-    .await;
+    mailer
+        .send(
+            to,
+            Email::Verify {
+                url: &url,
+                valid_hours: config.ttl.verify_link_hours,
+            },
+        )
+        .await;
 }
 
-#[derive(Deserialize)]
-pub struct Credentials {
-    pub email: String,
-    pub password: String,
-}
+pub use heaas_core::api::Credentials;
 
-/// `POST /api/auth/register`
+/// `POST /api/v1/auth/register`
 pub async fn register(
     pool: web::Data<SqlitePool>,
     config: web::Data<Arc<Config>>,
+    mailer: web::Data<Mailer>,
     limits: web::Data<RateLimits>,
     http: HttpRequest,
     req: web::Json<Credentials>,
@@ -121,14 +122,14 @@ pub async fn register(
     .bind(&email)
     .bind(&password_hash)
     .bind(hash_token(&token))
-    .bind(VERIFY_TTL)
+    .bind(verify_link_expiry(&config))
     .execute(pool.get_ref())
     .await;
 
     match inserted {
         Ok(_) => {
             if limits.may_email(&email) {
-                send_verification(&config, &email, &token).await;
+                send_verification(&mailer, &config, &email, &token).await;
             }
         }
         // The address is taken: answer exactly as for a new account.
@@ -147,7 +148,7 @@ struct LoginRow {
     email_verified: bool,
 }
 
-/// `POST /api/auth/login`
+/// `POST /api/v1/auth/login`
 pub async fn login(
     pool: web::Data<SqlitePool>,
     config: web::Data<Arc<Config>>,
@@ -193,7 +194,7 @@ pub struct TokenRequest {
     pub token: String,
 }
 
-/// `POST /api/auth/verify` — confirms the email address and signs the user in.
+/// `POST /api/v1/auth/verify` — confirms the email address and signs the user in.
 pub async fn verify_email(
     pool: web::Data<SqlitePool>,
     config: web::Data<Arc<Config>>,
@@ -236,7 +237,7 @@ fn to_page(config: &Config, page: &str, token: Option<&str>) -> HttpResponse {
         .finish()
 }
 
-/// `GET /api/auth/verify?token=` — links in emails sent before verification
+/// `GET /api/v1/auth/verify?token=` — links in emails sent before verification
 /// moved to the frontend. Redirects without consuming the token.
 pub async fn verify_link(
     config: web::Data<Arc<Config>>,
@@ -245,7 +246,7 @@ pub async fn verify_link(
     to_page(&config, "/verify", query.token.as_deref())
 }
 
-/// `GET /api/auth/forgot-password/redirect?token=` — the same for reset links.
+/// `GET /api/v1/auth/forgot-password/redirect?token=` — the same for reset links.
 pub async fn reset_link(
     config: web::Data<Arc<Config>>,
     query: web::Query<LinkQuery>,
@@ -258,10 +259,11 @@ pub struct EmailRequest {
     pub email: String,
 }
 
-/// `POST /api/auth/resend-verification`
+/// `POST /api/v1/auth/resend-verification`
 pub async fn resend_verification(
     pool: web::Data<SqlitePool>,
     config: web::Data<Arc<Config>>,
+    mailer: web::Data<Mailer>,
     limits: web::Data<RateLimits>,
     http: HttpRequest,
     req: web::Json<EmailRequest>,
@@ -278,20 +280,21 @@ pub async fn resend_verification(
          WHERE email = ? AND email_verified = 0",
     )
     .bind(hash_token(&token))
-    .bind(VERIFY_TTL)
+    .bind(verify_link_expiry(&config))
     .bind(&email)
     .execute(pool.get_ref())
     .await?;
     if updated.rows_affected() == 1 && limits.may_email(&email) {
-        send_verification(&config, &email, &token).await;
+        send_verification(&mailer, &config, &email, &token).await;
     }
     Ok(HttpResponse::Ok().json(message(RESENT)))
 }
 
-/// `POST /api/auth/forgot-password`
+/// `POST /api/v1/auth/forgot-password`
 pub async fn forgot_password(
     pool: web::Data<SqlitePool>,
     config: web::Data<Arc<Config>>,
+    mailer: web::Data<Mailer>,
     limits: web::Data<RateLimits>,
     http: HttpRequest,
     req: web::Json<EmailRequest>,
@@ -308,23 +311,21 @@ pub async fn forgot_password(
          WHERE email = ?",
     )
     .bind(hash_token(&token))
-    .bind(RESET_TTL)
+    .bind(reset_link_expiry(&config))
     .bind(&email)
     .execute(pool.get_ref())
     .await?;
     if updated.rows_affected() == 1 && limits.may_email(&email) {
         let url = app_url(&config, &format!("/reset#token={token}"));
-        email::send(
-            &config,
-            &email,
-            LinkEmail {
-                subject: "Reset your HEaaS password",
-                intro: "Open the link below to choose a new password. It expires in 1 hour.",
-                url: &url,
-                footer: "If you did not ask to reset your password, ignore this email.",
-            },
-        )
-        .await;
+        mailer
+            .send(
+                &email,
+                Email::Reset {
+                    url: &url,
+                    valid_minutes: config.ttl.reset_link_minutes,
+                },
+            )
+            .await;
     }
     Ok(HttpResponse::Ok().json(message(RESET_SENT)))
 }
@@ -335,7 +336,7 @@ pub struct ResetPasswordRequest {
     pub new_password: String,
 }
 
-/// `POST /api/auth/reset-password` — sets a new password (once per link) and
+/// `POST /api/v1/auth/reset-password` — sets a new password (once per link) and
 /// signs out every session.
 pub async fn reset_password(
     pool: web::Data<SqlitePool>,

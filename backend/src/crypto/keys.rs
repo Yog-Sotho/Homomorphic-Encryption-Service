@@ -193,7 +193,7 @@ pub mod test_support {
         &fixture().client_key
     }
 
-    /// What a client uploads to `POST /api/keys`.
+    /// What a client uploads to `POST /api/v1/keys`.
     pub fn compressed_server_key_bytes() -> &'static [u8] {
         &fixture().compressed_bytes
     }

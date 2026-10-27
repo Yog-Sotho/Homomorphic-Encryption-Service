@@ -1,0 +1,40 @@
+[workspace]
+resolver = "2"
+members = ["backend", "core", "sdk"]
+default-members = ["backend", "core", "sdk"]
+
+[workspace.package]
+version = "0.4.0"
+edition = "2021"
+# tfhe 1.8 requires 1.91.1.
+rust-version = "1.91.1"
+publish = false
+
+[workspace.dependencies]
+heaas-core = { path = "core" }
+heaas-sdk = { path = "sdk" }
+# Clients and server must use the same TFHE-rs release (see core/src/params.rs).
+tfhe = { version = "1.8", features = ["integer"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+sha2 = "0.10"
+base64 = "0.22"
+thiserror = "2"
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls", "sqlite", "chrono", "uuid", "macros", "migrate"] }
+utoipa = { version = "6", features = ["chrono", "uuid"] }
+wiremock = "0.6"
+
+# TFHE-rs is unusably slow without optimisation, so dependencies are built
+# release-like in dev/test while our own crates stay fast to compile. Debuginfo,
+# debug assertions and overflow checks in tfhe-fft's SIMD code turn a <1 min
+# compile into >30 min, so they are off for dependencies.
+[profile.dev.package."*"]
+opt-level = 3
+debug = false
+debug-assertions = false
+overflow-checks = false
+codegen-units = 16

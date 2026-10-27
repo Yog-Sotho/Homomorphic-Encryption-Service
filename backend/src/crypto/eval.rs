@@ -6,59 +6,12 @@
 
 use crate::crypto::keys::UserServerKey;
 use crate::crypto::params::MAX_CIPHERTEXT_BYTES;
-use serde::{Deserialize, Serialize};
 use std::fmt;
 use tfhe::prelude::*;
 use tfhe::safe_serialization::{safe_deserialize_conformant, safe_serialize};
 use tfhe::{set_server_key, FheUint16};
 
-/// Binary operations on `FheUint16`. Arithmetic wraps modulo 2^16.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Operation {
-    Add,
-    Subtract,
-    Multiply,
-    Min,
-    Max,
-}
-
-impl Operation {
-    pub const ALL: [Operation; 5] = [
-        Operation::Add,
-        Operation::Subtract,
-        Operation::Multiply,
-        Operation::Min,
-        Operation::Max,
-    ];
-
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Operation::Add => "add",
-            Operation::Subtract => "subtract",
-            Operation::Multiply => "multiply",
-            Operation::Min => "min",
-            Operation::Max => "max",
-        }
-    }
-
-    /// The inverse of [`as_str`](Self::as_str).
-    pub fn parse(name: &str) -> Option<Operation> {
-        Self::ALL.into_iter().find(|op| op.as_str() == name)
-    }
-
-    /// Plaintext reference semantics, used by tests and clients to check results.
-    #[cfg(test)]
-    pub fn apply_plain(self, a: u16, b: u16) -> u16 {
-        match self {
-            Operation::Add => a.wrapping_add(b),
-            Operation::Subtract => a.wrapping_sub(b),
-            Operation::Multiply => a.wrapping_mul(b),
-            Operation::Min => a.min(b),
-            Operation::Max => a.max(b),
-        }
-    }
-}
+pub use heaas_core::Operation;
 
 #[derive(Debug)]
 pub enum EvalError {

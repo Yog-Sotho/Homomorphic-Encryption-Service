@@ -127,7 +127,7 @@ fn signed_out_response(config: &Config, message: &str) -> HttpResponse {
         .json(serde_json::json!({ "message": message }))
 }
 
-/// `PUT /api/user/password` — changes the password and signs out every session.
+/// `PUT /api/v1/user/password` — changes the password and signs out every session.
 pub async fn change_password(
     pool: web::Data<SqlitePool>,
     config: web::Data<Arc<Config>>,
@@ -184,7 +184,7 @@ pub async fn change_password(
     ))
 }
 
-/// `DELETE /api/user/account` — deletes the account and everything it owns.
+/// `DELETE /api/v1/user/account` — deletes the account and everything it owns.
 pub async fn delete_account(
     pool: web::Data<SqlitePool>,
     config: web::Data<Arc<Config>>,

@@ -9,7 +9,7 @@ frontend/build/
 frontend/dist/
 
 # Rust build artifacts and local database
-backend/target/
+target/
 backend/he_saas.db
 *.db
 

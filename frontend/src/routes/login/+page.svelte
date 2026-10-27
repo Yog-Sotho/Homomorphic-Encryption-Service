@@ -164,8 +164,8 @@
     {#if providers.google || providers.github}
       <div class="oauth">
         <!-- Full-page navigations to the API: the server redirects to the provider. -->
-        {#if providers.google}<a class="btn-oauth" href="/api/auth/google" rel="external">Continue with Google</a>{/if}
-        {#if providers.github}<a class="btn-oauth" href="/api/auth/github" rel="external">Continue with GitHub</a>{/if}
+        {#if providers.google}<a class="btn-oauth" href="/api/v1/auth/google" rel="external">Continue with Google</a>{/if}
+        {#if providers.github}<a class="btn-oauth" href="/api/v1/auth/github" rel="external">Continue with GitHub</a>{/if}
       </div>
     {/if}
   {/if}

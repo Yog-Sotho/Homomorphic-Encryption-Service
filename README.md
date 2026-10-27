@@ -204,14 +204,20 @@ evaluation key and ciphertexts. CI (`.github/workflows/ci.yml`) runs all of the 
 
 ### Configuration (backend)
 
+Every setting is checked at startup. An invalid value (a typo, a number outside its
+range, a client id without its secret) stops the server with exit code 2 and a list of
+every problem found. Settings never fall back silently to a default. An empty value
+counts as unset.
+
 | Variable | Default | |
 |---|---|---|
 | `JWT_SECRET` | — (required, ≥ 32 bytes) | Secret from which token-signing and OAuth-state keys are derived (e.g. `openssl rand -base64 48`) |
 | `DATABASE_URL` | `sqlite://./he_saas.db` | SQLite database |
 | `KEY_STORE_DIR` | `./data/keys` | Uploaded server keys (~60 MB each) |
-| `MAX_SERVER_KEY_BYTES` | 80 MiB | Largest accepted key upload |
-| `MAX_KEYS_PER_USER` | 2 | Server keys per account |
-| `KEY_CACHE_CAPACITY` | 2 | Decompressed keys kept in RAM (~180 MB each) |
+| `SERVER_ADDR` | `127.0.0.1:8080` | Listen address (`host:port`) |
+| `MAX_SERVER_KEY_BYTES` | 80 MiB | Largest accepted key upload (1 MiB – 1 GiB) |
+| `MAX_KEYS_PER_USER` | 2 | Server keys per account (1–100) |
+| `KEY_CACHE_CAPACITY` | 2 | Decompressed keys kept in RAM, ~180 MB each (1–64) |
 | `DAILY_COMPUTE_QUOTA` | 100 | Jobs per user per UTC day |
 | `JOB_STORE_DIR` | `./data/jobs` | Job ciphertexts (inputs and results, ~132 KB each) |
 | `HE_WORKERS` | 2 | Jobs evaluated at once (each TFHE operation already uses every core) |
@@ -220,16 +226,25 @@ evaluation key and ciphertexts. CI (`.github/workflows/ci.yml`) runs all of the 
 | `MAX_QUEUED_JOBS` | 1000 | Waiting + running jobs before submissions get `503` |
 | `MAX_ACTIVE_JOBS_PER_USER` | 10 | Waiting + running jobs per user before submissions get `429` |
 | `JOB_RETENTION_DAYS` | 7 | Finished jobs and their ciphertexts are deleted after this |
-| `APP_BASE_URL` | `http://localhost:3000` | Public URL of the site; its origin may use the API and the session cookie, and email links point to it |
+| `APP_BASE_URL` | — (required; debug builds: `http://localhost:3000`) | Public URL of the site; its origin may use the API and the session cookie, and email links and OAuth callbacks point to it |
 | `ALLOWED_ORIGINS` | — (debug builds: `localhost:3000`, `:5173`) | Further browser origins allowed to call the API |
 | `TRUSTED_PROXIES` | — | Comma-separated CIDRs of reverse proxies whose `X-Forwarded-For` is believed. Without it the TCP peer is the client, so behind nginx every user would share one rate-limit bucket |
 | `COOKIE_SECURE` | `true` | `Secure` session cookies (HTTPS only; browsers also accept them on `http://localhost`) |
 | `LOG_EMAIL_LINKS` | debug builds only | Without SMTP, log verification and reset links (they are credentials) |
-| `RATE_LIMIT_AUTH_PER_MINUTE` | 30 | `/api/auth` requests per client IP |
+| `ACCESS_TOKEN_TTL_SECS` | 900 | Access token lifetime (60–3600; they cannot be revoked) |
+| `SESSION_TTL_DAYS` | 30 | How long a sign-in lasts (refresh cookie; 1–365) |
+| `VERIFY_LINK_TTL_HOURS` | 24 | Email verification links (1–168) |
+| `RESET_LINK_TTL_MINUTES` | 60 | Password reset links (5–1440) |
+| `RATE_LIMIT_AUTH_PER_MINUTE` | 30 | `/api/v1/auth` requests per client IP |
 | `RATE_LIMIT_LOGINS_PER_EMAIL` | 5 | Sign-in attempts per address per 15 minutes |
 | `RATE_LIMIT_EMAILS_PER_IP_PER_HOUR` | 10 | Register / resend / forgot-password requests per client IP |
 | `RATE_LIMIT_EMAILS_PER_ADDRESS_PER_HOUR` | 3 | Emails sent to one address (further ones are skipped silently) |
-| `SMTP_*`, `FROM_EMAIL`, `GOOGLE_*`, `GITHUB_*` | | Email and OAuth (callback URLs: `<APP_BASE_URL>/api/auth/google/callback`, `…/github/callback`) |
+| `SMTP_HOST` | — | SMTP relay; without it no email is sent |
+| `SMTP_TLS` | `starttls` | `starttls` (required STARTTLS), `implicit` (TLS from the start) or `none` (local relays only) |
+| `SMTP_PORT` | 587 / 465 / 25 | Defaults to the port of the `SMTP_TLS` mode |
+| `SMTP_USER`, `SMTP_PASS` | — | Relay credentials (both or neither) |
+| `FROM_EMAIL` | — (required with `SMTP_HOST`) | Sender, e.g. `HEaaS <noreply@example.com>` |
+| `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` | — | OAuth sign-in (both of a pair or neither). Callback URLs: `<APP_BASE_URL>/api/v1/auth/google/callback`, `…/github/callback` |
 
 ### Deployment
 

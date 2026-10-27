@@ -1,24 +1,17 @@
-//! `/api/keys`: register, list and delete the caller's TFHE server keys.
+//! `/api/v1/keys`: register, list and delete the caller's TFHE server keys.
 
 use crate::config::Config;
 use crate::crypto::keys::{validate_compressed_key, KeyStore, KeyStoreError};
 use crate::errors::AppError;
 use actix_web::{web, HttpResponse, Responder};
-use serde::Serialize;
 use sha2::{Digest, Sha256};
 use sqlx::SqlitePool;
 use std::sync::Arc;
 use uuid::Uuid;
 
-#[derive(Debug, Serialize, sqlx::FromRow)]
-pub struct ServerKeyInfo {
-    pub id: String,
-    pub sha256: String,
-    pub size_bytes: i64,
-    pub created_at: chrono::NaiveDateTime,
-}
+pub use heaas_core::api::ServerKeyInfo;
 
-/// `POST /api/keys` — body is a `safe_serialize`d TFHE `CompressedServerKey`.
+/// `POST /api/v1/keys` — body is a `safe_serialize`d TFHE `CompressedServerKey`.
 pub async fn upload_key(
     pool: web::Data<SqlitePool>,
     config: web::Data<Arc<Config>>,
@@ -75,7 +68,7 @@ pub async fn upload_key(
 
     match inserted {
         Some(info) => Ok(HttpResponse::Created()
-            .insert_header(("Location", format!("/api/keys/{}", info.id)))
+            .insert_header(("Location", format!("/api/v1/keys/{}", info.id)))
             .json(info)),
         None => {
             let _ = store.remove(&key_id);
@@ -87,7 +80,7 @@ pub async fn upload_key(
     }
 }
 
-/// `GET /api/keys` — the caller's keys, newest first.
+/// `GET /api/v1/keys` — the caller's keys, newest first.
 pub async fn list_keys(
     pool: web::Data<SqlitePool>,
     user_id: web::ReqData<String>,
@@ -102,7 +95,7 @@ pub async fn list_keys(
     Ok(HttpResponse::Ok().json(keys))
 }
 
-/// `DELETE /api/keys/{id}` — removes the key; its jobs stay but lose the reference.
+/// `DELETE /api/v1/keys/{id}` — removes the key; its jobs stay but lose the reference.
 pub async fn delete_key(
     pool: web::Data<SqlitePool>,
     store: web::Data<KeyStore>,

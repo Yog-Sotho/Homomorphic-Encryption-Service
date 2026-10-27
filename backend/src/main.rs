@@ -7,6 +7,7 @@ mod jobs;
 mod middleware;
 mod storage;
 
+use crate::api::auth::email::Mailer;
 use crate::crypto::keys::KeyStore;
 use crate::jobs::store::JobStore;
 use crate::jobs::worker::{WorkerPool, WorkerSettings};
@@ -32,8 +33,20 @@ async fn health() -> HttpResponse {
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     env_logger::init();
-    let config = config::Config::init();
-    let config = Arc::new(config);
+    let config = match config::Config::from_env() {
+        Ok(config) => Arc::new(config),
+        Err(e) => {
+            log::error!("Invalid configuration:\n{e}");
+            std::process::exit(2);
+        }
+    };
+    let mailer = match Mailer::new(&config.mail) {
+        Ok(mailer) => web::Data::new(mailer),
+        Err(e) => {
+            log::error!("Invalid configuration: {e}");
+            std::process::exit(2);
+        }
+    };
 
     let pool = db::connect(&config.database_url)
         .await
@@ -88,6 +101,7 @@ async fn main() -> std::io::Result<()> {
             .app_data(config_data.clone())
             .app_data(rate_limits.clone())
             .app_data(oauth_http.clone())
+            .app_data(mailer.clone())
             .route("/api/health", web::get().to(health))
             .configure(|cfg| api::configure(cfg, &config))
     })
