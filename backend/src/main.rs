@@ -130,9 +130,12 @@ async fn serve() -> std::io::Result<()> {
         }
     };
 
+    // Startup failures end the process with a logged reason, not a panic.
+    let fail =
+        |what: &str, e: &dyn std::fmt::Display| std::io::Error::other(format!("{what}: {e}"));
     let pool = db::connect(&config.database_url)
         .await
-        .expect("Failed to connect to DB");
+        .map_err(|e| fail("Could not open the database", &e))?;
 
     // The server only ever holds users' evaluation keys, never a secret key.
     let key_store = web::Data::new(
@@ -141,10 +144,11 @@ async fn serve() -> std::io::Result<()> {
             config.max_server_key_bytes,
             config.key_cache_capacity,
         )
-        .expect("Failed to open the server key store directory"),
+        .map_err(|e| fail("Could not open the key store directory", &e))?,
     );
     let job_store = web::Data::new(
-        JobStore::new(&config.job_store_dir).expect("Failed to open the job store directory"),
+        JobStore::new(&config.job_store_dir)
+            .map_err(|e| fail("Could not open the job store directory", &e))?,
     );
     let workers = WorkerPool::start(
         pool.clone(),
@@ -158,7 +162,7 @@ async fn serve() -> std::io::Result<()> {
         },
     )
     .await
-    .expect("Failed to start the job workers");
+    .map_err(|e| fail("Could not start the job workers", &e))?;
     let notifier = web::Data::new(workers.notifier());
     let liveness = web::Data::new(workers.liveness());
     if config.metrics_token.is_none() {

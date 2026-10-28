@@ -1,214 +1,303 @@
 # Codebase Audit Report
 
-**Date:** 2026-10-25
-**Project:** HEaaS — Homomorphic Encryption-as-a-Service (`he-backend` 0.3.0, `he-frontend` 0.3.0)
-**Language / Framework:** Rust 2021 (actix-web 4.13, sqlx 0.8 / SQLite, TFHE-rs 1.3.3) · SvelteKit 2.60 / Svelte 5.55 / Vite 6 (TypeScript)
-**Project Type:** Web Service (all 9 dimensions applicable)
-**Audit Mode:** Domain-aware (`backend/`, `frontend/`, deployment files)
+**Date:** 2026-10-28
+**Project:** HEaaS: Homomorphic Encryption as a Service (workspace 0.4.0: `he-backend`, `heaas-core`, `heaas-sdk`; `he-frontend` 0.4.0)
+**Language / Framework:** Rust 2021, MSRV 1.91.1 (actix-web 4.18, sqlx 0.8 / SQLite, TFHE-rs 1.8.2, utoipa 6, tracing, prometheus 0.14) · SvelteKit 3.1 / Svelte 5 / Vite 8 (TypeScript, strict), TFHE-rs 1.8.2 WebAssembly
+**Project Type:** Web Service with a worker pool (all 9 dimensions applicable)
+**Audit Mode:** Domain-aware (`backend/`, `core/`, `sdk/`, `frontend/`, deployment files)
+**Previous audit:** 2026-10-25, overall 4.0 / 10, SOTA 3 / 10
 
-Every finding below was checked against the source, the tool output, or the vendored crate source. Nothing in it is inferred from names or docs.
+Every finding below was checked against the source, tool output or the vendored
+crate source; scores are based on that evidence, not on documentation.
 
 ---
 
 ## Executive Summary
 
-The service's main promise is broken. The backend generates **both** TFHE keys in-process (`crypto/engine.rs:291`) and keeps the client (secret) key in memory. No endpoint exists for a client to supply its own key. The README and Customer Guide promise "local key generation", "we never receive your private key" and a "mathematical guarantee", and the code does none of that: the operator can decrypt everything. On top of that, keys are regenerated on every restart and the job path picks a random slot from a pool of *different* key pairs. So with the default `HE_POOL_SIZE=2`, a submitted ciphertext is evaluated under the wrong server key about half the time.
+Every CRITICAL and HIGH finding from the previous audit is fixed. The CRITICAL
+ones were server-held secret keys, a dead UI and unsafe deserialization.
 
-The web UI is also non-functional as shipped. The `<meta>` CSP blocks SvelteKit's inline bootstrap script, so the production build never hydrates (verified in Chromium). The dev server that `docker-compose` actually runs answers `GET /login` with HTTP 500. The OAuth, email-verification and password-reset flows hand tokens back via URL fragments that no frontend code ever reads.
+- **Keys:** clients generate their TFHE keys in the browser (WebAssembly in a
+  Web Worker) or with the Rust SDK, and the server only ever holds compressed
+  evaluation keys.
+- **Inputs:** keys and ciphertexts are checked with size-limited,
+  conformance-checked deserialization.
+- **Jobs:** jobs run from a durable SQLite queue on a bounded worker pool.
+- **Accounts:** session, OAuth and rate-limit handling follow current practice,
+  with regression tests.
+- **Tooling:** CI enforces formatting, lints, tests, supply-chain checks,
+  OpenAPI and parameter-sheet drift, and runs the hardened images.
 
-On the positive side, the Rust backend compiles cleanly (1 clippy warning) and uses parameterised SQL everywhere. It already defends against several classic auth attacks: generic login errors, a dummy bcrypt run on unknown users, hashed single-use tokens, and protection against OAuth takeover of pre-registered accounts.
+What remains is at most LOW severity in every dimension except one: test
+depth, which is MEDIUM. There is no coverage measurement, and the property
+tests the plan called for were not written. On features, HEaaS is now a sound
+but narrow FHE service: one encrypted type (`FheUint16`) and five binary
+operations. That, not code quality, is what holds the SOTA rating below the
+target.
 
-**Top priority:** move key ownership to the client. Clients generate keys and upload a server/compression key, the server evaluates with *their* key only, and it uses `safe_deserialize_conformant` plus carry-propagating operations. Then fix the frontend CSP and token flows.
-
-## Overall Score: 4.0 / 10  (raw average 4.2, capped at 4.0 because of CRITICAL security findings)
+## Overall Score: 8.9 / 10  (no caps apply: no CRITICAL findings)
 
 | Dimension | Score | Priority | Status |
 |---|---|---|---|
-| Security | 2/10 | CRITICAL | FAIL |
-| Build & Types | 4/10 | CRITICAL | FAIL |
-| Code Principles | 5/10 | HIGH | WARN |
-| Code Quality | 5/10 | MEDIUM | WARN |
-| Dependencies | 4/10 | MEDIUM | FAIL |
-| Dead Code | 6/10 | LOW | WARN |
-| Observability | 3/10 | MEDIUM | FAIL |
-| Concurrency | 4/10 | HIGH | FAIL |
-| Lifecycle | 5/10 | MEDIUM | WARN |
+| Security | 9/10 | CRITICAL | PASS |
+| Build & Types | 10/10 | CRITICAL | PASS |
+| Code Principles | 9/10 | HIGH | PASS |
+| Code Quality | 8/10 | MEDIUM | WARN |
+| Dependencies | 9/10 | MEDIUM | PASS |
+| Dead Code | 9/10 | LOW | PASS |
+| Observability | 9/10 | MEDIUM | PASS |
+| Concurrency | 9/10 | HIGH | PASS |
+| Lifecycle | 9/10 | MEDIUM | PASS |
 
-**SOTA rating (vs. state-of-the-art FHE services such as Zama's TFHE-rs / Concrete / fhEVM tooling, OpenFHE-based services): 3 / 10.**
-Today it is a TFHE demo with server-side keys behind a standard auth stack. It has no client-side keys, no compressed/serialisable server keys, no conformance-checked deserialisation, no carry-safe or composable operations, no persistent job queue, no SDK, no CI, and the README documents a different scheme (SEAL/BFV, n=4096, t=1024) from the one in the code.
+**SOTA rating: 7 / 10** (previously 3). The yardstick is the same as before:
+state-of-the-art FHE services and tooling such as Zama's TFHE-rs, Concrete and
+fhEVM tooling, and OpenFHE-based services.
 
----
+At or near that bar:
+- client-held keys, with compressed evaluation keys only on the server;
+- conformance-checked inputs and carry-propagating operations;
+- a parameter set pinned to TFHE-rs defaults (≥ 128-bit security, p_fail ≤ 2⁻¹²⁸
+  per Zama), published as a generated parameter sheet;
+- in-browser WASM keygen with sealed key storage;
+- a typed SDK and CLI built on a shared core crate, so parameters cannot drift;
+- a durable, idempotent job API with OpenAPI;
+- production observability.
 
-## Verification performed
+Missing, and needed for 9:
+- **Breadth of computation.** Only `FheUint16` and add, subtract, multiply,
+  min and max. There are no comparisons (`eq`/`lt`, planned in Phase 1 but not
+  built), no sums over many inputs, no other widths (8/32/64-bit, signed), no
+  scalar (plaintext-operand) operations, and no programs combining several
+  operations in one job.
+- **Proofs of well-formed encryption.** Inputs are not zero-knowledge proven
+  `ProvenCompactCiphertextList`s; TFHE-rs supports them via `zk-pok`.
+- **Throughput options.** No compact public-key encryption, no batching, no
+  GPU backend.
 
-| Check | Result |
-|---|---|
-| `cargo build --locked` | ✅ success (3m44s) |
-| `cargo clippy --all-targets` | 1 warning (`type_complexity`, `api/user.rs:54`) |
-| `cargo test --locked` | ✅ 6/6 pass. They cover input-length checks, validators and OAuth takeover. **0 tests exercise HE correctness or any HTTP route** |
-| `cargo audit` (RustSec DB as of today, 410 crates) | ❌ **14 vulnerabilities, 7 warnings** (rustls ×4, rustls-webpki, webpki-roots, quinn-proto ×5, h2, crossbeam-epoch, rsa (Marvin; transitive, no fix), tokio 1.52.3 unsound RUSTSEC-2026-0386, bincode 1.x unmaintained RUSTSEC-2025-0141, paste unmaintained, anyhow, event-listener) |
-| `pnpm audit` | ❌ **48 vulnerabilities (19 high, 24 moderate, 5 low)**: axios (21), devalue (8), vite (5), @sveltejs/kit (5), nanoid, postcss, follow-redirects, form-data, source-map-js, cookie |
-| `svelte-check` | 1 error (`vite.config.ts:13` `process` untyped, `@types/node` missing), 2 warnings |
-| `pnpm build` + Chromium (Playwright) | ❌ `Executing inline script violates … 'script-src 'self''`. Page never hydrates; the Register toggle does nothing. The Google Fonts stylesheet is also blocked by CSP |
-| `vite dev` (what docker-compose runs) + Chromium | ❌ `GET /login` → **HTTP 500** `TypeError: css is not a function` (from SvelteKit's `render.js`; root cause not isolated, likely svelte 5.55 / vite-plugin-svelte 4.0.4 mismatch) |
-| TFHE-rs 1.3.3 source | `PARAM_MESSAGE_2_CARRY_2_KS_PBS` = `…TUNIFORM_2M128` (OK). `unchecked_add` / `unchecked_mul` never propagate carries. `safe_deserialize_conformant`, `add_parallelized` and `mul_parallelized` are available. Latest stable tfhe on crates.io: **1.8.2** |
-| actix-web 4.13 source | `realip_remote_addr()` docs: only safe if a proxy guarantees that `Forwarded`/`X-Forwarded-For` cannot be spoofed |
+Verifiable computation is out of reach of TFHE itself and is documented as a
+limitation, not counted against the rating.
 
 ---
 
 ## Strengths
 
-1. **Parameterised SQL everywhere.** Every query uses `?` binds and there is no string-built SQL. Migrations are versioned, FK enforcement is on, and WAL mode is enabled.
-2. **Several auth threats are already handled:** generic `Invalid credentials`, a dummy bcrypt verify against timing-based enumeration, register returns 202 for duplicate emails, verify/reset/refresh tokens stored as SHA-256 hashes, refresh rotation, sessions revoked on password change/reset, and a regression test for OAuth pre-registration takeover.
-3. **CPU-heavy work stays off the async executor.** bcrypt and TFHE run under `spawn_blocking`, and keygen is parallelised.
-4. **Atomic quota.** The daily quota uses a single `INSERT … ON CONFLICT … RETURNING`, so it is race-free.
-5. **Internal errors are not leaked.** `AppError::Internal` is logged server-side and only "Internal server error" is returned.
-6. **The frontend pays attention to accessibility:** labels, `aria-live`, `aria-pressed`.
+- **Correct trust boundary, tested end to end.**
+  - A browser test asserts that only the ~60 MB evaluation key is uploaded and
+    that the sealed client key never leaves IndexedDB (`frontend/e2e/fhe.spec.ts:191-199`).
+  - An SDK test drives a real HTTP server through every operation and decrypts
+    locally (`backend/src/api/integration_tests.rs`, `the_sdk_runs_the_whole_flow_against_a_live_server`).
+  - A full-stack Playwright test does the same with the real backend and
+    browser TFHE.
+- **Single source of truth for parameters.** `heaas-core` holds the TFHE
+  configuration, the operations and the API types.
+  - A test pins `ConfigBuilder::default()` to the documented parameter set.
+  - Another pins `TFHE_VERSION` to `Cargo.lock` and the npm `tfhe` version.
+  - `docs/parameters.md` and `docs/api/openapi.json` are generated and
+    drift-checked.
+  - A test fails if any documented operation is not routed.
+- **Defence in depth on accounts.**
+  - Sessions: rotating refresh-token families with reuse detection; HKDF-derived
+    per-purpose keys; JWT algorithm, issuer, audience and type pinned.
+  - Sign-in links: PKCE plus a signed state cookie; one-time login codes; email
+    links redeemed by POST.
+  - Abuse limits: rate limits keyed on the real client IP behind trusted proxies,
+    plus per-account and per-address email caps.
+  - Each defence has a regression test (`backend/src/api/auth_tests.rs`).
+- **Operational maturity.**
+  - The config is validated as a whole: every problem is listed and the server
+    exits 2.
+  - Every response gets an `X-Request-Id`, including middleware refusals.
+  - Logs are JSON; metrics are labelled by route pattern; readiness checks the
+    database, both stores and the workers.
+  - The backend runs on a distroless, non-root image pinned by digest, with a
+    read-only root and no capabilities.
+  - Backups use consistent `VACUUM INTO` snapshots.
+  - CI builds both images, runs them hardened and waits for them to report
+    healthy.
 
 ---
 
 ## Findings by Dimension
 
-### Security [2/10]
+### Security [9/10]
 
-| Sev | Location | Issue | Recommendation |
+Scans: hard-coded secrets (none outside tests and `.env.example`), SQL built by
+interpolation (two `format!` queries, both from compile-time constants:
+`password.rs:367` `VALID`, `user.rs:239` a fixed table list), `{@html}` /
+`innerHTML` (none), `unsafe` (none), tracked `.env` (none; `.env` is now
+git-ignored), `cargo deny` (advisories, bans, licences, sources: ok).
+
+| Severity | Location | Issue | Recommendation |
 |---|---|---|---|
-| **CRITICAL** | `crypto/engine.rs:284-292`, `README.md` §1–2, §6, `Customer_guide.md` | The server generates and holds the **client (secret) key**. No API lets a client upload its own server key. The confidentiality claims ("we never receive your private key", "mathematical guarantee", "breach immunity") are false: anyone with access to the process can decrypt. | Keys are generated client-side (tfhe-rs native/WASM SDK). Clients upload a `CompressedServerKey` (per user, per key-id). The server stores only server keys and evaluates with the caller's key. Fix the docs. |
-| **CRITICAL** | `engine.rs:380-383`, `compute.rs:149` | Round-robin over *independent* key pairs: a job's ciphertexts are evaluated with an arbitrary server key, which gives garbage results. Keys are also regenerated on every boot, so every ciphertext issued before a restart is permanently undecryptable. | Removed once the server evaluates under the caller's own uploaded key. For the sandbox, persist one demo key set or derive it per request. |
-| HIGH | `compute.rs:125-155`, `engine.rs:312-325` | Untrusted bytes go through `bincode::deserialize` with no size limit and no parameter-conformance check. `unchecked_add`/`unchecked_mul` then run on attacker-chosen ciphertexts (wrong block count / degree → panic or silent wrong result; also an OOM/CPU DoS vector). | `tfhe::safe_serialization::safe_deserialize_conformant` with a byte limit + `RadixCiphertextConformanceParams`. Use `add_parallelized`/`mul_parallelized`. Reject mismatched block counts. |
-| HIGH | `middleware/rate_limit.rs:518-522`, `docker-compose.yml:7` | The rate-limit key is `realip_remote_addr()`, which trusts client-supplied `Forwarded`/`X-Forwarded-For`. The backend is also published directly on `0.0.0.0:18080`, bypassing nginx. Login brute force and email bombing are therefore unlimited. | Use `peer_addr()`, or a trusted-proxy list that takes the rightmost untrusted hop. Bind the backend to an internal network only. Add a per-account limit and lockout. |
-| HIGH | `auth.rs:971-975, 1052` | The Google OAuth flow never checks `verified_email`/`email_verified`, but links to an existing account by email. That allows takeover of an existing (even verified) password account via a Google account carrying an unverified copy of the victim's address. | Use OIDC (`id_token`, verify `email_verified == true`), or reject when `verified_email != true`. Only auto-link when the provider asserts verification. |
-| HIGH | `auth.rs:1204` | GitHub: `/user.email` (public profile email) is used without the `verified` check that the `/user/emails` fallback has. | Always use `/user/emails` and take the entry with `primary && verified`. |
-| HIGH | `frontend/src/lib/api.ts:10,30`, `login/+page.svelte:20` | Access and refresh tokens live in `localStorage` (readable by any XSS, persistent). | Move the refresh token to an `HttpOnly; Secure; SameSite=Strict` cookie scoped to `/api/auth`, and keep the access token in memory. |
-| MEDIUM | `auth.rs:801-826` | The OAuth `state` is a stateless JWT not bound to the user agent, so an attacker-initiated flow can be completed in a victim's browser (login CSRF). No PKCE. | Store a random state + PKCE verifier in a short-lived `HttpOnly` cookie and compare on callback. |
-| MEDIUM | `auth.rs:918-928, 452, 652` | JWT, refresh token and email are delivered in the redirect URL fragment, where they persist in history; the email is not URL-encoded. The email-verification link also auto-logs-in on a **GET**, which mail scanners prefetch. | Use a one-time code exchanged through a POST, or set the cookie directly. Make verify a POST behind a landing page. |
-| MEDIUM | `middleware/jwt.rs:401-405`, `auth.rs:91-101, 807` | Access tokens and OAuth-state tokens are signed with the same HS256 secret. There are no `iss`/`aud`/`typ` claims, and `JWT_SECRET` length/entropy is never validated. | Add `aud`/`typ`, separate keys, and enforce ≥ 32 random bytes at startup. |
-| MEDIUM | `auth.rs:745-766` | Refresh rotation is not atomic: two concurrent uses of one token both succeed, and the failure of the old-token `DELETE` is ignored. There is no reuse detection. | Run `DELETE … RETURNING` in a transaction. On reuse of a rotated token, revoke the whole family. |
-| MEDIUM | `user.rs:192-205` | OAuth-only accounts can be deleted with any valid access token and no re-authentication. | Require a fresh re-auth (recent OAuth login or an emailed confirmation). |
-| MEDIUM | `nginx-heaas.conf`, `main.rs` | No HSTS and no TLS listener. The CSP is only a `<meta>` tag; the API sends no security headers. `X-XSS-Protection` is deprecated. | Use a TLS server block with HSTS, send the CSP as a header (with SvelteKit `kit.csp` hashes), and add `DefaultHeaders` in actix. |
-| LOW | `auth.rs:146-152, 211-217` | When SMTP is absent, verification and reset URLs (live secrets) are written to the info log. | Only do this in debug builds, or redact. |
-| LOW | `auth.rs:401, 598, 674` | Legacy plaintext-token match (`OR token = ?`) is still accepted. | Remove it after a migration. |
-| LOW | `compute.rs:98, 167` | Raw internal errors (`Internal error: {e}`, `HE Error: {e}`) are persisted and shown to users. | Map to stable error codes. |
+| LOW | `frontend/vite.config.ts:46` | `style-src` allows `'unsafe-inline'`. Scripts are hash-pinned; styles are not. Impact is limited to CSS injection, which the app has no sink for. | Move to style hashes (SvelteKit `csp.mode: 'hash'` covers `<style>`) once Svelte no longer needs inline `style` attributes. |
+| LOW | `backend/src/middleware/rate_limit.rs` | Only `/api/v1/auth` is rate-limited per IP. Authenticated reads (`GET /keys`, `/compute/jobs`) rely on authentication alone. Writes are bounded by the key cap, active-job cap and daily quota. | Add a per-user limiter on the authenticated scope. |
+| LOW | `backend/src/middleware/rate_limit.rs` (per-email login limit) | An attacker can spend a victim's per-email sign-in budget and block their password sign-in for up to 15 minutes. This is the usual trade-off of per-account limits. | Accept, or exempt requests carrying a valid refresh cookie. |
+| INFO | `backend/src/middleware/jwt.rs` | Access tokens stay valid for up to `ACCESS_TOKEN_TTL_SECS` (900 s) after sign-out or a password change. This is by design and documented. | None. |
 
-### Build & Types [4/10]
+### Build & Types [10/10]
 
-| Sev | Location | Issue | Recommendation |
+- `cargo fmt --check` and `cargo clippy --workspace --all-targets -D warnings`:
+  clean. There is now no `#[allow]` left in the Rust code (the last one,
+  `clippy::too_many_arguments` at `compute.rs:170`, was replaced by a struct
+  during this audit).
+- An MSRV 1.91.1 `cargo check` runs in CI.
+- `svelte-check --fail-on-warnings`: 0 errors and 0 warnings across 377 files,
+  with `strict: true`.
+- Release and debug builds are reproducible with `--locked`.
+
+No findings.
+
+### Code Principles [9/10]
+
+- Layering is clear in every domain:
+  - core: parameters, operations, DTOs;
+  - backend: `api/` → `jobs/`, `crypto/`, `storage`, `telemetry`;
+  - sdk: `client`, `fhe`, `bin`;
+  - frontend: `lib/api`, `lib/fhe` (worker, vault), routes.
+- Shared logic is extracted:
+  - the error-code mapping lives in core and is used by both server and SDK;
+  - one atomic-write helper (`storage::write_atomic`);
+  - one `Mailer`;
+  - one password policy (`frontend/src/lib/password-policy.ts`).
+
+| Severity | Location | Issue | Recommendation |
 |---|---|---|---|
-| **CRITICAL** | `frontend/src/app.html:8` | The meta CSP `script-src 'self'` blocks SvelteKit's inline hydration script, so **the production UI is inert** (verified). | Remove the meta tag and configure `kit.csp` (`mode: 'hash'`) so SvelteKit emits hashes. |
-| HIGH | `frontend` dev server | `vite dev` returns 500 on every page (`css is not a function`). docker-compose runs exactly this. | Align versions (`@sveltejs/vite-plugin-svelte` ≥ 5 for Svelte 5.5x, Vite 6/7), then add a Playwright smoke test to CI. |
-| HIGH | repo root | No CI at all (no `.github/workflows`). Nothing runs build/clippy/test/audit/svelte-check on PRs. | Add a CI pipeline: `cargo fmt --check`, `clippy -D warnings`, `test`, `cargo audit`/`deny`, `pnpm build`, `svelte-check`, Playwright e2e, Docker build. |
-| MEDIUM | `vite.config.ts:13`, `tsconfig.json` | `svelte-check` reports 1 error because `@types/node` is missing. | Add it as a devDependency. |
-| MEDIUM | `svelte.config.js` | `adapter-auto` cannot detect a target (build warning), and no `paths.base` is set while nginx serves the app under `/heaas/` and the code mixes `${base}` with hard-coded `/heaas/login` and `/dashboard` (`+page.svelte:9-11`, `api.ts:43,48`). | Use `adapter-node` (or `adapter-static` + nginx) and set `paths.base: '/heaas'` consistently. |
-| LOW | `api/user.rs:54` | clippy `type_complexity`. | Use a `FromRow` struct. |
-| LOW | all `.svelte` | Svelte 5 is used in legacy mode (`$:`, `on:click`, `<slot>`, `export let`). Deprecated. | Migrate to runes. |
+| LOW | `backend/src/config.rs` (797 lines with tests) | The longest non-test module. [High cohesion: one responsibility, one data model, consistent abstraction.] | None now; split by area if it keeps growing. |
 
-### Concurrency [4/10]
+### Code Quality [8/10]
 
-| Sev | Location | Issue | Recommendation |
+- There are 112 Rust tests:
+  - unit tests;
+  - HTTP integration tests against the real router;
+  - wiremock OAuth and SDK tests;
+  - CLI binary tests;
+  - an SDK run against a live server.
+- There are 43 TypeScript tests: 29 Vitest, 13 Playwright including axe
+  WCAG 2.2 AA scans, and 1 full-stack.
+- No TODO, FIXME or HACK markers. The largest source files are 400–630 lines,
+  apart from the test modules.
+
+| Severity | Location | Issue | Recommendation |
 |---|---|---|---|
-| HIGH | `compute.rs:92-101` | Each job is a detached `tokio::spawn` + `spawn_blocking`. There is no concurrency cap (the blocking pool allows up to 512 threads × multi-second TFHE ops) and no back-pressure, so a quota of 100/user × N users saturates the CPU. | Use a bounded worker pool (`Semaphore` sized to cores, or a rayon pool) with a queue-depth limit that returns 503 + `Retry-After`. |
-| HIGH | `compute.rs:92` | Jobs live only in memory. A restart or crash leaves rows stuck in `pending`/`processing` forever. | Use a persistent queue: workers claim jobs with `UPDATE … WHERE status='pending' RETURNING`. Requeue stale `processing` jobs at boot, and add retry and timeout. |
-| MEDIUM | `user.rs:208-231`, `auth.rs:707-719`, `find_or_create_oauth_user` | Multi-statement mutations run without a transaction (account delete = 5 statements, password reset = 2, OAuth create = 2-3), so a partial failure leaves inconsistent state. | Use `pool.begin()` … `commit()`. |
-| MEDIUM | `auth.rs:686-714` | The reset token is checked, then consumed later (TOCTOU), so concurrent resets can both succeed. | Consume atomically: `UPDATE … SET token=NULL WHERE token=? AND expires_at>now RETURNING id`. |
-| LOW | `rate_limit.rs:496` | The `DashMap` never evicts IPs, so memory grows without bound, especially with spoofed IPs. | Use a periodic sweep or an LRU/`governor` crate keyed on a trusted IP. |
-| LOW | `compute.rs:181` | `update_job_status` discards DB errors (`let _ =`). | Log them and propagate. |
+| MEDIUM | `.github/workflows/ci.yml` | No coverage measurement, so untested paths are invisible. | Add `cargo llvm-cov` and Vitest coverage to CI with a floor. |
+| MEDIUM | `backend/src/crypto/`, `core/src/operation.rs` | The plan's property tests are missing: `proptest` comparing homomorphic results with `apply_plain` over random inputs, and fuzzing of the deserialization paths. The nightly heavy-TFHE job is also missing. The current tests cover fixed values only. | Add `proptest` with a small case count to normal CI, an `#[ignore]` heavy variant, and a scheduled workflow that runs it. |
 
-### Code Principles [5/10]
+### Dependencies [9/10]
 
-| Sev | Location | Issue | Recommendation |
+- `cargo deny check` (advisories, bans, licences, sources): ok.
+- `pnpm audit`: 1 low advisory. Dependabot covers cargo, npm, both Dockerfiles
+  and Actions.
+- TFHE-rs is pinned to one release on both sides, enforced by a test.
+- Base images are pinned: `rust:1.99.1-bookworm`, `node:22.23.4-alpine3.24`,
+  and distroless by digest.
+
+| Severity | Location | Issue | Recommendation |
 |---|---|---|---|
-| MEDIUM | `auth.rs:139-264` | `send_verification_email` and `send_reset_email` are ~60 duplicated lines each. A new SMTP transport is built per email. | Use one `Mailer` built once at startup and shared via `web::Data`, with templated bodies. |
-| MEDIUM | `auth.rs` (×6) | The full `SELECT id, email, password_hash, … FROM users` column list is repeated 6 times. | Use a `const USER_COLUMNS` or repository functions. |
-| MEDIUM | `main.rs:93-131` | The debug and release CORS branches are identical except for the env fallback. | Use one function and make the fallback conditional. |
-| MEDIUM | `auth.rs:571-656` | The same `Found` redirect block is written 5 times (instead of using `oauth_error_redirect`). | Reuse the helper. |
-| MEDIUM | `auth.rs:1004, 1155` | A `reqwest::Client::new()` is created per callback with no timeouts. | Share one client with connect/request timeouts. |
-| LOW | `models.rs:436` | `input_data_b64` is a JSON array *inside a string* inside JSON, which is an awkward API contract. | Use `inputs: [String; 2]` (or `Vec<String>` with a length check) and a typed `operation` enum. |
-| LOW | `compute.rs` | `operation` is a stringly-typed `"add"`/`"multiply"` compared in 4 places. | `#[derive(Deserialize)] enum Op`. |
+| LOW | `frontend` → `@sveltejs/vite-plugin-svelte` → `deepmerge 4.3.1` | GHSA-gcqx-w48m-w2h4 (low): prototype pollution in `mergeObject()`. It is a build-time dev dependency and no patched release exists. | Track it; CI fails only at moderate and above. |
+| LOW | `Cargo.lock` | Duplicate major versions (e.g. `base64` 0.22/0.23, `getrandom` 0.2/0.3/0.4, `hashbrown` ×4) come in through transitive dependencies. They are warnings in `deny.toml`. | Let them converge through Dependabot. |
 
-### Code Quality [5/10]
+### Dead Code [9/10]
 
-| Sev | Location | Issue | Recommendation |
+The dead files flagged last time (`backend/src/db/schema.sql`,
+`foldertree.txt`, the `.Jules/` duplicate) are removed, along with the server
+key pool, the sandbox endpoint, `axios`, `bincode` and the example client. The
+compiler reports no dead code.
+
+| Severity | Location | Issue | Recommendation |
 |---|---|---|---|
-| HIGH | `compute.rs:215-228` | `list_jobs` returns full `input_data_b64` (≤ 2 MB each) for 50 jobs, so one call can be ~100 MB. It also exposes `user_id`. There is no pagination. | Return a summary DTO (id, status, op, timestamps), use cursor pagination, and serve the result through `GET /jobs/{id}/result`. |
-| MEDIUM | `quota.rs` + `main.rs:78-84` | The quota middleware wraps the whole `/compute` scope, so **polling `GET /jobs/{id}` and `GET /jobs` uses up the daily compute quota.** | Apply the quota to `POST /sandbox` and `POST /jobs` only. |
-| MEDIUM | `quota.rs:465` | A DB error is reported as 429 "temporarily unavailable". | Return 503 + `Retry-After`. |
-| MEDIUM | `errors.rs`, actix defaults | Error envelope is `{message}` only, with no machine-readable `code`. JSON-extractor errors return text/plain 400. | Use `{error:{code,message}}` and a `JsonConfig::error_handler`. |
-| MEDIUM | `dashboard/+page.svelte:76-80` | The UI says "TFHE-rs **BFV**", "**Radix64**", "Zero-Knowledge". The scheme is TFHE/CGGI with 8×2-bit blocks = 16-bit, and the server decrypts. | Use accurate labels. |
-| LOW | `rate_limit.rs:488`, `compute.rs:66`, `auth.rs:94,110,540` | Magic numbers (10 req/60 s, 2,000,000, 1 h, 30 d) are hard-coded instead of configurable. | Move them into `Config`. |
-| LOW | `auth.rs` (1,413 lines) | Mixes JWT, email, password reset, refresh and two OAuth providers in one file. | Split into `auth/{password,tokens,email,oauth/{google,github}}.rs`. |
+| LOW | `jobs.input_data_b64`, `jobs.result_b64`, `compute.rs` legacy read path | Columns kept for rows from before ciphertexts moved to disk. New rows write `''` and `NULL`. | Drop both in a migration once old jobs have passed `JOB_RETENTION_DAYS`. |
+| INFO | `backend/src/api/mod.rs` (`/api` alias) | The deprecated unversioned API is intentional and marked with `Deprecation` and `Link` headers. | Remove in a later major version. |
 
-### Dependencies [4/10]
+### Observability [9/10]
 
-| Sev | Location | Issue | Recommendation |
+- `tracing` writes JSON lines; library `log` records are bridged in.
+- Request ids are taken from the client when sane, echoed, and exposed to CORS.
+- One access line per request; job spans carry `job_id`, operation and attempt.
+- `/metrics` is token-protected: HTTP traffic by route pattern, queue depth,
+  job wait and evaluation time, outcomes, key-cache hits and misses, worker
+  liveness, build info.
+- Readiness checks the database, both stores and the workers.
+
+| Severity | Location | Issue | Recommendation |
 |---|---|---|---|
-| HIGH | `frontend/pnpm-lock.yaml` | 48 npm advisories (19 high): axios, devalue, vite, @sveltejs/kit, etc. | Run `pnpm update`, raise floors to the patched versions, and drop axios for `fetch`. |
-| HIGH | `backend/Cargo.lock` | 14 RustSec vulnerabilities in transitive deps (rustls, webpki, quinn-proto, h2, crossbeam-epoch); tokio 1.52.3 is in the unsound range. | Run `cargo update`, add `cargo-deny` to CI. `rsa`/Marvin comes in through the sqlx macro dependency tree: confirm it is unused at runtime, or trim sqlx features. |
-| MEDIUM | `Cargo.toml` | `tfhe ~1.3` (latest 1.8.2). `bincode 1` is unmaintained (RUSTSEC-2025-0141) and is the wrong serialiser for TFHE objects. | Upgrade tfhe and use `tfhe::safe_serialization`. |
-| MEDIUM | `Cargo.toml` | Both `native-tls` (sqlx, lettre) and `rustls` (reqwest) are pulled in, which means OpenSSL in the image. | Standardise on rustls. |
-| LOW | `docker-compose.yml:37` | `npm install` ignores `pnpm-lock.yaml`. | `pnpm install --frozen-lockfile`. |
-| LOW | repo | No Dependabot/Renovate. | Add it. |
+| LOW | `backend/src/telemetry.rs` | Spans are logged, not exported. There is no OpenTelemetry trace export. | Add an optional OTLP exporter if the deployment has a collector. |
+| LOW | `frontend` | Browser-side errors (e.g. a failed WASM load) are shown to the user but not reported anywhere. | Optional client error reporting endpoint. |
 
-### Observability [3/10]
+### Concurrency [9/10]
 
-| Sev | Location | Issue | Recommendation |
+- Quota charging, key-count limits, job capacity and job claiming each run as
+  one SQL statement (`INSERT … SELECT … WHERE`, `UPDATE … RETURNING`).
+- Multi-step changes run in transactions: password change and reset, account
+  deletion, OAuth linking.
+- bcrypt and TFHE work run on blocking threads, with per-job timeouts. A
+  timed-out evaluation keeps its worker busy until the thread ends, so
+  concurrency never exceeds the pool size.
+- Idempotency keys make submissions safe to retry; the SDK relies on this.
+- Background tasks log their own errors.
+
+| Severity | Location | Issue | Recommendation |
 |---|---|---|---|
-| HIGH | `main.rs:44` | No access logging (`middleware::Logger` absent), no request IDs, no structured logs. | `tracing` + `tracing-actix-web` (JSON, request-id). |
-| MEDIUM | `main.rs:15` | `/api/health` does not check the DB or the HE pool, and there is no readiness probe. | Add `/api/health/ready` (DB ping, keys loaded). |
-| MEDIUM | — | No metrics (job latency, queue depth, HE op duration, 4xx/5xx). | Add a Prometheus `/metrics` endpoint. |
+| LOW | `backend/src/crypto/keys.rs` (`KeyStore::load`) | Two jobs missing the cache for the same key both decompress it (~0.5 s and ~180 MB each). The cache stays correct; the work is duplicated. | Single-flight the decompression per key id. |
 
-### Lifecycle [5/10]
+### Lifecycle [9/10]
 
-| Sev | Location | Issue | Recommendation |
+- Configuration is validated before anything starts. Startup failures now exit
+  1 with a single log line instead of panicking; this was fixed during the audit
+  in `main.rs`.
+- On SIGTERM the server stops accepting work, drains the workers within a grace
+  period, and requeues interrupted jobs at the next start (tested).
+- `healthcheck` and `backup` subcommands; both images have HEALTHCHECKs, and the
+  frontend waits for a healthy backend.
+- Backups are consistent; restore and migration are documented.
+
+| Severity | Location | Issue | Recommendation |
 |---|---|---|---|
-| MEDIUM | `config.rs` | Only `JWT_SECRET` presence is validated. Invalid numbers silently fall back to defaults, and `APP_BASE_URL`/`FROM_EMAIL` are not validated. | Do fail-fast validation at boot. |
-| MEDIUM | `Dockerfile` | Runs as root, has no `HEALTHCHECK`, no `.dockerignore`, and does not pin the base digest. The frontend is not built into an image; production runs the Vite **dev** server (`docker-compose.yml:37`). | Multi-stage, non-root, healthcheck, `adapter-node` image, compose `depends_on: service_healthy`, `read_only`, `cap_drop`. |
-| MEDIUM | `main.rs` | actix's default graceful shutdown covers HTTP only; in-flight background jobs are dropped. | Drain the worker pool on shutdown. |
-| LOW | `docker-compose.yml:15` | The default `APP_BASE_URL` is a personal Tailscale hostname. | Use a neutral placeholder and require it to be set. |
-
-### Dead Code [6/10]
-
-| Sev | Location | Issue | Recommendation |
-|---|---|---|---|
-| LOW | `backend/src/db/schema.sql` | A stale duplicate of the migrations. | Delete it. |
-| LOW | `foldertree.txt` | Describes a nonexistent layout ("Microsoft SEAL", `lib.rs`, `error.rs`). | Delete it or regenerate it. |
-| LOW | `engine.rs:295-305` | `encrypt`/`decrypt` are `#[allow(dead_code)]`. | Use them in tests, or delete them. |
-| LOW | `.Jules/` and `.jules/` | Two case-variant agent-notes directories. | Merge them. |
-| LOW | `api.ts:55-79` | The jobs API, `forgotPassword`/`resetPassword` and `resendVerification` have no UI. | Wire them up, or remove them. |
+| INFO | `backend/src/api/health.rs` | Readiness does not switch to 503 while the server drains. actix stops accepting connections at the same moment, so a load balancer sees refused connections rather than 503s. | Optionally flip readiness on SIGTERM before stopping. |
 
 ---
 
 ## Advisory Findings
 
-- `auth.rs` size: cohesion check scores 2/4 (one domain, but mixed abstraction levels), so the split recommendation is kept as LOW. `[High cohesion: partial]`
-- Rule 2 (trivial DRY) removed nothing: every DRY finding above is ≥ 5 lines.
+- `backend/src/config.rs` length: [High cohesion module] (see Code Principles).
+- `backend/src/api/integration_tests.rs` (1,127 lines) and `auth_tests.rs`
+  (824 lines): test modules, one scenario per test. [High cohesion module]
+
+---
 
 ## Cross-Domain DRY Violations
 
-| Pattern | Domains | Recommendation |
-|---|---|---|
-| Password policy implemented 3× (`validation.rs`, `login/+page.svelte:11`, `account/+page.svelte`) | backend, frontend ×2 | Expose the policy from the API, or share a single TS helper in `$lib`. |
-| Login redirect path hard-coded in backend (`/heaas/login`) and frontend (`api.ts`) | backend, frontend | Use one configured base path. |
+None. The patterns found duplicated in the previous audit now live once:
+- operations and parameters in `heaas-core`;
+- error codes in `heaas-core::api::error_codes`;
+- the password policy in one frontend module.
 
 ---
 
 ## Recommended Actions (Priority Order)
 
-1. **[CRITICAL]** Client-held keys: per-user uploaded `CompressedServerKey`, evaluation only under the caller's key, removal of the server-side client key from the job path, and honest docs.
-2. **[CRITICAL]** Fix the frontend CSP (`kit.csp` hashes) and the dev-server 500. Implement the fragment/one-time-code handling for OAuth, verify and reset.
-3. **[HIGH]** Use `safe_deserialize_conformant` with limits and carry-safe parallel ops. Upgrade tfhe and drop bincode.
-4. **[HIGH]** Make the rate limiter use the trusted peer IP. Fix OAuth email verification (Google `email_verified`, GitHub `/user/emails`).
-5. **[HIGH]** Add a persistent, bounded job queue. Paginate and slim down `list_jobs`. Stop charging quota on polling.
-6. **[HIGH]** Add CI (Rust + frontend + audit + e2e). Clear the 14 RustSec and 48 npm advisories.
-7. **[MEDIUM]** Cookie-based refresh tokens, PKCE plus a state cookie, atomic rotation with reuse detection, transactions.
-8. **[MEDIUM]** Observability (`tracing`, request IDs, readiness, metrics) and a hardened Docker/compose setup.
-9. **[LOW]** Dead files, DRY clean-ups, Svelte runes migration.
+1. [MEDIUM] Add coverage measurement (Rust and frontend) to CI with a floor.
+2. [MEDIUM] Add property tests (homomorphic result vs `apply_plain`, random
+   inputs; deserialization fuzzing), plus the scheduled heavy-TFHE job.
+3. [SOTA] Widen computation:
+   - comparisons (`eq`, `lt`, …) returning encrypted booleans;
+   - multi-input `sum`;
+   - scalar operations;
+   - more integer widths;
+   - multi-operation programs.
+4. [SOTA] Accept zero-knowledge-proven compact ciphertext lists (`zk-pok`) for
+   inputs.
+5. [LOW] A per-user rate limit on the authenticated scope; single-flight key
+   decompression; drop the legacy job columns; style hashes in the CSP.
 
 ---
 
 ## Sources Consulted
 
-- Repository source (every file in `backend/src`, `backend/migrations`, `frontend/src`, Dockerfile, compose, nginx, README, Customer guide, `.jules` notes)
-- Vendored crate source: `tfhe-1.3.3` (`shortint/parameters/aliases.rs`, `integer/server_key/radix/{add,mul}.rs`, `safe_serialization.rs`), `actix-web-4.13.0/src/info.rs`
-- RustSec advisory-db (cloned 2026-10-25) via `cargo audit`; `pnpm audit`; crates.io API (`tfhe` max_stable_version = 1.8.2)
-- Runtime checks: `cargo build/clippy/test`, `pnpm build`, `svelte-check`, Playwright/Chromium against `vite preview` and `vite dev`
-- Skills applied: codebase-auditor, security-review (+ advanced: JWT, CSRF, timing), rust-pro, coding-typescript, api-design, docker-patterns
+- Source, tests and tool output in this repository at the audit date:
+  `cargo fmt`, `cargo clippy`, `cargo test --workspace`, `cargo deny check`,
+  `svelte-check`, `pnpm audit`, and the Playwright e2e and full-stack suites.
+- Vendored TFHE-rs 1.8.2 source (`high_level_api/keys/inner.rs`: default
+  parameter set; `shortint/parameters/classic.rs`).
+- Zama, [TFHE-rs: Security and cryptography](https://docs.zama.org/tfhe-rs/get-started/security-and-cryptography):
+  default parameters' security level and failure probability.
+- GitHub Advisory [GHSA-gcqx-w48m-w2h4](https://github.com/advisories/GHSA-gcqx-w48m-w2h4) (deepmerge).
