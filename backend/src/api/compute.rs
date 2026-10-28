@@ -165,19 +165,19 @@ enum Refusal {
     Database(sqlx::Error),
 }
 
+/// A validated submission, ready to be queued.
+struct NewJob<'a> {
+    id: &'a str,
+    user_id: &'a str,
+    request: &'a CreateJobRequest,
+    input_bytes: usize,
+    idempotency_key: Option<&'a str>,
+    fingerprint: &'a str,
+}
+
 /// Inserts the job unless the user or the whole queue is at capacity. The
 /// capacity checks and the insert are one statement, so they cannot race.
-#[allow(clippy::too_many_arguments)]
-async fn enqueue(
-    pool: &SqlitePool,
-    config: &Config,
-    job_id: &str,
-    user_id: &str,
-    req: &CreateJobRequest,
-    input_bytes: usize,
-    idempotency_key: Option<&str>,
-    fingerprint: &str,
-) -> Result<(), Refusal> {
+async fn enqueue(pool: &SqlitePool, config: &Config, job: &NewJob<'_>) -> Result<(), Refusal> {
     let inserted: Option<(String,)> = sqlx::query_as(
         "INSERT INTO jobs (id, user_id, status, input_data_b64, operation, key_id,
                            input_bytes, idempotency_key, request_sha256)
@@ -187,15 +187,15 @@ async fn enqueue(
                 WHERE user_id = ? AND status IN ('pending', 'processing')) < ?
          RETURNING id",
     )
-    .bind(job_id)
-    .bind(user_id)
-    .bind(req.operation.as_str())
-    .bind(&req.key_id)
-    .bind(input_bytes as i64)
-    .bind(idempotency_key)
-    .bind(fingerprint)
+    .bind(job.id)
+    .bind(job.user_id)
+    .bind(job.request.operation.as_str())
+    .bind(&job.request.key_id)
+    .bind(job.input_bytes as i64)
+    .bind(job.idempotency_key)
+    .bind(job.fingerprint)
     .bind(config.max_queued_jobs)
-    .bind(user_id)
+    .bind(job.user_id)
     .bind(config.max_active_jobs_per_user)
     .fetch_optional(pool)
     .await
@@ -210,7 +210,7 @@ async fn enqueue(
     let (active,): (i64,) = sqlx::query_as(
         "SELECT COUNT(*) FROM jobs WHERE user_id = ? AND status IN ('pending', 'processing')",
     )
-    .bind(user_id)
+    .bind(job.user_id)
     .fetch_one(pool)
     .await
     .map_err(Refusal::Database)?;
@@ -289,17 +289,15 @@ pub async fn submit_job(
         ));
     }
 
-    let queued = enqueue(
-        pool,
-        &config,
-        &job_id,
-        &user_id,
-        &req,
+    let new_job = NewJob {
+        id: &job_id,
+        user_id: &user_id,
+        request: &req,
         input_bytes,
-        idempotency_key.as_deref(),
-        &fingerprint,
-    )
-    .await;
+        idempotency_key: idempotency_key.as_deref(),
+        fingerprint: &fingerprint,
+    };
+    let queued = enqueue(pool, &config, &new_job).await;
     if let Err(refusal) = queued {
         abandon(pool, &jobs, &user_id, &charge, job_id).await;
         return match refusal {

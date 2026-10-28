@@ -8,7 +8,9 @@ HEaaS lets you run arithmetic on numbers it never sees. Your device encrypts the
 service computes on the encrypted values, and only your device can decrypt the result.
 
 This guide covers the web dashboard and the API. For how the system works and what it
-does and does not protect, see the [README](README.md#what-the-server-can-and-cannot-learn).
+does and does not protect, see the [README](README.md#what-the-server-can-and-cannot-learn)
+and [SECURITY.md](SECURITY.md); the exact cryptographic parameters are in
+[`docs/parameters.md`](docs/parameters.md).
 
 ---
 

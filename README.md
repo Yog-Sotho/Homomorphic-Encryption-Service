@@ -12,9 +12,32 @@ It is built on [TFHE-rs](https://github.com/zama-ai/tfhe-rs) (the TFHE/CGGI sche
 with a Rust backend (actix-web, SQLite) and a SvelteKit dashboard that does all
 key handling and encryption in the browser through TFHE-rs's WebAssembly build.
 
-> **Status:** working end to end, under active hardening. See
-> [`docs/project/codebase_audit.md`](docs/project/codebase_audit.md) and the
-> [remediation plan](docs/project/remediation_plan.md) for what is still to come.
+> **Status:** pre-1.0. Working end to end, with the limits stated under
+> [What the server can and cannot learn](#what-the-server-can-and-cannot-learn).
+> The latest audit is in [`docs/project/codebase_audit.md`](docs/project/codebase_audit.md).
+> Read [Licensing](#licensing) before any commercial use.
+
+| Document | For |
+|---|---|
+| [Customer guide](Customer_guide.md) | Using the dashboard and the API |
+| [`docs/api/openapi.json`](docs/api/openapi.json) | The API, as OpenAPI 3.1 (also served at `/api/v1/openapi.json`) |
+| [`docs/parameters.md`](docs/parameters.md) | The cryptographic parameters (generated from the code) |
+| [SECURITY.md](SECURITY.md) | Reporting vulnerabilities; the threat model in brief |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Building, testing and the checks a change must pass |
+| [CHANGELOG.md](CHANGELOG.md) | What changed between releases |
+
+## Quick start
+
+```sh
+cp .env.example .env    # set JWT_SECRET (openssl rand -base64 48) and APP_BASE_URL
+docker compose up -d --build
+docker compose ps       # backend and frontend "healthy"
+```
+
+The app is then at `http://127.0.0.1:3000/heaas` and the API at
+`http://127.0.0.1:8080/api/v1`. Put nginx in front of both for HTTPS (see
+[Deployment](#deployment)). For local development without Docker, see
+[Development](#development).
 
 ---
 
@@ -34,6 +57,30 @@ key handling and encryption in the browser through TFHE-rs's WebAssembly build.
  5. decrypt locally
 ```
 
+### Architecture
+
+```
+ Browser (SvelteKit app)            Rust client (heaas-sdk / heaas CLI)
+ TFHE-rs WASM in a Web Worker:      TFHE-rs: keygen, encrypt, decrypt
+ keygen, encrypt, decrypt;          client key in a 0600 file
+ client key sealed in IndexedDB
+        │ HTTPS                              │ HTTPS
+        ▼                                    ▼
+ ┌──────────────────────── nginx (TLS, HSTS) ────────────────────────┐
+ │   /heaas/ ─▶ frontend (node, server.js)    /api/ ─▶ backend        │
+ └────────────────────────────────────────────────────────────────────┘
+                                                      │
+          backend (actix-web, he-backend)             ▼
+          ├─ /api/v1: accounts, sessions, keys, jobs, OpenAPI, health
+          ├─ job queue in SQLite ─▶ worker pool ─▶ TFHE-rs evaluation
+          │                         (bounded, timeouts, retries, durable)
+          ├─ /data/he_saas.db  · /data/keys (server keys)  · /data/jobs (ciphertexts)
+          └─ /metrics (Prometheus, token) · JSON logs with request ids
+```
+
+`heaas-core` holds what the backend, the SDK and the CLI must agree on: the TFHE
+parameters, the operations and the API types.
+
 - **Client key** (~31 KB): generated on your device, used to encrypt and decrypt.
   It is never uploaded. In the dashboard it stays in the browser's IndexedDB,
   encrypted with your passphrase (see [Your key in the browser](#your-key-in-the-browser)).
@@ -51,6 +98,7 @@ key handling and encryption in the browser through TFHE-rs's WebAssembly build.
 | Integer type | `FheUint16` (0–65535) |
 | Operations | `add`, `subtract`, `multiply` (mod 65536), `min`, `max` |
 | Live values | `GET /api/v1/he/params` |
+| Full parameter sheet | [`docs/parameters.md`](docs/parameters.md), generated from `core/src/params.rs` |
 
 Uploaded keys and ciphertexts are deserialized with TFHE-rs's size-limited,
 conformance-checked `safe_deserialize_conformant`, so keys made with other
@@ -420,3 +468,6 @@ TFHE-rs is distributed under BSD-3-Clause-Clear, which grants no patent rights.
 Zama states that TFHE-rs is free for development, research, prototyping and
 experimentation, and that **commercial use requires Zama's patent licence**. Obtain
 that licence before running this service commercially.
+
+This repository has no licence file yet. Until its owner adds one, no licence to
+use, copy or modify the code is granted.
