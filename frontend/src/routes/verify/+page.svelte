@@ -27,7 +27,7 @@
   });
 </script>
 
-<svelte:head><title>Verify email · HEaaS</title></svelte:head>
+<svelte:head><title>Verify email · HE Engine</title></svelte:head>
 
 <div class="container">
   <h1>Verify your email</h1>

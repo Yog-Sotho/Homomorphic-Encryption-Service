@@ -36,7 +36,7 @@ impl<'a> Email<'a> {
     fn template(&self) -> Template<'a> {
         match *self {
             Email::Verify { url, valid_hours } => Template {
-                subject: "Verify your HEaaS account",
+                subject: "Verify your HE Engine account",
                 intro: format!(
                     "Open the link below to activate your account and sign in. It expires in {}.",
                     plural(valid_hours, "hour")
@@ -45,7 +45,7 @@ impl<'a> Email<'a> {
                 footer: "If you did not create this account, ignore this email.",
             },
             Email::Reset { url, valid_minutes } => Template {
-                subject: "Reset your HEaaS password",
+                subject: "Reset your HE Engine password",
                 intro: format!(
                     "Open the link below to choose a new password. It expires in {}.",
                     plural(valid_minutes, "minute")
@@ -226,7 +226,7 @@ mod tests {
         .template();
         let html = render_html(&verify);
         assert_eq!(html.matches(URL).count(), 2);
-        assert!(html.contains("<h2>Verify your HEaaS account</h2>"));
+        assert!(html.contains("<h2>Verify your HE Engine account</h2>"));
         assert!(html.contains("expires in 24 hours"));
         let text = render_text(&verify);
         assert!(text.contains(URL) && text.contains("expires in 24 hours"));

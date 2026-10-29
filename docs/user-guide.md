@@ -1,12 +1,15 @@
-<p align="center"><img src="images/banner.svg" alt="HEaaS: Homomorphic Encryption as a Service" width="100%"></p>
+<p align="center"><img src="images/banner.svg" alt="Homomorphic Encryption Engine" width="100%"></p>
 
-# HEaaS user guide
+# HE Engine user guide
 
-HEaaS lets you run arithmetic on numbers it never sees. Your device encrypts them, the
-service computes on the encrypted values, and only your device can decrypt the result.
+The Homomorphic Encryption Engine (HE Engine) lets you run arithmetic on numbers it
+never sees. Your device encrypts them, the engine computes on the encrypted values,
+and only your device can decrypt the result. This guide is for the people who use an
+instance; whoever runs it (the *operator*) will find setup in
+[Self-hosting](self-hosting.md).
 
 This guide covers the web dashboard and the API. For how the system works and what it
-does and does not protect, see the [How HEaaS works](how-it-works.md#what-the-server-can-and-cannot-learn)
+does and does not protect, see [How the HE Engine works](how-it-works.md#what-the-server-can-and-cannot-learn)
 and [SECURITY.md](../SECURITY.md); the exact cryptographic parameters are in
 [`parameters.md`](parameters.md).
 
@@ -14,14 +17,14 @@ and [SECURITY.md](../SECURITY.md); the exact cryptographic parameters are in
 
 ## 1. Your keys
 
-HEaaS uses two keys, both generated on your device:
+The HE Engine uses two keys, both generated on your device:
 
 | Key | Size | Where it lives | What it can do |
 |---|---|---|---|
 | **Client key** (secret) | ~31 KB | Only on your device (in the dashboard, this browser's storage, encrypted with your passphrase) | Encrypt and decrypt |
-| **Server key** (evaluation key) | ~60 MB | Uploaded to HEaaS | Compute on your ciphertexts, but **not** decrypt them |
+| **Server key** (evaluation key) | ~60 MB | Uploaded to the server | Compute on your ciphertexts, but **not** decrypt them |
 
-The service never receives your client key, so it cannot read your data.
+The server never receives your client key, so it cannot read your data.
 
 **Your passphrase protects your client key.** In the dashboard the key is stored only
 in the browser you generated it in, encrypted with a passphrase you choose. You enter
@@ -76,7 +79,7 @@ They generate your keys locally and only ever send the evaluation key and
 ciphertexts:
 
 ```sh
-export HEAAS_URL=https://<your HEaaS site> HEAAS_EMAIL=you@example.com
+export HEAAS_URL=https://<your HE Engine instance> HEAAS_EMAIL=you@example.com
 heaas keygen         # heaas-client.key is your secret key: keep it (and a backup) safe
 heaas upload-key     # prints the key id
 heaas run --key-id <key id> --op multiply 300 300    # prints 24464
@@ -91,7 +94,7 @@ authentication, every endpoint, errors, quotas and full request examples.
 |---|---|---|
 | "In-browser encryption needs a cross-origin isolated page" | The browser or the deployment does not allow `SharedArrayBuffer`, which TFHE's WebAssembly needs | Use a current Chrome, Edge, Firefox or Safari. Operators: serve the frontend with the COOP/COEP headers described in [Self-hosting](self-hosting.md#deployment) |
 | `409` "You already have 2 server keys" | Your account has reached its key limit | Delete a key you no longer use |
-| `400` "Not a compressed server key for this service's parameters" | The key was made with different parameters or a different TFHE-rs release | Generate it with TFHE-rs 1.8.2 and `ConfigBuilder::default()` |
+| `400` "Not a compressed server key for this server's parameters" | The key was made with different parameters or a different TFHE-rs release | Generate it with TFHE-rs 1.8.2 and `ConfigBuilder::default()` |
 | `413 Payload Too Large` | The upload is over the size limit | Upload only the compressed server key, never the full server key |
 | Job `failed`: "Input 1 is not a valid FheUint16 ciphertext for this key" | The input is not an `FheUint16`, is corrupted, or was made with other parameters | Encrypt with the client key that belongs to `key_id` and `safe_serialize` the result |
 | `404` "Server key not found" | The key id is wrong, deleted, or belongs to another account | List your keys with `GET /api/v1/keys` (or `heaas keys`) |
@@ -100,7 +103,7 @@ authentication, every endpoint, errors, quotas and full request examples.
 | "For your security, sign in again" when deleting a Google/GitHub account | Deleting an account without a password needs a fresh sign-in | Sign out, sign in again, then delete within 5 minutes |
 | `429` "Daily compute quota … reached" | You submitted the maximum number of jobs today | Wait until midnight UTC (`Retry-After` says how long) |
 | `429` "You have N jobs waiting or running" | Too many of your jobs are unfinished | Wait for some to finish, then resubmit |
-| `503` "The job queue is full" | The service is busy | Retry after the `Retry-After` seconds |
+| `503` "The job queue is full" | The server is busy | Retry after the `Retry-After` seconds |
 | `422` "This Idempotency-Key was already used for a different request" | You reused a key for a new request | Use a new key for each new job |
 | `409` on `…/result` | The job has not completed | Poll the job until `status` is `completed` |
 | Job `failed`: "Timed out after N seconds" | The computation took longer than the server allows | Contact the operator |
@@ -108,7 +111,7 @@ authentication, every endpoint, errors, quotas and full request examples.
 
 ## 5. FAQ
 
-**Can HEaaS read my numbers?**
+**Can the server, or whoever runs it, read my numbers?**
 No. It has only your server key, which cannot decrypt. It does see metadata: when you
 submit jobs, which operation each uses and how many you run.
 

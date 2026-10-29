@@ -507,7 +507,7 @@ impl Config {
         let from = match vars.get("FROM_EMAIL") {
             Some(raw) => raw.parse::<Mailbox>().unwrap_or_else(|_| {
                 vars.errors.push(format!(
-                    "FROM_EMAIL must be an address like \"HEaaS <noreply@example.com>\", not {raw:?}"
+                    "FROM_EMAIL must be an address like \"HE Engine <noreply@example.com>\", not {raw:?}"
                 ));
                 Self::placeholder_sender()
             }),
@@ -769,7 +769,7 @@ mod tests {
             &[
                 base[0],
                 base[1],
-                ("FROM_EMAIL", "HEaaS <noreply@heaas.example>"),
+                ("FROM_EMAIL", "HE Engine <noreply@heaas.example>"),
                 ("SMTP_TLS", "implicit"),
                 ("SMTP_USER", "mailer"),
                 ("SMTP_PASS", "hunter2"),

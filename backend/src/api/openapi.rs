@@ -20,8 +20,8 @@ use utoipa::{Modify, OpenApi};
 #[derive(OpenApi)]
 #[openapi(
     info(
-        title = "HEaaS API",
-        description = "Homomorphic encryption as a service. Clients keep their TFHE client key; \
+        title = "HE Engine API",
+        description = "A self-hosted engine for computing on encrypted data. Clients keep their TFHE client key; \
                        the server evaluates on ciphertexts with the server key they upload. \
                        Every error is `{\"error\": {\"code\", \"message\"}}`."
     ),

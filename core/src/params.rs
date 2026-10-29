@@ -1,4 +1,4 @@
-//! The one TFHE configuration HEaaS evaluates under.
+//! The one TFHE configuration HE Engine evaluates under.
 //!
 //! Clients generate their keys with the same configuration (TFHE-rs
 //! `ConfigBuilder::default()`, which is also what the browser uses), so the
@@ -107,9 +107,9 @@ pub fn parameter_sheet() -> String {
     let mut out = String::from(
         "<!-- Generated from core/src/params.rs by `UPDATE_DOCS=1 cargo test -p heaas-core`; do not edit. -->\n\
          # Cryptographic parameters\n\n\
-         Every key and ciphertext HEaaS accepts is made with these parameters; servers\n\
+         Every key and ciphertext HE Engine accepts is made with these parameters; servers\n\
          reject keys and ciphertexts that do not conform to them. They are TFHE-rs's\n\
-         defaults, which HEaaS does not tune. Zama states that its default parameters\n\
+         defaults, which HE Engine does not tune. Zama states that its default parameters\n\
          give at least 128 bits of security (Lattice Estimator, MATZOV cost model) with\n\
          a bootstrapping failure probability of at most 2^-128, chosen for the IND-CPA^D\n\
          model: see [Security and cryptography](https://docs.zama.org/tfhe-rs/get-started/security-and-cryptography).\n\n\

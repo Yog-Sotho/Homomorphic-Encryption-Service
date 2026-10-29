@@ -27,8 +27,8 @@ describe('key files', () => {
   });
 
   it('explain what is wrong with other files', () => {
-    expect(() => parseKeyFile('not json')).toThrow('not a HEaaS key file');
-    expect(() => parseKeyFile('{"format":"other"}')).toThrow('not a HEaaS key file');
+    expect(() => parseKeyFile('not json')).toThrow('not a HE Engine key file');
+    expect(() => parseKeyFile('{"format":"other"}')).toThrow('not a HE Engine key file');
     const newer = { ...JSON.parse(toKeyFile(record)), version: 2 };
     expect(() => parseKeyFile(JSON.stringify(newer))).toThrow('newer version');
     const damaged = { ...JSON.parse(toKeyFile(record)), serverKeySha256: 'xyz' };

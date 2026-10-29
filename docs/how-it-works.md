@@ -1,32 +1,32 @@
-# How HEaaS works
+# How the HE Engine works
 
-This page explains what happens to your data, which keys exist and where they
-live, and what the server can and cannot learn. For a hands-on walkthrough see the
-[user guide](user-guide.md); for the exact cryptographic parameters see
-[`parameters.md`](parameters.md).
+The Homomorphic Encryption Engine (HE Engine) is a server that you or your
+organisation run. Its users send it encrypted numbers, it computes on them without
+decrypting them, and only the users can read the results. This page explains what
+happens to the data, which keys exist and where they live, and what the server can
+and cannot learn. For a hands-on walkthrough see the [user guide](user-guide.md);
+for the exact cryptographic parameters see [`parameters.md`](parameters.md).
 
 ![The three steps: encrypt on your device, compute on the server, decrypt on your device](images/how-it-works.svg)
 
-```
- Your device                                      HEaaS server
- ───────────                                      ────────────
- 1. generate key pair  ──────────────────────────▶ (nothing)
-    client key (secret) stays here
- 2. upload compressed server key  ──────────────▶ stores it; can compute,
-                                                   cannot decrypt
- 3. encrypt inputs, submit job  ────────────────▶ evaluates op(a, b) on
-                                                   ciphertexts with your key
- 4. fetch encrypted result  ◀───────────────────── queued job runs on a
-                                                   worker; returns a ciphertext
- 5. decrypt locally
-```
+## Why run it as a server
 
-## Architecture
+Homomorphic encryption matters when the machine that computes is not fully trusted
+by the people whose data it is: a server shared by a team, an internal service run
+by an IT department, or your own instance on a rented cloud machine. The users keep
+their secret keys; whoever runs the server (the *operator*) only ever sees ciphertexts.
 
-![HEaaS architecture](images/architecture.svg)
+## The steps
 
-`heaas-core` holds what the backend, the SDK and the CLI must agree on: the TFHE
-parameters, the operations and the API types.
+1. **Generate a key pair** on your device. The secret (client) key stays there.
+2. **Register the evaluation key** with the server, once. It can compute with it but
+   cannot decrypt.
+3. **Encrypt your inputs** and submit a job naming the operation.
+4. A worker on the server **evaluates the operation on the ciphertexts** with your
+   evaluation key and stores an encrypted result.
+5. **Fetch the encrypted result** and decrypt it on your device.
+
+## The keys
 
 - **Client key** (~31 KB): generated on your device, used to encrypt and decrypt.
   It is never uploaded. In the dashboard it stays in the browser's IndexedDB,
@@ -35,6 +35,13 @@ parameters, the operations and the API types.
   It lets the server compute on your ciphertexts but not decrypt them. You register
   it once with `POST /api/v1/keys`; the server checks it against its parameters.
 - **Ciphertexts** (~132 KB each): `FheUint16` values. Arithmetic wraps modulo 2¹⁶.
+
+## Architecture
+
+![HE Engine architecture](images/architecture.svg)
+
+`heaas-core` holds what the backend, the SDK and the CLI must agree on: the TFHE
+parameters, the operations and the API types.
 
 ## Parameters
 

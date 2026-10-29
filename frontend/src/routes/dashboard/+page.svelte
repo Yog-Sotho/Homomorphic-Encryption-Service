@@ -117,7 +117,7 @@
   };
 </script>
 
-<svelte:head><title>Dashboard · HEaaS</title></svelte:head>
+<svelte:head><title>Dashboard · HE Engine</title></svelte:head>
 
 <div class="dashboard">
   <div class="page-header">

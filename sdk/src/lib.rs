@@ -1,4 +1,4 @@
-//! Rust client for HEaaS, homomorphic encryption as a service.
+//! Rust client for the Homomorphic Encryption Engine (HE Engine).
 //!
 //! Keys are generated and kept here ([`fhe`]); the server only receives the
 //! compressed server (evaluation) key and ciphertexts, computes on them, and

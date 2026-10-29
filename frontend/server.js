@@ -14,7 +14,7 @@ const server = http.createServer((req, res) => {
 });
 
 server.listen(port, host, () => {
-  console.log(`HEaaS frontend listening on http://${host}:${port}`);
+  console.log(`HE Engine frontend listening on http://${host}:${port}`);
 });
 
 for (const signal of ['SIGINT', 'SIGTERM']) {

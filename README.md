@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/images/banner.svg" alt="HEaaS: Homomorphic Encryption as a Service" width="100%">
+  <img src="docs/images/banner.svg" alt="Homomorphic Encryption Engine" width="100%">
 </p>
 
 <p align="center">
@@ -9,19 +9,27 @@
   <img src="https://img.shields.io/badge/status-pre--1.0-a855f7" alt="Status: pre-1.0">
 </p>
 
-HEaaS lets you run computations on data that stays encrypted the whole time. You
-encrypt on your own device, the service computes directly on the encrypted values,
-and only you can decrypt the result. The server never holds your secret key, so it
-cannot read your inputs or your results.
+The Homomorphic Encryption Engine (HE Engine) is a self-hosted server for computing on
+data that stays encrypted the whole time. Its users encrypt on their own devices, the
+engine computes directly on the encrypted values, and only the users can decrypt the
+results. The server never holds a secret key, so neither it nor whoever runs it can
+read the inputs or the results.
 
 It is built on [TFHE-rs](https://github.com/zama-ai/tfhe-rs), Zama's implementation
 of fully homomorphic encryption, with a Rust backend and a web app that does all of
 its encryption in the browser.
 
-## Why HEaaS
+## Who it is for
+
+Teams and organisations that want a shared server to compute on sensitive numbers
+without trusting that server with the data, and individuals who want to compute on a
+cloud machine they do not fully trust. You run one instance; your users get
+accounts on it. It is not a hosted product: there is nothing to subscribe to.
+
+## Why the HE Engine
 
 - **Your keys stay with you.** Keys are created in your browser or with the
-  command-line tool. The service receives only an evaluation key, which lets it
+  command-line tool. The server receives only an evaluation key, which lets it
   compute but never decrypt.
 - **Real computation on encrypted data.** Add, subtract, multiply, minimum and
   maximum on 16-bit integers, using TFHE-rs's default parameters (128-bit security
@@ -36,12 +44,12 @@ its encryption in the browser.
 ![Encrypt on your device, compute on the server, decrypt on your device](docs/images/how-it-works.svg)
 
 The server holds an *evaluation key*: enough to compute on your ciphertexts, never
-enough to read them. [How HEaaS works](docs/how-it-works.md) explains the keys, the
+enough to read them. [How the HE Engine works](docs/how-it-works.md) explains the keys, the
 architecture and exactly what the server can and cannot learn.
 
 ## See it in action
 
-![The HEaaS dashboard after multiplying two encrypted numbers](docs/images/dashboard.png)
+![The HE Engine dashboard after multiplying two encrypted numbers](docs/images/dashboard.png)
 
 The numbers are encrypted in the browser, multiplied on the server without being
 decrypted, and the result is decrypted back in the browser.
@@ -58,7 +66,7 @@ docker compose up -d --build
 The app is then available at `http://127.0.0.1:3000/heaas`. For HTTPS, configuration
 and backups, see [Self-hosting](docs/self-hosting.md).
 
-Or compute from a terminal against an existing instance:
+Your users can then also compute from a terminal:
 
 ```sh
 export HEAAS_URL=https://<instance> HEAAS_EMAIL=you@example.com
@@ -71,7 +79,7 @@ heaas run --key-id <id> --op multiply 300 300    # 24464 (300 × 300 mod 65536)
 | | |
 |---|---|
 | [User guide](docs/user-guide.md) | Using the dashboard, managing keys, troubleshooting |
-| [How HEaaS works](docs/how-it-works.md) | Keys, architecture, privacy guarantees and limits |
+| [How the HE Engine works](docs/how-it-works.md) | Keys, architecture, privacy guarantees and limits |
 | [Using the API](docs/api.md) | HTTP API, Rust SDK and the `heaas` command-line tool |
 | [Self-hosting](docs/self-hosting.md) | Deployment, configuration, monitoring, backups |
 | [Cryptographic parameters](docs/parameters.md) | The exact TFHE parameters, generated from the code |
@@ -81,10 +89,10 @@ heaas run --key-id <id> --op multiply 300 300    # 24464 (300 × 300 mod 65536)
 
 ## Project status
 
-HEaaS is pre-1.0. It works end to end and is covered by unit, integration and
+The HE Engine is pre-1.0. It works end to end and is covered by unit, integration and
 browser tests. Today it supports one encrypted type (16-bit unsigned integers) and
 five operations. Like all FHE systems, it cannot prove that the server computed
-correctly; [How HEaaS works](docs/how-it-works.md#what-the-server-can-and-cannot-learn)
+correctly; [How the HE Engine works](docs/how-it-works.md#what-the-server-can-and-cannot-learn)
 lists the limits. The latest code audit is in
 [`docs/project/codebase_audit.md`](docs/project/codebase_audit.md).
 
@@ -96,4 +104,4 @@ use, copy or modify the code is granted.
 TFHE-rs is distributed under BSD-3-Clause-Clear, which grants no patent rights.
 Zama states that TFHE-rs is free for development, research, prototyping and
 experimentation, and that **commercial use requires Zama's patent licence**. Obtain
-that licence before running this service commercially.
+that licence before any commercial use.

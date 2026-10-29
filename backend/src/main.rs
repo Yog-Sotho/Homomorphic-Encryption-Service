@@ -169,7 +169,7 @@ async fn serve() -> std::io::Result<()> {
         tracing::info!("METRICS_TOKEN is not set; GET /metrics is disabled");
     }
 
-    tracing::info!("Starting HE SaaS Backend on {}", config.server_addr);
+    tracing::info!("Starting the HE Engine backend on {}", config.server_addr);
 
     let config_data = web::Data::new(config.clone());
     let rate_limits = web::Data::new(RateLimits::new(&config));

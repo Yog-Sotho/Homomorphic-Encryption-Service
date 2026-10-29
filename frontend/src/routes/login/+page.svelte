@@ -96,14 +96,14 @@
   }
 
   const TITLES: Record<Mode, string> = {
-    login: 'HE SaaS Login',
+    login: 'Sign in to HE Engine',
     register: 'Create an Account',
     forgot: 'Reset your password'
   };
   const SUBMIT: Record<Mode, string> = { login: 'Login', register: 'Register', forgot: 'Send reset link' };
 </script>
 
-<svelte:head><title>Sign in · HEaaS</title></svelte:head>
+<svelte:head><title>Sign in · HE Engine</title></svelte:head>
 
 <div class="container">
   <h1>{TITLES[mode]}</h1>

@@ -1,6 +1,6 @@
 [package]
 name = "heaas-sdk"
-description = "Rust client for HEaaS: local TFHE keys, encrypted jobs, local decryption. Includes the `heaas` CLI."
+description = "Rust client for HE Engine: local TFHE keys, encrypted jobs, local decryption. Includes the `heaas` CLI."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

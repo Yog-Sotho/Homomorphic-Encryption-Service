@@ -113,7 +113,7 @@ export async function open(
   passphrase: string,
   serverKeySha256: string
 ): Promise<Uint8Array<ArrayBuffer>> {
-  if (!isSealedKey(sealed)) throw new Error('Not a protected HEaaS key');
+  if (!isSealedKey(sealed)) throw new Error('Not a protected HE Engine key');
   const key = await deriveKey(passphrase, base64ToBytes(sealed.salt), sealed.iterations);
   try {
     const plaintext = await crypto.subtle.decrypt(

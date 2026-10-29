@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="300" height="80" viewBox="0 0 300 80" role="img" aria-label="HEaaS">
+<svg xmlns="http://www.w3.org/2000/svg" width="300" height="80" viewBox="0 0 300 80" role="img" aria-label="HE Engine">
   <g transform="translate(4 4) scale(0.4091)">
     <defs>
       <linearGradient id="hm" x1="0" y1="0" x2="1" y2="1">
@@ -14,5 +14,5 @@
       <path d="M100 105 l14 14 M114 105 l-14 14"/>
     </g>
   </g>
-  <text x="90" y="50" font-family="Inter, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="38" font-weight="800" fill="#f9fafb" letter-spacing="-1">HEaaS</text>
+  <text x="90" y="50" font-family="Inter, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="38" font-weight="800" fill="#f9fafb" letter-spacing="-1">HE Engine</text>
 </svg>

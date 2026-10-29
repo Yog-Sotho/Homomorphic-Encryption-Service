@@ -1,9 +1,20 @@
 # Changelog
 
-All notable changes to HEaaS. The format follows
+All notable changes to the Homomorphic Encryption Engine (HE Engine, formerly
+HEaaS). The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/) (before 1.0, minor versions may break
 compatibility).
+
+## [Unreleased]
+
+### Changed
+- Renamed to **Homomorphic Encryption Engine** (HE Engine), formerly HEaaS, and
+  described as what it is: a self-hosted server whose operator runs it for its
+  users, not a hosted service. New banner, logo and wording in the app, emails,
+  API description and documentation. Code names (`he-backend`, `heaas-core`,
+  `heaas-sdk`, the `heaas` CLI, environment variables, metric and cookie names)
+  are unchanged.
 
 ## [0.4.0] - 2026-10-28
 
@@ -51,9 +62,6 @@ history is in git.
   and a full-stack browser test against the real backend.
 - `docs/parameters.md`, generated from the code; `SECURITY.md`,
   `CONTRIBUTING.md`, this changelog.
-- A new banner, logo and diagrams, a dashboard screenshot, a short README and
-  separate guides in `docs/`: user guide (formerly `Customer_guide.md`),
-  how it works, API, self-hosting.
 - A new banner, logo and diagrams, a dashboard screenshot, a short README and
   separate guides in `docs/`: user guide (formerly `Customer_guide.md`),
   how it works, API, self-hosting.

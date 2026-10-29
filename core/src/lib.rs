@@ -1,4 +1,4 @@
-//! What HEaaS clients and the server must agree on.
+//! What HE Engine clients and the server must agree on.
 //!
 //! - [`params`]: the TFHE-rs release and configuration keys and ciphertexts are made with.
 //! - [`Operation`]: the homomorphic operations the service evaluates.

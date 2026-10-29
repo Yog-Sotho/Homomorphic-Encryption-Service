@@ -1,8 +1,8 @@
 {
   "openapi": "3.1.0",
   "info": {
-    "title": "HEaaS API",
-    "description": "Homomorphic encryption as a service. Clients keep their TFHE client key; the server evaluates on ciphertexts with the server key they upload. Every error is `{\"error\": {\"code\", \"message\"}}`.",
+    "title": "HE Engine API",
+    "description": "A self-hosted engine for computing on encrypted data. Clients keep their TFHE client key; the server evaluates on ciphertexts with the server key they upload. Every error is `{\"error\": {\"code\", \"message\"}}`.",
     "version": "0.4.0"
   },
   "servers": [

@@ -1,6 +1,6 @@
 [package]
 name = "heaas-core"
-description = "What HEaaS clients and the server must agree on: TFHE parameters, operations and API types."
+description = "What HE Engine clients and the server must agree on: TFHE parameters, operations and API types."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
