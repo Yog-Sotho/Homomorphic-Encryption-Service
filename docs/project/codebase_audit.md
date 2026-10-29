@@ -1,12 +1,12 @@
 # Codebase Audit Report
 
 **Date:** 2026-10-29
-**Project:** Homomorphic Encryption Engine (HE Engine; workspace 0.4.0 + Phase 8: `he-backend`, `heaas-core`, `heaas-sdk`; `he-frontend` 0.4.0)
+**Project:** Homomorphic Encryption Engine (HE Engine; workspace 0.4.0 + Phases 8 and 9: `he-backend`, `heaas-core`, `heaas-sdk`; `he-frontend` 0.4.0)
 **Language / Framework:** Rust 2021, MSRV 1.91.1 (actix-web 4.18, sqlx 0.8 / SQLite, TFHE-rs 1.8.2, utoipa 6, tracing, prometheus 0.14) · SvelteKit 3.1 / Svelte 5 / Vite 8 (TypeScript, strict), TFHE-rs 1.8.2 WebAssembly
 **Project Type:** Web Service with a worker pool (all 9 dimensions applicable)
 **Audit Mode:** Domain-aware (`backend/`, `core/`, `sdk/`, `frontend/`, deployment files)
 **Previous audits:** 2026-10-25 (overall 4.0, SOTA 3), 2026-10-28 (overall 9.0, reported
-as 8.9 by an arithmetic slip; SOTA 7)
+as 8.9 by an arithmetic slip; SOTA 7), 2026-10-29 after Phase 8 (overall 9.1, SOTA 8)
 
 Every finding below was checked against the source, tool output or the vendored
 crate source; scores are based on that evidence, not on documentation.
@@ -15,25 +15,27 @@ crate source; scores are based on that evidence, not on documentation.
 
 ## Executive Summary
 
-Phase 8 closed both MEDIUM findings of the previous audit and the two feature gaps
-that held the SOTA rating back.
+This re-audit follows Phase 9, which added the last feature the SOTA rating was
+waiting on: several operations in one job.
 
-- **Tests:** `proptest` property tests compare homomorphic results with the plaintext
-  oracle on random operations, types and values, and throw random and corrupted
-  bytes at every deserialization path (ciphertexts, proven lists, public and server
-  keys). Heavier variants (every type, 64-bit multiplication, proofs) run in a
-  scheduled workflow. CI now measures coverage with floors: Rust 91% of lines
-  (floor 88%), frontend library code 92% (floor 88%).
-- **Computation:** eight integer types (8 to 64 bits, signed and unsigned), the six
-  comparisons with encrypted boolean results, sums of up to 16 inputs, and plaintext
-  (scalar) right-hand operands, in the server, SDK, CLI and dashboard.
-- **Proven inputs:** TFHE-rs `ProvenCompactCiphertextList`s with zero-knowledge
-  proofs of well-formed encryption, verified against the key's public key and a
-  server-generated CRS, bound to the key id. Browser proving is covered by the
-  full-stack test.
+- **Programs:** a job can run up to 64 steps on up to 16 encrypted inputs, every
+  intermediate value encrypted. Steps cover arithmetic, truncating division and
+  remainder (with TFHE-rs's results for an encrypted zero divisor, measured and
+  pinned by tests), bitwise and logical operations, shifts and rotations, negation,
+  absolute value, comparisons and an encrypted if-then-else.
+- **Expressions:** `(a + b) * 3 < c ? a : b` compiles into a program in Rust
+  (`heaas-core`, used by the server, SDK and CLI) and in the browser. Both
+  compilers pass one shared file of 64 test cases, so they cannot drift apart.
+- **Batches:** up to 16 jobs in one request, queued in one transaction or not at
+  all. A batch the quota cannot cover is refused without using up what is left.
+- **Tests:** property tests generate random well-typed programs and compare their
+  homomorphic results with the plaintext oracle; the oracle itself is checked
+  against native Rust integers. Coverage: Rust 91.2% of lines, frontend library
+  92.2%.
+- **Previous LOW findings closed:** the integer-type dispatch table now lives once
+  in `heaas-core` (`with_fhe_type!`), and the CRS download is rate-limited.
 
-Every finding left is LOW or INFO. The SOTA rating rises to 8: what is still missing
-is multi-operation programs and throughput options (batching, GPU).
+Every finding is LOW or INFO. The SOTA rating rises to 9.
 
 ## Overall Score: 9.1 / 10  (average of the nine dimensions; no caps apply: no CRITICAL findings)
 
@@ -49,31 +51,32 @@ is multi-operation programs and throughput options (batching, GPU).
 | Concurrency | 9/10 | HIGH | PASS |
 | Lifecycle | 9/10 | MEDIUM | PASS |
 
-**SOTA rating: 8 / 10** (previously 7). The yardstick is the same as before:
+**SOTA rating: 9 / 10** (previously 8). The yardstick is the same as before:
 state-of-the-art FHE services and tooling such as Zama's TFHE-rs, Concrete and
 fhEVM tooling, and OpenFHE-based services.
 
-At or near that bar:
+At that bar:
 - client-held keys, with compressed evaluation keys only on the server;
 - conformance-checked inputs and results, and carry-propagating operations;
 - zero-knowledge-proven inputs (TFHE-rs compact PKE proofs), bound to the key;
-- eight integer types, comparisons, sums and scalar operands;
+- programs: multi-step circuits with encrypted control flow (`select`), division,
+  bitwise operations and shifts on eight integer types, written in an expression
+  syntax that compiles identically in Rust and in the browser;
+- batch submission, durable and idempotent, with OpenAPI;
 - a parameter set pinned to TFHE-rs defaults (≥ 128-bit security, p_fail ≤ 2⁻¹²⁸
   per Zama) plus Zama's dedicated compact-public-key parameters, published as a
   generated parameter sheet;
 - in-browser WASM keygen, encryption and proving, with sealed key storage;
-- a typed SDK and CLI built on a shared core crate, so parameters cannot drift;
-- a durable, idempotent job API with OpenAPI;
+- a typed SDK and CLI built on a shared core crate;
 - production observability, property tests and measured coverage.
 
-Missing, and needed for 9:
-- **Programs.** Each job is one operation. Comparable systems evaluate circuits
-  (several operations, `if_then_else` on encrypted conditions, bitwise operations,
-  division) in one job, keeping intermediate values on the server.
-- **Throughput options.** No batching of many jobs per request and no GPU backend.
-- **Proofs today protect the server from its own users only.** Only a key's owner
-  can submit jobs for it; accepting proven inputs from other parties (the case
-  proofs are designed for) is not offered.
+Still missing for 10:
+- **GPU evaluation.** TFHE-rs has a CUDA backend; the service runs on CPU only.
+- **Inputs from other parties.** Only a key's owner submits jobs; proven inputs from
+  third parties encrypting under the owner's public key (surveys, aggregation),
+  the case proofs are designed for, are not offered.
+- **Richer programs.** One output per program, no programmable lookup tables
+  (TFHE-rs `match_value`/`map`), and no compression of results for transport.
 
 Verifiable computation is out of reach of TFHE itself and is documented as a
 limitation, not counted against the rating.
@@ -104,6 +107,10 @@ limitation, not counted against the rating.
   - Abuse limits: rate limits keyed on the real client IP behind trusted proxies,
     plus per-account and per-address email caps.
   - Each defence has a regression test (`backend/src/api/auth_tests.rs`).
+- **One semantics, checked everywhere.** The plaintext oracle in `heaas-core` is
+  tested against native Rust integers; homomorphic programs are tested against the
+  oracle (random well-typed programs, every step operation, every type in the
+  scheduled run); the browser's compiler and oracle pass the same test vectors.
 - **Proofs and types end to end.** One evaluator per TFHE-rs type, generated by a
   macro, with results re-encrypted where TFHE-rs would leave trivial blocks
   (`backend/src/crypto/eval.rs`); the SDK, the CLI and the browser worker encrypt,
@@ -136,7 +143,6 @@ git-ignored), `cargo deny` (advisories, bans, licences, sources: ok).
 | Severity | Location | Issue | Recommendation |
 |---|---|---|---|
 | LOW | `frontend/vite.config.ts:46` | `style-src` allows `'unsafe-inline'`. Scripts are hash-pinned; styles are not. Impact is limited to CSS injection, which the app has no sink for. | Move to style hashes (SvelteKit `csp.mode: 'hash'` covers `<style>`) once Svelte no longer needs inline `style` attributes. |
-| LOW | `backend/src/crypto/params.rs` (`get_crs`) | `GET /api/v1/he/crs` serves ~1.9 MB to anyone, unauthenticated and not rate-limited. It sends `ETag` and `Cache-Control: public`, so caches absorb repeats, but a client can still make the server send it repeatedly. | Rate-limit `/he` per IP like `/auth`, or let nginx cache it. |
 | LOW | `backend/src/crypto/proofs.rs` | The server generates the CRS itself, so its operator is trusted not to keep a trapdoor. This is documented (`docs/how-it-works.md#proven-inputs`, `SECURITY.md`). | Accept; or load a CRS from a public ceremony when one is available. |
 | LOW | `backend/src/middleware/rate_limit.rs` | Only `/api/v1/auth` is rate-limited per IP. Authenticated reads (`GET /keys`, `/compute/jobs`) rely on authentication alone. Writes are bounded by the key cap, active-job cap and daily quota. | Add a per-user limiter on the authenticated scope. |
 | LOW | `backend/src/middleware/rate_limit.rs` (per-email login limit) | An attacker can spend a victim's per-email sign-in budget and block their password sign-in for up to 15 minutes. This is the usual trade-off of per-account limits. | Accept, or exempt requests carrying a valid refresh cookie. |
@@ -169,21 +175,22 @@ No findings.
 
 | Severity | Location | Issue | Recommendation |
 |---|---|---|---|
-| LOW | `backend/src/crypto/eval.rs` (`typed_evaluator!`), `sdk/src/fhe.rs` (`per_type!`) | Two macros map `IntegerType` to the TFHE-rs types and their conformance parameters. Same table, two crates. (The browser worker needs its own, in TypeScript.) | Export one `#[macro_export]` dispatch macro from `heaas-core`. |
 | LOW | `backend/src/config.rs` (797 lines with tests) | The longest non-test module. [High cohesion: one responsibility, one data model, consistent abstraction.] | None now; split by area if it keeps growing. |
 
 ### Code Quality [9/10]
 
-- Rust: unit tests; property tests (`core/src/operation.rs`,
-  `backend/src/crypto/property_tests.rs`); HTTP integration tests against the real
-  router, including typed jobs, scalars, sums and proven inputs; wiremock OAuth and
-  SDK tests; CLI binary tests; an SDK run against a live server with proofs.
+- Rust (155 tests, 3 heavy ones ignored): unit tests; property tests
+  (`core/src/operation.rs`, `core/src/program.rs`,
+  `backend/src/crypto/property_tests.rs`, including random programs); HTTP
+  integration tests against the real router, including programs, batches, typed
+  jobs, scalars, sums and proven inputs; wiremock OAuth and SDK tests; CLI binary
+  tests; an SDK run against a live server with proofs, a program and a batch.
   `#[ignore]`d heavy property tests run in `.github/workflows/heavy.yml`.
-- TypeScript: 39 Vitest, 13 Playwright (including axe WCAG 2.2 AA scans), and 1
-  full-stack test that proves inputs in the browser and has the real server verify
-  them.
-- Coverage, measured in CI with floors: Rust 91.4% of lines workspace-wide
-  (`cargo llvm-cov`, floor 88%); frontend library code 92.4% (`vitest --coverage`,
+- TypeScript: 109 Vitest (64 of them the shared program vectors), 13 Playwright
+  (including axe WCAG 2.2 AA scans), and 1 full-stack test that proves inputs in the
+  browser and runs a program on the real server.
+- Coverage, measured in CI with floors: Rust 91.2% of lines workspace-wide
+  (`cargo llvm-cov`, floor 88%); frontend library code 92.2% (`vitest --coverage`,
   floor 88%; pages and the worker are covered by the Playwright suites).
 - No TODO, FIXME or HACK markers.
 
@@ -269,6 +276,11 @@ compiler reports no dead code.
 ## Advisory Findings
 
 - `backend/src/config.rs` length: [High cohesion module] (see Code Principles).
+- `frontend/src/lib/fhe/program.ts` mirrors `core/src/program.rs` and
+  `core/src/expression.rs` in TypeScript: the dashboard needs the compiler and the
+  oracle offline, and WebAssembly for this alone would be heavier. Drift is caught
+  by `core/tests/program_vectors.json`, which both test suites run.
+  [Cross-language by necessity, guarded by shared tests]
 - `backend/src/api/integration_tests.rs` (1,127 lines) and `auth_tests.rs`
   (824 lines): test modules, one scenario per test. [High cohesion module]
 
@@ -285,14 +297,13 @@ None. The patterns found duplicated in the previous audit now live once:
 
 ## Recommended Actions (Priority Order)
 
-1. [SOTA] Multi-operation programs in one job (a small expression language over
-   encrypted inputs, with `if_then_else`, bitwise operations and division).
-2. [SOTA] Batching, and an optional GPU backend (TFHE-rs `gpu` feature).
-3. [LOW] Rate-limit `/he` per IP (or cache the CRS in nginx); a per-user limit on
-   the authenticated scope.
-4. [LOW] One type-dispatch macro in `heaas-core` for the backend and the SDK.
-5. [LOW] Single-flight key decompression; drop the legacy job columns; style hashes
-   in the CSP; CLI networked commands under coverage.
+1. [SOTA] An optional GPU backend (TFHE-rs `gpu` feature) for evaluation.
+2. [SOTA] Contributions from other parties: shareable submission links that accept
+   proven inputs under a key owner's public key, for aggregation.
+3. [SOTA] Programs with several outputs and lookup tables; compressed results.
+4. [LOW] A per-user limit on the authenticated scope; single-flight key
+   decompression; drop the legacy job columns; style hashes in the CSP; the CLI's
+   networked commands under coverage.
 
 ---
 
@@ -310,6 +321,11 @@ None. The patterns found duplicated in the previous audit now live once:
   (1.9 MB compressed); proving 2 × `u16` ~0.8 s, verifying ~0.2 s; a proven list
   ~20 KB; `u64` multiplication ~14 s.
 - `cargo llvm-cov --workspace` and `vitest run --coverage` output.
+- Phase 9 measurements with TFHE-rs 1.8.2 (`div_rem`, scalar division, shifts,
+  rotations, `if_then_else`, `abs`): encrypted `x / 0` gives `MAX` (unsigned) or
+  −1 / 1 (signed), remainder `x`; `MIN / −1` gives `MIN`; signed division
+  truncates; scalar division by 0 panics (refused before evaluation); shifts by the
+  type's width or more give 0 (or the sign for signed `>>`).
 - Zama, [TFHE-rs: Security and cryptography](https://docs.zama.org/tfhe-rs/get-started/security-and-cryptography):
   default parameters' security level and failure probability.
 - GitHub Advisory [GHSA-gcqx-w48m-w2h4](https://github.com/advisories/GHSA-gcqx-w48m-w2h4) (deepmerge).
