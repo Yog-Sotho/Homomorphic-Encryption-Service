@@ -431,6 +431,8 @@
   /* ── Key card ───────────────────────────────────── */
   .key-status { display: flex; align-items: center; gap: 0.5rem; color: var(--text-secondary); }
   .key-row { display: flex; align-items: center; flex-wrap: wrap; gap: 0.5rem; }
+  /* The hint's negative margin tucks it under inputs; under the key row it would overlap. */
+  .key-row + .field-hint { margin-top: 0.5rem; }
   .key-id {
     font-family: var(--font-mono); font-size: 0.75rem; color: var(--text-secondary);
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 22ch;

@@ -2,7 +2,7 @@
 # Backs up everything HEaaS keeps: the database (a consistent snapshot taken
 # while the server runs), users' server keys and the job store. Run as root
 # from the directory with docker-compose.yml, e.g. daily from cron. Restoring
-# is described in README.md ("Backups").
+# is described in docs/self-hosting.md ("Backups").
 set -euo pipefail
 cd "$(dirname "$0")"
 

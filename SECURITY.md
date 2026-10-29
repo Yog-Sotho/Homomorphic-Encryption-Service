@@ -35,7 +35,7 @@ In brief:
   writes them to a file readable only by its owner. Anyone with the passphrase
   and the sealed key, or with the key file, can decrypt that user's data.
 - **Account security** (sessions, OAuth, rate limits, email links) is described
-  in the README under "Accounts and sessions".
+  in [How HEaaS works](docs/how-it-works.md#accounts-and-sessions).
 
 ## For operators
 

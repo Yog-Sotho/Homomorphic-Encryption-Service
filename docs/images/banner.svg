@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="320" viewBox="0 0 1280 320" role="img" aria-labelledby="title desc">
+  <title id="title">HEaaS: Homomorphic Encryption as a Service</title>
+  <desc id="desc">Compute on encrypted data. Your keys never leave your device.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0b1026"/>
+      <stop offset="0.55" stop-color="#151a3d"/>
+      <stop offset="1" stop-color="#2a1f5c"/>
+    </linearGradient>
+    <linearGradient id="mark" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#6366f1"/>
+      <stop offset="1" stop-color="#a855f7"/>
+    </linearGradient>
+    <linearGradient id="fade" gradientUnits="userSpaceOnUse" x1="820" y1="0" x2="1180" y2="0">
+      <stop offset="0" stop-color="#fff" stop-opacity="0"/>
+      <stop offset="1" stop-color="#fff" stop-opacity="1"/>
+    </linearGradient>
+    <mask id="texture">
+      <rect width="1280" height="320" fill="url(#fade)"/>
+    </mask>
+    <radialGradient id="glow" cx="0.22" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#6366f1" stop-opacity="0.35"/>
+      <stop offset="1" stop-color="#6366f1" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <rect width="1280" height="320" fill="url(#bg)"/>
+  <rect width="1280" height="320" fill="url(#glow)"/>
+
+  <!-- Ciphertext texture -->
+  <g mask="url(#texture)" font-family="'JetBrains Mono', 'SFMono-Regular', Menlo, Consolas, monospace" font-size="15" fill="#a5b4fc" opacity="0.16">
+      <text x="560" y="48">a4c123b1 612dd272 d1371c17 149d4395 36b3216f daeeb975 729fae92 3d5a4fd1 2aabfe22 8f219e9c b0eb53f1 6947ccf2 5ec84d8d bc742547</text>
+      <text x="560" y="78">70f58904 dba41ecc cc3fc162 6e53a130 43b026c4 8bbf33fe ff9243a8 f506b409 28b5b7a7 67c76fb0 08f86beb b2737f6a 6f0fb23c 6f5da2ce</text>
+      <text x="560" y="108">c255404e 4fb44003 4d660869 7a8d41be d440e504 54f31af3 176813e0 2ea68ef7 86e4d3ce a27d2693 4b484e73 cf575dca d6ba2b0a ee0ca923</text>
+      <text x="560" y="138">73288158 4d8c4fa2 815d2802 827283e0 ad841735 81569969 e58b0810 06f7e3df c967a64c b14028d5 12c9791e 558e08ba a7196b50 ac2f8670</text>
+      <text x="560" y="168">2824c1c0 99724caf 4941d407 2014b3ce 107f80e2 22f82876 7efc2f91 624a8940 f1f836f9 9eee3692 f09e2e8c 662248b4 83b7ffc0 50fec94d</text>
+      <text x="560" y="198">bca3a0aa c36098b2 cc2bd818 319478da 6bd0c621 de49f145 fda9988c 79fc3552 6f7eaed4 6725a2a7 b860dcd6 c8a1f8b4 6287cced 9041dff0</text>
+      <text x="560" y="228">2cee7374 43e21047 1948d332 96c87009 e8a7f770 d9106fd2 87db7f1a dbc60926 f6967e78 93f57fd1 4c1604d1 15cea325 a65e19cb ae530282</text>
+      <text x="560" y="258">bd36cb9d 21f6be6a bf0d7c1c 1e21862a b8a18a89 02073fec 8df4f509 47aaeb26 c57d21fa 5d328263 dfe574de 739988b8 86e75774 96a2c877</text>
+      <text x="560" y="288">3e130f7e b1973166 2b5e803b 61ba4168 160adb59 261ff2d3 c425c8d9 9d19bdd0 b6cc60d5 d32cbe54 014c2b54 b95523cf 6941fa1c 257c6f56</text>
+  </g>
+
+  <!-- Mark: a lock whose body holds an operation, i.e. computing while locked -->
+  <g transform="translate(96 72)">
+    <rect width="176" height="176" rx="40" fill="url(#mark)"/>
+    <rect width="176" height="176" rx="40" fill="none" stroke="#ffffff" stroke-opacity="0.18" stroke-width="2"/>
+    <path d="M60 82 V64 a28 28 0 0 1 56 0 V82" fill="none" stroke="#ffffff" stroke-width="12" stroke-linecap="round"/>
+    <rect x="42" y="80" width="92" height="66" rx="14" fill="#ffffff"/>
+    <g stroke="#5b4be8" stroke-width="7" stroke-linecap="round">
+      <path d="M66 113 h20 M76 103 v20"/>
+      <path d="M100 105 l14 14 M114 105 l-14 14"/>
+    </g>
+  </g>
+
+  <!-- Wordmark -->
+  <g font-family="Inter, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif">
+    <text x="312" y="150" font-size="84" font-weight="800" fill="#ffffff" letter-spacing="-2">HEaaS</text>
+    <text x="316" y="192" font-size="24" font-weight="600" fill="#c7d2fe" letter-spacing="0.5">Homomorphic Encryption as a Service</text>
+    <text x="316" y="234" font-size="20" font-weight="400" fill="#a5b4fc">Compute on encrypted data. Your keys never leave your device.</text>
+  </g>
+</svg>
