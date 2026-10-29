@@ -8,7 +8,32 @@ compatibility).
 
 ## [Unreleased]
 
+### Added
+- **More types.** Jobs compute on `u8`, `u16`, `u32`, `u64` and `i8`, `i16`, `i32`,
+  `i64` (`integer_type` in the request, `u16` if absent).
+- **More operations.** The comparisons `eq`, `ne`, `lt`, `le`, `gt`, `ge` (an
+  encrypted boolean result), and `sum` of 2 to 16 inputs. Jobs report a
+  `result_type` to decrypt as.
+- **Plain operands.** Binary operations can take their right-hand side as a
+  decimal `scalar` the server sees, instead of a ciphertext.
+- **Proven inputs.** `proven_inputs`: one TFHE-rs `ProvenCompactCiphertextList`
+  with a zero-knowledge proof of well-formed encryption, checked against the
+  key's public key (`PUT /api/v1/keys/{id}/public-key`) and a CRS the server
+  generates and serves (`GET /api/v1/he/crs`). Proofs are bound to the key id.
+- The dashboard, the SDK and the `heaas` CLI support all of the above (`heaas run
+  --type i32 --scalar 5 --prove …`, `heaas prove`); keys are generated with a
+  public key, which `heaas keygen` saves as `heaas-public.key`.
+- Property tests (homomorphic results against the plaintext oracle, corrupted
+  keys, ciphertexts and proven lists), a scheduled workflow for the heavy ones,
+  and coverage floors in CI (Rust and frontend).
+
 ### Changed
+- New keys are made with Zama's dedicated compact-public-key parameters on top of
+  `ConfigBuilder::default()`. Keys made before are still accepted, but cannot take
+  proven inputs.
+- Results that TFHE-rs leaves partly unencrypted because a plain operand makes
+  them known (e.g. `x * 0`) are re-encrypted, so every result is a conformant
+  ciphertext.
 - Renamed to **Homomorphic Encryption Engine** (HE Engine), formerly HEaaS, and
   described as what it is: a self-hosted server whose operator runs it for its
   users, not a hosted service. New banner, logo and wording in the app, emails,

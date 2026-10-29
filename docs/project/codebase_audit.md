@@ -1,11 +1,12 @@
 # Codebase Audit Report
 
-**Date:** 2026-10-28
-**Project:** HEaaS: Homomorphic Encryption as a Service (workspace 0.4.0: `he-backend`, `heaas-core`, `heaas-sdk`; `he-frontend` 0.4.0)
+**Date:** 2026-10-29
+**Project:** Homomorphic Encryption Engine (HE Engine; workspace 0.4.0 + Phase 8: `he-backend`, `heaas-core`, `heaas-sdk`; `he-frontend` 0.4.0)
 **Language / Framework:** Rust 2021, MSRV 1.91.1 (actix-web 4.18, sqlx 0.8 / SQLite, TFHE-rs 1.8.2, utoipa 6, tracing, prometheus 0.14) · SvelteKit 3.1 / Svelte 5 / Vite 8 (TypeScript, strict), TFHE-rs 1.8.2 WebAssembly
 **Project Type:** Web Service with a worker pool (all 9 dimensions applicable)
 **Audit Mode:** Domain-aware (`backend/`, `core/`, `sdk/`, `frontend/`, deployment files)
-**Previous audit:** 2026-10-25, overall 4.0 / 10, SOTA 3 / 10
+**Previous audits:** 2026-10-25 (overall 4.0, SOTA 3), 2026-10-28 (overall 9.0, reported
+as 8.9 by an arithmetic slip; SOTA 7)
 
 Every finding below was checked against the source, tool output or the vendored
 crate source; scores are based on that evidence, not on documentation.
@@ -14,65 +15,65 @@ crate source; scores are based on that evidence, not on documentation.
 
 ## Executive Summary
 
-Every CRITICAL and HIGH finding from the previous audit is fixed. The CRITICAL
-ones were server-held secret keys, a dead UI and unsafe deserialization.
+Phase 8 closed both MEDIUM findings of the previous audit and the two feature gaps
+that held the SOTA rating back.
 
-- **Keys:** clients generate their TFHE keys in the browser (WebAssembly in a
-  Web Worker) or with the Rust SDK, and the server only ever holds compressed
-  evaluation keys.
-- **Inputs:** keys and ciphertexts are checked with size-limited,
-  conformance-checked deserialization.
-- **Jobs:** jobs run from a durable SQLite queue on a bounded worker pool.
-- **Accounts:** session, OAuth and rate-limit handling follow current practice,
-  with regression tests.
-- **Tooling:** CI enforces formatting, lints, tests, supply-chain checks,
-  OpenAPI and parameter-sheet drift, and runs the hardened images.
+- **Tests:** `proptest` property tests compare homomorphic results with the plaintext
+  oracle on random operations, types and values, and throw random and corrupted
+  bytes at every deserialization path (ciphertexts, proven lists, public and server
+  keys). Heavier variants (every type, 64-bit multiplication, proofs) run in a
+  scheduled workflow. CI now measures coverage with floors: Rust 91% of lines
+  (floor 88%), frontend library code 92% (floor 88%).
+- **Computation:** eight integer types (8 to 64 bits, signed and unsigned), the six
+  comparisons with encrypted boolean results, sums of up to 16 inputs, and plaintext
+  (scalar) right-hand operands, in the server, SDK, CLI and dashboard.
+- **Proven inputs:** TFHE-rs `ProvenCompactCiphertextList`s with zero-knowledge
+  proofs of well-formed encryption, verified against the key's public key and a
+  server-generated CRS, bound to the key id. Browser proving is covered by the
+  full-stack test.
 
-What remains is at most LOW severity in every dimension except one: test
-depth, which is MEDIUM. There is no coverage measurement, and the property
-tests the plan called for were not written. On features, HEaaS is now a sound
-but narrow FHE service: one encrypted type (`FheUint16`) and five binary
-operations. That, not code quality, is what holds the SOTA rating below the
-target.
+Every finding left is LOW or INFO. The SOTA rating rises to 8: what is still missing
+is multi-operation programs and throughput options (batching, GPU).
 
-## Overall Score: 8.9 / 10  (no caps apply: no CRITICAL findings)
+## Overall Score: 9.1 / 10  (average of the nine dimensions; no caps apply: no CRITICAL findings)
 
 | Dimension | Score | Priority | Status |
 |---|---|---|---|
 | Security | 9/10 | CRITICAL | PASS |
 | Build & Types | 10/10 | CRITICAL | PASS |
 | Code Principles | 9/10 | HIGH | PASS |
-| Code Quality | 8/10 | MEDIUM | WARN |
+| Code Quality | 9/10 | MEDIUM | PASS |
 | Dependencies | 9/10 | MEDIUM | PASS |
 | Dead Code | 9/10 | LOW | PASS |
 | Observability | 9/10 | MEDIUM | PASS |
 | Concurrency | 9/10 | HIGH | PASS |
 | Lifecycle | 9/10 | MEDIUM | PASS |
 
-**SOTA rating: 7 / 10** (previously 3). The yardstick is the same as before:
+**SOTA rating: 8 / 10** (previously 7). The yardstick is the same as before:
 state-of-the-art FHE services and tooling such as Zama's TFHE-rs, Concrete and
 fhEVM tooling, and OpenFHE-based services.
 
 At or near that bar:
 - client-held keys, with compressed evaluation keys only on the server;
-- conformance-checked inputs and carry-propagating operations;
+- conformance-checked inputs and results, and carry-propagating operations;
+- zero-knowledge-proven inputs (TFHE-rs compact PKE proofs), bound to the key;
+- eight integer types, comparisons, sums and scalar operands;
 - a parameter set pinned to TFHE-rs defaults (≥ 128-bit security, p_fail ≤ 2⁻¹²⁸
-  per Zama), published as a generated parameter sheet;
-- in-browser WASM keygen with sealed key storage;
+  per Zama) plus Zama's dedicated compact-public-key parameters, published as a
+  generated parameter sheet;
+- in-browser WASM keygen, encryption and proving, with sealed key storage;
 - a typed SDK and CLI built on a shared core crate, so parameters cannot drift;
 - a durable, idempotent job API with OpenAPI;
-- production observability.
+- production observability, property tests and measured coverage.
 
 Missing, and needed for 9:
-- **Breadth of computation.** Only `FheUint16` and add, subtract, multiply,
-  min and max. There are no comparisons (`eq`/`lt`, planned in Phase 1 but not
-  built), no sums over many inputs, no other widths (8/32/64-bit, signed), no
-  scalar (plaintext-operand) operations, and no programs combining several
-  operations in one job.
-- **Proofs of well-formed encryption.** Inputs are not zero-knowledge proven
-  `ProvenCompactCiphertextList`s; TFHE-rs supports them via `zk-pok`.
-- **Throughput options.** No compact public-key encryption, no batching, no
-  GPU backend.
+- **Programs.** Each job is one operation. Comparable systems evaluate circuits
+  (several operations, `if_then_else` on encrypted conditions, bitwise operations,
+  division) in one job, keeping intermediate values on the server.
+- **Throughput options.** No batching of many jobs per request and no GPU backend.
+- **Proofs today protect the server from its own users only.** Only a key's owner
+  can submit jobs for it; accepting proven inputs from other parties (the case
+  proofs are designed for) is not offered.
 
 Verifiable computation is out of reach of TFHE itself and is documented as a
 limitation, not counted against the rating.
@@ -103,6 +104,11 @@ limitation, not counted against the rating.
   - Abuse limits: rate limits keyed on the real client IP behind trusted proxies,
     plus per-account and per-address email caps.
   - Each defence has a regression test (`backend/src/api/auth_tests.rs`).
+- **Proofs and types end to end.** One evaluator per TFHE-rs type, generated by a
+  macro, with results re-encrypted where TFHE-rs would leave trivial blocks
+  (`backend/src/crypto/eval.rs`); the SDK, the CLI and the browser worker encrypt,
+  prove and decrypt every type, and the backend's tests play the client through
+  the SDK.
 - **Operational maturity.**
   - The config is validated as a whole: every problem is listed and the server
     exits 2.
@@ -130,6 +136,8 @@ git-ignored), `cargo deny` (advisories, bans, licences, sources: ok).
 | Severity | Location | Issue | Recommendation |
 |---|---|---|---|
 | LOW | `frontend/vite.config.ts:46` | `style-src` allows `'unsafe-inline'`. Scripts are hash-pinned; styles are not. Impact is limited to CSS injection, which the app has no sink for. | Move to style hashes (SvelteKit `csp.mode: 'hash'` covers `<style>`) once Svelte no longer needs inline `style` attributes. |
+| LOW | `backend/src/crypto/params.rs` (`get_crs`) | `GET /api/v1/he/crs` serves ~1.9 MB to anyone, unauthenticated and not rate-limited. It sends `ETag` and `Cache-Control: public`, so caches absorb repeats, but a client can still make the server send it repeatedly. | Rate-limit `/he` per IP like `/auth`, or let nginx cache it. |
+| LOW | `backend/src/crypto/proofs.rs` | The server generates the CRS itself, so its operator is trusted not to keep a trapdoor. This is documented (`docs/how-it-works.md#proven-inputs`, `SECURITY.md`). | Accept; or load a CRS from a public ceremony when one is available. |
 | LOW | `backend/src/middleware/rate_limit.rs` | Only `/api/v1/auth` is rate-limited per IP. Authenticated reads (`GET /keys`, `/compute/jobs`) rely on authentication alone. Writes are bounded by the key cap, active-job cap and daily quota. | Add a per-user limiter on the authenticated scope. |
 | LOW | `backend/src/middleware/rate_limit.rs` (per-email login limit) | An attacker can spend a victim's per-email sign-in budget and block their password sign-in for up to 15 minutes. This is the usual trade-off of per-account limits. | Accept, or exempt requests carrying a valid refresh cookie. |
 | INFO | `backend/src/middleware/jwt.rs` | Access tokens stay valid for up to `ACCESS_TOKEN_TTL_SECS` (900 s) after sign-out or a password change. This is by design and documented. | None. |
@@ -137,9 +145,8 @@ git-ignored), `cargo deny` (advisories, bans, licences, sources: ok).
 ### Build & Types [10/10]
 
 - `cargo fmt --check` and `cargo clippy --workspace --all-targets -D warnings`:
-  clean. There is now no `#[allow]` left in the Rust code (the last one,
-  `clippy::too_many_arguments` at `compute.rs:170`, was replaced by a struct
-  during this audit).
+  clean, with no `#[allow]` in the Rust code. (`submit_job` reads the CRS from
+  the request's app data rather than taking an eighth extractor.)
 - An MSRV 1.91.1 `cargo check` runs in CI.
 - `svelte-check --fail-on-warnings`: 0 errors and 0 warnings across 377 files,
   with `strict: true`.
@@ -162,29 +169,32 @@ No findings.
 
 | Severity | Location | Issue | Recommendation |
 |---|---|---|---|
+| LOW | `backend/src/crypto/eval.rs` (`typed_evaluator!`), `sdk/src/fhe.rs` (`per_type!`) | Two macros map `IntegerType` to the TFHE-rs types and their conformance parameters. Same table, two crates. (The browser worker needs its own, in TypeScript.) | Export one `#[macro_export]` dispatch macro from `heaas-core`. |
 | LOW | `backend/src/config.rs` (797 lines with tests) | The longest non-test module. [High cohesion: one responsibility, one data model, consistent abstraction.] | None now; split by area if it keeps growing. |
 
-### Code Quality [8/10]
+### Code Quality [9/10]
 
-- There are 112 Rust tests:
-  - unit tests;
-  - HTTP integration tests against the real router;
-  - wiremock OAuth and SDK tests;
-  - CLI binary tests;
-  - an SDK run against a live server.
-- There are 43 TypeScript tests: 29 Vitest, 13 Playwright including axe
-  WCAG 2.2 AA scans, and 1 full-stack.
-- No TODO, FIXME or HACK markers. The largest source files are 400–630 lines,
-  apart from the test modules.
+- Rust: unit tests; property tests (`core/src/operation.rs`,
+  `backend/src/crypto/property_tests.rs`); HTTP integration tests against the real
+  router, including typed jobs, scalars, sums and proven inputs; wiremock OAuth and
+  SDK tests; CLI binary tests; an SDK run against a live server with proofs.
+  `#[ignore]`d heavy property tests run in `.github/workflows/heavy.yml`.
+- TypeScript: 39 Vitest, 13 Playwright (including axe WCAG 2.2 AA scans), and 1
+  full-stack test that proves inputs in the browser and has the real server verify
+  them.
+- Coverage, measured in CI with floors: Rust 91.4% of lines workspace-wide
+  (`cargo llvm-cov`, floor 88%); frontend library code 92.4% (`vitest --coverage`,
+  floor 88%; pages and the worker are covered by the Playwright suites).
+- No TODO, FIXME or HACK markers.
 
 | Severity | Location | Issue | Recommendation |
 |---|---|---|---|
-| MEDIUM | `.github/workflows/ci.yml` | No coverage measurement, so untested paths are invisible. | Add `cargo llvm-cov` and Vitest coverage to CI with a floor. |
-| MEDIUM | `backend/src/crypto/`, `core/src/operation.rs` | The plan's property tests are missing: `proptest` comparing homomorphic results with `apply_plain` over random inputs, and fuzzing of the deserialization paths. The nightly heavy-TFHE job is also missing. The current tests cover fixed values only. | Add `proptest` with a small case count to normal CI, an `#[ignore]` heavy variant, and a scheduled workflow that runs it. |
+| LOW | `backend/src/main.rs` (38% of lines), `sdk/src/bin/heaas.rs` (42%) | Startup wiring and the networked CLI commands are exercised only by the full-stack and Docker jobs, which coverage does not measure. | Drive the CLI's networked commands against the live test server, as the SDK test does. |
 
 ### Dependencies [9/10]
 
-- `cargo deny check` (advisories, bans, licences, sources): ok.
+- `cargo deny check` (advisories, bans, licences, sources): ok. `tfhe-zk-pok`
+  (BSD-3-Clause-Clear, like the rest of TFHE-rs) is a documented licence exception.
 - `pnpm audit`: 1 low advisory. Dependabot covers cargo, npm, both Dockerfiles
   and Actions.
 - TFHE-rs is pinned to one release on both sides, enforced by a test.
@@ -275,19 +285,14 @@ None. The patterns found duplicated in the previous audit now live once:
 
 ## Recommended Actions (Priority Order)
 
-1. [MEDIUM] Add coverage measurement (Rust and frontend) to CI with a floor.
-2. [MEDIUM] Add property tests (homomorphic result vs `apply_plain`, random
-   inputs; deserialization fuzzing), plus the scheduled heavy-TFHE job.
-3. [SOTA] Widen computation:
-   - comparisons (`eq`, `lt`, …) returning encrypted booleans;
-   - multi-input `sum`;
-   - scalar operations;
-   - more integer widths;
-   - multi-operation programs.
-4. [SOTA] Accept zero-knowledge-proven compact ciphertext lists (`zk-pok`) for
-   inputs.
-5. [LOW] A per-user rate limit on the authenticated scope; single-flight key
-   decompression; drop the legacy job columns; style hashes in the CSP.
+1. [SOTA] Multi-operation programs in one job (a small expression language over
+   encrypted inputs, with `if_then_else`, bitwise operations and division).
+2. [SOTA] Batching, and an optional GPU backend (TFHE-rs `gpu` feature).
+3. [LOW] Rate-limit `/he` per IP (or cache the CRS in nginx); a per-user limit on
+   the authenticated scope.
+4. [LOW] One type-dispatch macro in `heaas-core` for the backend and the SDK.
+5. [LOW] Single-flight key decompression; drop the legacy job columns; style hashes
+   in the CSP; CLI networked commands under coverage.
 
 ---
 
@@ -297,7 +302,14 @@ None. The patterns found duplicated in the previous audit now live once:
   `cargo fmt`, `cargo clippy`, `cargo test --workspace`, `cargo deny check`,
   `svelte-check`, `pnpm audit`, and the Playwright e2e and full-stack suites.
 - Vendored TFHE-rs 1.8.2 source (`high_level_api/keys/inner.rs`: default
-  parameter set; `shortint/parameters/classic.rs`).
+  parameter set and `IntegerServerKeyConformanceParams`;
+  `high_level_api/compact_list.rs`: `verify_and_expand`; `high_level_api/zk.rs`:
+  `CompactPkeCrs::from_config`; `shortint/ciphertext/standard.rs`: ciphertext
+  conformance; `js_on_wasm_api/shortint.rs`: the browser's PKE parameter names).
+- Measurements on this machine (4 cores, release build): CRS generation ~8 s
+  (1.9 MB compressed); proving 2 × `u16` ~0.8 s, verifying ~0.2 s; a proven list
+  ~20 KB; `u64` multiplication ~14 s.
+- `cargo llvm-cov --workspace` and `vitest run --coverage` output.
 - Zama, [TFHE-rs: Security and cryptography](https://docs.zama.org/tfhe-rs/get-started/security-and-cryptography):
   default parameters' security level and failure probability.
 - GitHub Advisory [GHSA-gcqx-w48m-w2h4](https://github.com/advisories/GHSA-gcqx-w48m-w2h4) (deepmerge).

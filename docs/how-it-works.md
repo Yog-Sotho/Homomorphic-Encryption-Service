@@ -19,22 +19,62 @@ their secret keys; whoever runs the server (the *operator*) only ever sees ciphe
 ## The steps
 
 1. **Generate a key pair** on your device. The secret (client) key stays there.
-2. **Register the evaluation key** with the server, once. It can compute with it but
-   cannot decrypt.
-3. **Encrypt your inputs** and submit a job naming the operation.
+2. **Register the evaluation key** with the server, once, and its public key. The
+   server can compute with them but cannot decrypt.
+3. **Encrypt your inputs** (optionally with a [proof](#proven-inputs) that they are
+   well formed) and submit a job naming the operation and the type.
 4. A worker on the server **evaluates the operation on the ciphertexts** with your
    evaluation key and stores an encrypted result.
 5. **Fetch the encrypted result** and decrypt it on your device.
 
 ## The keys
 
-- **Client key** (~31 KB): generated on your device, used to encrypt and decrypt.
+- **Client key** (~48 KB): generated on your device, used to encrypt and decrypt.
   It is never uploaded. In the dashboard it stays in the browser's IndexedDB,
   encrypted with your passphrase (see [Your key in the browser](#your-key-in-the-browser)).
 - **Compressed server key** (~60 MB): an evaluation key derived from the client key.
   It lets the server compute on your ciphertexts but not decrypt them. You register
   it once with `POST /api/v1/keys`; the server checks it against its parameters.
-- **Ciphertexts** (~132 KB each): `FheUint16` values. Arithmetic wraps modulo 2¹⁶.
+- **Compact public key** (~33 KB): lets anyone encrypt for you, and the server check
+  proofs of inputs. It cannot decrypt. You upload it with
+  `PUT /api/v1/keys/{id}/public-key`. Each one generated is different, so proofs must
+  be made with the one you uploaded; the dashboard and the CLI keep it.
+- **Ciphertexts**: from ~17 KB (a boolean) and ~66 KB (8 bits) to ~530 KB (64 bits).
+  A proven list holding several inputs is ~20 KB.
+
+Keys made before HE Engine 0.5 lack the public-key parameters. They keep working for
+everything except proven inputs.
+
+## What you can compute
+
+| | |
+|---|---|
+| Types | `u8`, `u16`, `u32`, `u64` and `i8`, `i16`, `i32`, `i64` (two's complement) |
+| Arithmetic | `add`, `subtract`, `multiply` (wrapping modulo 2^bits), `min`, `max` |
+| Comparisons | `eq`, `ne`, `lt`, `le`, `gt`, `ge`: the result is an encrypted boolean |
+| Sums | `sum` of 2 to 16 encrypted inputs |
+| Plain operands | any operation but `sum` can take its right-hand side as a plain number (a *scalar*): faster, but the server sees that number |
+
+Each job is one operation; a result can be sent back as an input to the next job.
+
+## Proven inputs
+
+Normally the server can only check that a ciphertext has the right shape. With proven
+inputs, the client encrypts the values under the key's public key into one list and
+attaches a zero-knowledge proof (TFHE-rs's compact public-key encryption proofs) that
+the list is a well-formed encryption of values of the declared type. The server
+verifies the proof before computing and refuses the job if it does not verify.
+
+- The proof is bound to the key's id, so a proof made for one key is refused for another.
+- It is checked against a CRS (common reference string) that the server generates on
+  first start and publishes at `GET /api/v1/he/crs`; its hash is in `/he/params`.
+  Whoever generates a CRS is trusted not to have kept a trapdoor: here that is the
+  server's operator. See Zama's documentation on zero-knowledge proofs.
+- Proving takes about a second on the client; verifying, a fraction of a second up to
+  about a second on the server.
+- A proof shows that inputs are well formed; it says nothing about whether the server
+  then computes correctly (see the limits below). Today only a key's owner can submit
+  jobs for it, so proofs mainly guard against corrupted or crafted inputs.
 
 ## Architecture
 
@@ -48,22 +88,26 @@ parameters, the operations and the API types.
 | | |
 |---|---|
 | Scheme | TFHE (CGGI), TFHE-rs **1.8.2** (pinned; clients must use the same release) |
-| Configuration | `ConfigBuilder::default()`: TFHE-rs default parameters (`PARAM_MESSAGE_2_CARRY_2_KS_PBS_TUNIFORM_2M128`, failure probability ≤ 2⁻¹²⁸) |
-| Integer type | `FheUint16` (0–65535) |
-| Operations | `add`, `subtract`, `multiply` (mod 65536), `min`, `max` |
+| Configuration | `ConfigBuilder::default()`: TFHE-rs default parameters (`PARAM_MESSAGE_2_CARRY_2_KS_PBS_TUNIFORM_2M128`, failure probability ≤ 2⁻¹²⁸), plus Zama's dedicated compact-public-key parameters (`PARAM_PKE_MESSAGE_2_CARRY_2_KS_PBS_TUNIFORM_2M128`) |
+| Types | `FheUint8`–`FheUint64`, `FheInt8`–`FheInt64`, `FheBool` for comparison results |
+| Operations | see [What you can compute](#what-you-can-compute) |
 | Live values | `GET /api/v1/he/params` |
 | Full parameter sheet | [`parameters.md`](parameters.md), generated from `core/src/params.rs` |
 
-Uploaded keys and ciphertexts are deserialized with TFHE-rs's size-limited,
-conformance-checked `safe_deserialize_conformant`, so keys made with other
-parameters and malformed or foreign ciphertexts are rejected, not computed on.
+Uploaded keys, public keys, ciphertexts and proven lists are deserialized with
+TFHE-rs's size-limited, conformance-checked `safe_deserialize_conformant`, so keys
+made with other parameters and malformed or foreign ciphertexts are rejected, not
+computed on. Results are conformant too: where TFHE-rs would leave part of a result
+unencrypted because a plain operand makes it known (`x × 0`, say), the server
+re-encrypts it.
 
 ## What the server can and cannot learn
 
 The server **cannot** decrypt inputs or results: it only ever holds evaluation keys.
 
-It **does** see metadata: your account, when you submit jobs, which operation each
-job uses, ciphertext sizes and how many jobs you run.
+It **does** see metadata: your account, when you submit jobs, which operation and
+type each job uses, how many inputs it has, ciphertext sizes and how many jobs you
+run. It also sees every plain operand (scalar) you choose to send unencrypted.
 
 Know these limits too:
 

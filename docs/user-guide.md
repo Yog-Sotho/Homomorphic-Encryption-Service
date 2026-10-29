@@ -17,12 +17,13 @@ and [SECURITY.md](../SECURITY.md); the exact cryptographic parameters are in
 
 ## 1. Your keys
 
-The HE Engine uses two keys, both generated on your device:
+The HE Engine uses three keys, all generated on your device:
 
 | Key | Size | Where it lives | What it can do |
 |---|---|---|---|
-| **Client key** (secret) | ~31 KB | Only on your device (in the dashboard, this browser's storage, encrypted with your passphrase) | Encrypt and decrypt |
+| **Client key** (secret) | ~48 KB | Only on your device (in the dashboard, this browser's storage, encrypted with your passphrase) | Encrypt and decrypt |
 | **Server key** (evaluation key) | ~60 MB | Uploaded to the server | Compute on your ciphertexts, but **not** decrypt them |
+| **Public key** | ~33 KB | Uploaded to the server, and kept on your device | Encrypt, and let the server check [proofs](how-it-works.md#proven-inputs); **not** decrypt |
 
 The server never receives your client key, so it cannot read your data.
 
@@ -49,10 +50,10 @@ Each account can register up to 2 server keys (the operator can change this).
    in a few seconds, then uploads the ~60 MB server key. Choose **Export backup** and
    keep the file somewhere safe. On the **Dashboard** the key now shows **Ready**.
    After a reload, enter the passphrase there to unlock it again.
-4. **Compute.** Choose an operation, enter two whole numbers between 0 and 65535, and
-   choose **Run**. The dashboard shows each step:
-   - *Encrypting in your browser*
-   - *Sending ciphertexts* (two encrypted values, ~260 KB in total)
+4. **Compute.** Choose a type and an operation, enter the values, and choose **Run**.
+   The dashboard shows each step:
+   - *Encrypting in your browser* (or *Encrypting and proving*, with proofs)
+   - *Sending ciphertexts* (two 16-bit values are ~260 KB in total)
    - *Server computing on encrypted data*
    - *Decrypting in your browser*
 5. **Read the result.** The result is decrypted in your browser and compared with the
@@ -60,9 +61,23 @@ Each account can register up to 2 server keys (the operator can change this).
 
 ![The dashboard after computing 300 × 300 on encrypted values](images/dashboard.png)
 
-Operations: **Add**, **Subtract**, **Multiply**, **Min**, **Max**. Values are unsigned
-16-bit integers, so add, subtract and multiply wrap around modulo 65536. For example,
-300 × 300 = 90000, which wraps to 24464, and 3 − 10 wraps to 65529.
+**Types.** Unsigned (`u8`, `u16`, `u32`, `u64`) or signed (`i8` … `i64`) integers of
+8 to 64 bits. Add, subtract and multiply wrap around: in `u16`, 300 × 300 = 90000
+wraps to 24464 and 3 − 10 to 65529; in `i8`, 100 + 100 wraps to −56. Larger types
+take longer: a 64-bit multiplication takes seconds.
+
+**Operations.** **Add**, **Subtract**, **Multiply**, **Min**, **Max**; the comparisons
+**Equal**, **Not equal**, **Less**, **Less or equal**, **Greater**, **Greater or
+equal**, whose result is an encrypted *true* or *false*; and **Sum**, which adds 2 to
+16 values entered separated by commas.
+
+**Unencrypted operands.** *Send B unencrypted* sends value B as a plain number. That
+is faster, but the server sees B (never A, nor the result).
+
+**Proven inputs.** *Prove the inputs are well-formed encryptions* attaches a
+zero-knowledge proof to the inputs, which the server checks before computing. It
+takes about a second longer. Keys created before HE Engine 0.5 cannot do this:
+create a new key to use it.
 
 **Past jobs.** **Jobs** lists your computations, newest first. Completed results can
 be decrypted there while their key is unlocked; finished jobs are deleted after a few
@@ -81,8 +96,9 @@ ciphertexts:
 ```sh
 export HEAAS_URL=https://<your HE Engine instance> HEAAS_EMAIL=you@example.com
 heaas keygen         # heaas-client.key is your secret key: keep it (and a backup) safe
-heaas upload-key     # prints the key id
+heaas upload-key     # uploads the server and public keys; prints the key id
 heaas run --key-id <key id> --op multiply 300 300    # prints 24464
+heaas run --key-id <key id> --op gt --type i64 -- -1 -2   # prints true
 ```
 
 From other languages, call the HTTP API directly. [Using the API](api.md) covers
@@ -96,7 +112,10 @@ authentication, every endpoint, errors, quotas and full request examples.
 | `409` "You already have 2 server keys" | Your account has reached its key limit | Delete a key you no longer use |
 | `400` "Not a compressed server key for this server's parameters" | The key was made with different parameters or a different TFHE-rs release | Generate it with TFHE-rs 1.8.2 and `ConfigBuilder::default()` |
 | `413 Payload Too Large` | The upload is over the size limit | Upload only the compressed server key, never the full server key |
-| Job `failed`: "Input 1 is not a valid FheUint16 ciphertext for this key" | The input is not an `FheUint16`, is corrupted, or was made with other parameters | Encrypt with the client key that belongs to `key_id` and `safe_serialize` the result |
+| Job `failed`: "Input 1 is not a valid FheUint16 ciphertext for this key" | The input is not of the job's `integer_type`, is corrupted, or was made with other parameters | Encrypt as that type with the client key that belongs to `key_id` and `safe_serialize` the result |
+| `400` "… takes exactly 2 encrypted inputs" or "Invalid scalar" | The number of inputs does not fit the operation, or a plain operand is outside the type's range | Binary operations take two inputs, or one and a `scalar`; `sum` takes 2 to 16 |
+| `422` "Upload this key's public key …" | Proven inputs were sent for a key whose public key the server does not have | Upload it (`PUT /api/v1/keys/{id}/public-key`, or `heaas upload-key`) |
+| Job `failed`: "The proof of the inputs does not verify for this key" | The list was proven for another key id, with another public key than the one uploaded, or was altered | Prove with the public key you uploaded for that key, against the server's current CRS |
 | `404` "Server key not found" | The key id is wrong, deleted, or belongs to another account | List your keys with `GET /api/v1/keys` (or `heaas keys`) |
 | `429` "Too many sign-in attempts for this account" | Several failed sign-ins in a short time | Wait the `Retry-After` seconds, or reset your password |
 | Verification or reset link says "Invalid or expired" | Links work once; verification links last 24 hours and reset links 1 hour (unless the operator changed this; the email says how long) | Request a new one from the sign-in page |
@@ -112,8 +131,9 @@ authentication, every endpoint, errors, quotas and full request examples.
 ## 5. FAQ
 
 **Can the server, or whoever runs it, read my numbers?**
-No. It has only your server key, which cannot decrypt. It does see metadata: when you
-submit jobs, which operation each uses and how many you run.
+No. It has only your server and public keys, which cannot decrypt. It does see
+metadata: when you submit jobs, which operation and type each uses and how many you
+run, and any operand you choose to send unencrypted.
 
 **Can I check that the server computed correctly?**
 Not cryptographically: TFHE does not prove correctness. The dashboard compares each
@@ -125,5 +145,5 @@ nothing encrypted under the key can be decrypted any more, by you or anyone else
 Generate a new key; the old server key can be deleted.
 
 **Which numbers are supported?**
-Unsigned 16-bit integers (0–65535) with add, subtract, multiply (all mod 65536), min
-and max.
+Signed and unsigned integers of 8, 16, 32 and 64 bits, with add, subtract, multiply
+(wrapping), min, max, the six comparisons and sums of up to 16 values.

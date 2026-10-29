@@ -31,9 +31,11 @@ accounts on it. It is not a hosted product: there is nothing to subscribe to.
 - **Your keys stay with you.** Keys are created in your browser or with the
   command-line tool. The server receives only an evaluation key, which lets it
   compute but never decrypt.
-- **Real computation on encrypted data.** Add, subtract, multiply, minimum and
-  maximum on 16-bit integers, using TFHE-rs's default parameters (128-bit security
-  according to Zama).
+- **Real computation on encrypted data.** Arithmetic, minimum and maximum,
+  comparisons and sums on signed and unsigned integers from 8 to 64 bits, using
+  TFHE-rs's default parameters (128-bit security according to Zama).
+- **Proven inputs.** Clients can attach a zero-knowledge proof that their inputs are
+  well-formed encryptions; the server checks it before computing.
 - **Use it your way.** A web dashboard, a Rust SDK and command-line tool, or a
   documented HTTP API.
 - **Built to run.** Durable job processing, monitoring, health checks, backups and
@@ -89,10 +91,11 @@ heaas run --key-id <id> --op multiply 300 300    # 24464 (300 × 300 mod 65536)
 
 ## Project status
 
-The HE Engine is pre-1.0. It works end to end and is covered by unit, integration and
-browser tests. Today it supports one encrypted type (16-bit unsigned integers) and
-five operations. Like all FHE systems, it cannot prove that the server computed
-correctly; [How the HE Engine works](docs/how-it-works.md#what-the-server-can-and-cannot-learn)
+The HE Engine is pre-1.0. It works end to end and is covered by unit, property,
+integration and browser tests, with coverage measured in CI. Each job is one
+operation; chaining several in one job is not supported yet. Like all FHE systems,
+it cannot prove that the server computed correctly;
+[How the HE Engine works](docs/how-it-works.md#what-the-server-can-and-cannot-learn)
 lists the limits. The latest code audit is in
 [`docs/project/codebase_audit.md`](docs/project/codebase_audit.md).
 

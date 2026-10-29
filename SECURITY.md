@@ -19,11 +19,16 @@ The HE Engine computes on TFHE ciphertexts (TFHE-rs, see [`docs/parameters.md`](
 In brief:
 
 - **Inputs and results are confidential from the server.** It only ever holds
-  users' compressed server (evaluation) keys and ciphertexts, never a client
-  (secret) key. A full compromise of the server, its database or its backups
-  does not reveal plaintexts.
-- **Metadata is not hidden.** The server sees accounts, when jobs run, which
-  operation each job uses, ciphertext sizes and job counts.
+  users' compressed server (evaluation) keys, compact public keys and
+  ciphertexts, never a client (secret) key. A full compromise of the server, its
+  database or its backups does not reveal plaintexts.
+- **Metadata, and what users choose to send in the clear, is not hidden.** The
+  server sees accounts, when jobs run, which operation and type each job uses,
+  input counts, ciphertext sizes and job counts, and every plain operand
+  (`scalar`) a user sends unencrypted.
+- **Proven inputs show that inputs are well formed, not that results are right.**
+  The server checks zero-knowledge proofs against a CRS it generates itself; it is
+  trusted not to keep a trapdoor for that CRS.
 - **Results are not verifiable.** A malicious or compromised server can return a
   wrong ciphertext. TFHE does not prove correct evaluation.
 - **The dashboard trusts the code it is served.** In the browser, keys are
@@ -43,7 +48,7 @@ In brief:
   provided nginx configuration, and keep `TRUSTED_PROXIES` accurate.
 - Keep `JWT_SECRET` and `METRICS_TOKEN` secret and long (`openssl rand`).
   Rotating `JWT_SECRET` signs everyone out.
-- Backups contain users' server keys and ciphertexts but no secret keys.
-  Protect them anyway: they reveal metadata.
+- Backups contain users' server and public keys, the proof CRS and ciphertexts,
+  but no secret keys. Protect them anyway: they reveal metadata and plain operands.
 - Watch the RustSec and npm advisories (`cargo deny check`, `pnpm audit`) and
   Dependabot pull requests; CI fails on known vulnerabilities.

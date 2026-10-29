@@ -33,11 +33,20 @@ cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace            # includes the OpenAPI and parameter-sheet drift checks
 cargo deny check                  # advisories, licences, bans, sources
+cargo llvm-cov --workspace --fail-under-lines 88   # coverage floor (needs cargo-llvm-cov)
 
 cd frontend
-pnpm check && pnpm test && pnpm build
+pnpm check && pnpm test:coverage && pnpm build
 pnpm test:e2e                     # real TFHE WASM, mocked API, axe accessibility
 cargo build -p he-backend && pnpm test:e2e:fullstack   # real backend
+```
+
+Property tests (`proptest`) run a few cases each in the normal suite. The `heavy_*`
+tests are `#[ignore]`d: every type, 64-bit multiplications and proofs. A scheduled
+workflow runs them; locally:
+
+```sh
+HEAAS_PROPTEST_CASES=16 cargo test --release -p he-backend -- --ignored
 ```
 
 Generated files are regenerated, never edited by hand:

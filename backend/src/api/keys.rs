@@ -176,9 +176,15 @@ pub async fn upload_public_key(
     .bind(&user_id)
     .fetch_optional(pool.get_ref())
     .await?;
-    // Deleted meanwhile: its files are being removed too.
-    info.map(|info| HttpResponse::Ok().json(info))
-        .ok_or_else(|| AppError::not_found("Server key not found"))
+    match info {
+        Some(info) => Ok(HttpResponse::Ok().json(info)),
+        None => {
+            // Deleted meanwhile, possibly after its files were removed: drop
+            // the public key just written too.
+            let _ = store.remove(&key_id);
+            Err(AppError::not_found("Server key not found"))
+        }
+    }
 }
 
 /// Maps key store failures to API errors without leaking filesystem details.
