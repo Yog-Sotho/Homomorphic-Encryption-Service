@@ -61,6 +61,25 @@ let (job, result) = client.compute_job(&request, timeout).await?;
 println!("{}", fhe::decrypt_as(&secret, job.result_type, &result)?); // 37
 ```
 
+Programs come from expressions with `parse_expression` (the same parser the CLI uses);
+`submit_batch` queues several requests at once:
+
+```rust
+use heaas_sdk::parse_expression;
+
+let compiled = parse_expression("(a + b) * 3 < c ? a : b")?;
+let request = CreateJobRequest {
+    key_id: key.id.clone(),
+    operation: Operation::Program,
+    integer_type: IntegerType::I16,
+    inputs: [5, 7, 100].iter().map(|&v| Ok(encode(&fhe::encrypt_as(&secret, IntegerType::I16, v)?))).collect::<heaas_sdk::Result<_>>()?,
+    proven_inputs: None,
+    scalar: None,
+    program: Some(compiled.program),
+};
+let jobs = client.submit_batch(&[request.clone(), request]).await?; // both, or neither
+```
+
 Submissions carry an `Idempotency-Key` and are retried with it after a network error
 or a full queue, so a job is never created (or charged) twice.
 
@@ -75,6 +94,7 @@ heaas run --key-id <id> --op multiply 300 300               # 24464
 heaas run --key-id <id> --op lt --type i32 -- -5 3           # true
 heaas run --key-id <id> --op add --type u64 --scalar 10 5    # 15 (10 is sent unencrypted)
 heaas run --key-id <id> --op sum --type u8 --prove 200 100 1 # 45, with proven inputs
+heaas run --key-id <id> --type i16 --expr "(a + b) * 3 < c ? a - b : b - a" 5 7 100   # -2
 # Step by step:
 heaas encrypt 300 -o a.ct && heaas encrypt 7 -o b.ct
 job=$(heaas submit --key-id <id> --op subtract a.ct b.ct)
@@ -97,7 +117,8 @@ heaas wait "$job" && heaas result "$job" -o r.ct && heaas decrypt r.ct   # 293
 | `POST /keys` | Bearer | Body: `safe_serialize`d `CompressedServerKey` (`application/octet-stream`). Returns `201 {id, sha256, size_bytes, created_at, supports_proofs, has_public_key}`. `409` when you already have the maximum number of keys |
 | `PUT /keys/{id}/public-key` | Bearer | Body: `safe_serialize`d `CompactPublicKey` made from the same client key. Needed for proven inputs; `422` for keys made before 0.5 |
 | `GET /keys`, `DELETE /keys/{id}` | Bearer | List or remove your keys |
-| `POST /compute/jobs` | Bearer | `{"key_id", "operation", "integer_type", "inputs": [b64, …]}`, or `"proven_inputs": b64` instead of `inputs`, and optionally `"scalar"` (see [Submit a job](#submit-a-job)). Optional `Idempotency-Key` header. Returns `202` + `Location` and the job |
+| `POST /compute/jobs` | Bearer | `{"key_id", "operation", "integer_type", "inputs": [b64, …]}`, or `"proven_inputs": b64` instead of `inputs`, optionally `"scalar"`, and `"program"` for `operation: "program"` (see [Submit a job](#submit-a-job) and [Programs](#programs)). Optional `Idempotency-Key` header. Returns `202` + `Location` and the job |
+| `POST /compute/jobs/batch` | Bearer | `{"jobs": [job, …]}`: 1 to `max_batch_jobs` (16) jobs as above, queued together or not at all (`202 {"jobs": [...]}`, in order). One bad job refuses the batch (`400 "Job 2: …"`); not enough quota or room refuses it too, charging nothing. An `Idempotency-Key` covers the whole batch |
 | `GET /compute/jobs/{id}` | Bearer | Job metadata. `status` is `pending`, `processing`, `completed` or `failed` (`error_message` set); `result_type` says how to decrypt the result |
 | `GET /compute/jobs/{id}/result` | Bearer | The encrypted result (`application/octet-stream`, a `safe_serialize`d ciphertext of the job's `result_type`). `409` until the job has completed |
 | `GET /compute/jobs?limit=&cursor=` | Bearer | Your jobs, newest first: `{data, next_cursor}` (metadata only, `limit` 1–100, default 20) |
@@ -209,6 +230,37 @@ Location: /api/v1/compute/jobs/3f2a…
 `Idempotency-Key` (any unique string of up to 255 visible ASCII characters, such as a
 UUID). You get the original job back, marked `Idempotent-Replayed: true`, instead of
 a second job, and you are not charged twice.
+
+### Programs
+
+`"operation": "program"` runs the request's `program`: a list of steps, each an
+operation on job inputs (`{"input": 0}`), results of earlier steps (`{"step": 1}`)
+or plaintext constants (`{"const": "-3"}`). The last step is the result; its type is
+the job's `result_type`.
+
+```
+{ "key_id": "8e521fee-…", "operation": "program", "integer_type": "i16",
+  "inputs": ["<a>", "<b>", "<c>"],
+  "program": { "steps": [
+    { "op": "add",      "args": [{ "input": 0 }, { "input": 1 }] },
+    { "op": "multiply", "args": [{ "step": 0 }, { "const": "3" }] },
+    { "op": "lt",       "args": [{ "step": 1 }, { "input": 2 }] },
+    { "op": "subtract", "args": [{ "input": 0 }, { "input": 1 }] },
+    { "op": "subtract", "args": [{ "input": 1 }, { "input": 0 }] },
+    { "op": "select",   "args": [{ "step": 2 }, { "step": 3 }, { "step": 4 }] }
+  ] } }
+```
+
+Step operations: `add`, `subtract`, `multiply`, `divide`, `remainder`, `min`, `max`
+and the comparisons (`eq` … `ge`) take two arguments, the second encrypted or a
+constant; `and`, `or`, `xor` work on two integers (bitwise) or two booleans; `not`
+takes one of either; `neg` and `abs` (signed types) one integer; `shl`, `shr`,
+`rotl`, `rotr` an integer and a constant from 0 to bits − 1; `select` a boolean and
+two encrypted integers. The first argument is always encrypted. Programs have 1 to
+`max_program_steps` (64) steps; the server checks them before queuing and answers
+`400` with the step at fault. [How it works](how-it-works.md#programs) gives the
+semantics, and `heaas_core::parse_expression` (Rust) or
+`frontend/src/lib/fhe/program.ts` compile the expression syntax into steps.
 
 ### Get the result
 

@@ -256,6 +256,8 @@ export interface HeParams {
   max_ciphertext_bytes: number;
   max_inputs: number;
   max_job_input_bytes: number;
+  max_batch_jobs: number;
+  max_program_steps: number;
   max_server_key_bytes: number;
   max_keys_per_user: number;
   proofs: ProofParams | null;

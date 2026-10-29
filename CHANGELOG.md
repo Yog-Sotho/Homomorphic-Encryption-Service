@@ -9,6 +9,19 @@ compatibility).
 ## [Unreleased]
 
 ### Added
+- **Programs.** `operation: "program"` runs several operations in one job, every
+  intermediate value encrypted: a list of steps over the inputs, earlier steps and
+  plaintext constants. New step operations: `divide`, `remainder`, bitwise and
+  logical `and`/`or`/`xor`/`not`, `neg`, `abs`, shifts and rotations by a constant,
+  and `select` (an encrypted if-then-else). Division by an encrypted zero follows
+  TFHE-rs's results.
+- **Expressions.** `(a + b) * 3 < c ? a : b` compiles into a program: in the
+  dashboard (an Expression mode that checks as you type), the CLI (`--expr`) and
+  the SDK (`parse_expression`). The Rust and browser compilers share one file of
+  test cases.
+- **Batches.** `POST /api/v1/compute/jobs/batch` queues up to 16 jobs together or
+  not at all; the SDK's `submit_batch`.
+- Property tests on random well-typed programs against the plaintext oracle.
 - **More types.** Jobs compute on `u8`, `u16`, `u32`, `u64` and `i8`, `i16`, `i32`,
   `i64` (`integer_type` in the request, `u16` if absent).
 - **More operations.** The comparisons `eq`, `ne`, `lt`, `le`, `gt`, `ge` (an
@@ -28,6 +41,9 @@ compatibility).
   and coverage floors in CI (Rust and frontend).
 
 ### Changed
+- A submission refused for the daily quota no longer counts against it, and a
+  batch that does not fit leaves what is left of it.
+- `GET /api/v1/he/crs` is rate-limited per client IP.
 - New keys are made with Zama's dedicated compact-public-key parameters on top of
   `ConfigBuilder::default()`. Keys made before are still accepted, but cannot take
   proven inputs.

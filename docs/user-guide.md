@@ -71,6 +71,12 @@ take longer: a 64-bit multiplication takes seconds.
 equal**, whose result is an encrypted *true* or *false*; and **Sum**, which adds 2 to
 16 values entered separated by commas.
 
+**Expressions.** Choose **Expression** to run several operations in one job: type
+an expression such as `(a + b) * 3 < c ? a : b` and the values for its inputs (`a`,
+`b`, `c`, …, separated by commas). The dashboard checks the expression as you type
+and shows the expected result; the server evaluates every step without decrypting
+anything. Numbers written in the expression are sent unencrypted.
+
 **Unencrypted operands.** *Send B unencrypted* sends value B as a plain number. That
 is faster, but the server sees B (never A, nor the result).
 
@@ -114,6 +120,8 @@ authentication, every endpoint, errors, quotas and full request examples.
 | `413 Payload Too Large` | The upload is over the size limit | Upload only the compressed server key, never the full server key |
 | Job `failed`: "Input 1 is not a valid FheUint16 ciphertext for this key" | The input is not of the job's `integer_type`, is corrupted, or was made with other parameters | Encrypt as that type with the client key that belongs to `key_id` and `safe_serialize` the result |
 | `400` "… takes exactly 2 encrypted inputs" or "Invalid scalar" | The number of inputs does not fit the operation, or a plain operand is outside the type's range | Binary operations take two inputs, or one and a `scalar`; `sum` takes 2 to 16 |
+| `400` "Invalid program: Step 2 (divide): cannot divide by the constant 0" (or another step error) | The program or expression does not fit the type or its inputs | Fix the step named; in the dashboard the error shows under the expression as you type |
+| `400` "Job 3: …" on a batch | One job of the batch would be refused on its own; nothing was queued | Fix that job and send the batch again |
 | `422` "Upload this key's public key …" | Proven inputs were sent for a key whose public key the server does not have | Upload it (`PUT /api/v1/keys/{id}/public-key`, or `heaas upload-key`) |
 | Job `failed`: "The proof of the inputs does not verify for this key" | The list was proven for another key id, with another public key than the one uploaded, or was altered | Prove with the public key you uploaded for that key, against the server's current CRS |
 | `404` "Server key not found" | The key id is wrong, deleted, or belongs to another account | List your keys with `GET /api/v1/keys` (or `heaas keys`) |

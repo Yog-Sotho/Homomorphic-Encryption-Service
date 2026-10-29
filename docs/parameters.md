@@ -28,4 +28,4 @@ model: see [Security and cryptography](https://docs.zama.org/tfhe-rs/get-started
 | Public-key encryption | `PARAM_PKE_MESSAGE_2_CARRY_2_KS_PBS_TUNIFORM_2M128`: LWE dimension 2048, TUniform, bound 2^17, RequiresCasting |
 | Casting key switch | `PARAM_KEYSWITCH_MESSAGE_2_CARRY_2_KS_PBS_TUNIFORM_2M128`: base log 4, level 4, to `Small` |
 | Zero-knowledge proofs | TFHE-rs compact PKE proofs (`V2`), CRS for 512 bits per list |
-| Size limits | ciphertext ≤ 1048576 B, inputs per job ≤ 16 (≤ 9437184 B), proven list ≤ 1048576 B, public key ≤ 1048576 B, client key ≤ 67108864 B, compressed server key ≤ 1073741824 B (servers may accept less) |
+| Size limits | ciphertext ≤ 1048576 B, inputs per job ≤ 16 (≤ 9437184 B), program steps ≤ 64, jobs per batch ≤ 16, proven list ≤ 1048576 B, public key ≤ 1048576 B, client key ≤ 67108864 B, compressed server key ≤ 1073741824 B (servers may accept less) |

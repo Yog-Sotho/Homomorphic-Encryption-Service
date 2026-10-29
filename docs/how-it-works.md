@@ -54,8 +54,32 @@ everything except proven inputs.
 | Comparisons | `eq`, `ne`, `lt`, `le`, `gt`, `ge`: the result is an encrypted boolean |
 | Sums | `sum` of 2 to 16 encrypted inputs |
 | Plain operands | any operation but `sum` can take its right-hand side as a plain number (a *scalar*): faster, but the server sees that number |
+| Programs | several operations in one job, written as an expression such as `(a + b) * 3 < c ? a : b`: see below |
+| Batches | up to 16 jobs in one request, queued together or not at all |
 
-Each job is one operation; a result can be sent back as an input to the next job.
+## Programs
+
+A program runs up to 64 steps on up to 16 encrypted inputs in one job; every
+intermediate value stays encrypted on the server, and only the last step's result
+comes back. The dashboard and the CLI take an expression and compile it into steps;
+the API takes the steps (see [Using the API](api.md#programs)).
+
+| In expressions | |
+|---|---|
+| Inputs | the letters `a` to `p`, in the order the values are given |
+| Arithmetic | `+ - * / %` (wrapping; `/` and `%` truncate toward zero), unary `-` |
+| Bitwise | `& | ^` and `!` (or `~`) on integers; `<<` `>>` by a constant number of bits (`>>` keeps the sign of signed types); `rotl(x, n)`, `rotr(x, n)` |
+| Comparisons | `== != < <= > >=`, giving a boolean; `&& ||` (and `& | ^ !`) combine booleans |
+| Choice | `c ? x : y`, an encrypted if-then-else: the server computes both branches and cannot tell which one was taken |
+| Functions | `min(x, y)`, `max(x, y)`, `abs(x)` (signed types) |
+| Constants | whole numbers in the type's range; they are sent unencrypted, so the server sees them |
+
+Division by an encrypted zero does not fail (the server cannot tell it is zero): it
+gives the type's maximum for unsigned types, and −1 (or 1 for a negative dividend)
+for signed ones, with the dividend as the remainder; `MIN / −1` wraps to `MIN`. These
+are TFHE-rs's results, and the dashboard's expected value follows them. Division by
+the constant 0 is refused. Every step costs about as much as a single job of that
+operation, so a long program on 64-bit values can take minutes.
 
 ## Proven inputs
 

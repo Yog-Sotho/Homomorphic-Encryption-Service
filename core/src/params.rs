@@ -212,7 +212,8 @@ pub fn parameter_sheet() -> String {
             "Size limits",
             format!(
                 "ciphertext ≤ {MAX_CIPHERTEXT_BYTES} B, inputs per job ≤ {MAX_INPUTS} \
-                 (≤ {MAX_JOB_INPUT_BYTES} B), proven list ≤ {MAX_PROVEN_LIST_BYTES} B, \
+                 (≤ {MAX_JOB_INPUT_BYTES} B), program steps ≤ {MAX_PROGRAM_STEPS}, \
+                 jobs per batch ≤ {MAX_BATCH_JOBS}, proven list ≤ {MAX_PROVEN_LIST_BYTES} B, \
                  public key ≤ {MAX_PUBLIC_KEY_BYTES} B, client key ≤ {MAX_CLIENT_KEY_BYTES} B, \
                  compressed server key ≤ {MAX_SERVER_KEY_BYTES} B (servers may accept less)"
             ),
