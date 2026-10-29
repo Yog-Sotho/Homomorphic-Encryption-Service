@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { keyFileName, parseKeyFile, toKeyFile } from './keyfile.js';
+import { keyFileName, keyFilePublicKey, parseKeyFile, toKeyFile } from './keyfile.js';
 import type { ProtectedClientKey } from './keystore.js';
 
 const record: ProtectedClientKey = {
@@ -24,6 +24,15 @@ describe('key files', () => {
     expect(parsed).toMatchObject({ keyId: record.keyId, serverKeySha256: record.serverKeySha256 });
     expect(parsed.sealed).toEqual(record.sealed);
     expect(keyFileName(record.keyId)).toBe('heaas-key-8e521fee.json');
+  });
+
+  it('carry the public key proven inputs need, when the key has one', () => {
+    expect(keyFilePublicKey(parseKeyFile(toKeyFile(record)))).toBeUndefined();
+    const publicKey = new Uint8Array([1, 2, 3, 250]);
+    const parsed = parseKeyFile(toKeyFile({ ...record, publicKey }));
+    expect(keyFilePublicKey(parsed)).toEqual(publicKey);
+    const damaged = { ...JSON.parse(toKeyFile(record)), publicKey: 'not base64!' };
+    expect(() => parseKeyFile(JSON.stringify(damaged))).toThrow('damaged');
   });
 
   it('explain what is wrong with other files', () => {

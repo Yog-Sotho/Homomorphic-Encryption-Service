@@ -62,6 +62,10 @@ crate = "tfhe-versionable"
 [[licenses.exceptions]]
 allow = ["BSD-3-Clause-Clear"]
 crate = "tfhe-versionable-derive"
+# The zero-knowledge proofs of well-formed inputs (TFHE-rs `zk-pok`).
+[[licenses.exceptions]]
+allow = ["BSD-3-Clause-Clear"]
+crate = "tfhe-zk-pok"
 
 [licenses.private]
 # he-backend itself is not published.

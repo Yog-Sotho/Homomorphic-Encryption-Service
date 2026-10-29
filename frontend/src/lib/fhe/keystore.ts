@@ -20,6 +20,11 @@ export interface StoredClientKey {
   sealed?: SealedKey;
   /** Unprotected key bytes: only on records stored before passphrases. */
   clientKey?: Uint8Array<ArrayBuffer>;
+  /**
+   * The compact public key uploaded with the server key (not secret). Proofs
+   * must be made with this exact key; keys from before proofs have none.
+   */
+  publicKey?: Uint8Array<ArrayBuffer>;
 }
 
 export type ProtectedClientKey = StoredClientKey & { serverKeySha256: string; sealed: SealedKey };
@@ -62,9 +67,11 @@ export async function saveSealedKey(
   keyId: string,
   serverKeySha256: string,
   sealed: SealedKey,
-  createdAt = new Date().toISOString()
+  createdAt = new Date().toISOString(),
+  publicKey?: Uint8Array<ArrayBuffer>
 ): Promise<void> {
   const record: ProtectedClientKey = { keyId, serverKeySha256, sealed, createdAt };
+  if (publicKey) record.publicKey = publicKey;
   await run('readwrite', (store) => store.put(record));
 }
 

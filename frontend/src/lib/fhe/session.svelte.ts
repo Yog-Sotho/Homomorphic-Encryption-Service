@@ -4,16 +4,18 @@
  * (or signing out) forgets it: the passphrase is needed again.
  */
 
-import { keys, type ServerKeyInfo } from '../api.js';
+import { he, keys, type IntegerType, type ServerKeyInfo, type ValueType } from '../api.js';
 import { FheClient } from './client.js';
-import { parseKeyFile } from './keyfile.js';
+import { keyFilePublicKey, parseKeyFile } from './keyfile.js';
 import {
   deleteClientKey,
+  getClientKey,
   isProtected,
   listClientKeys,
   saveSealedKey,
   type StoredClientKey
 } from './keystore.js';
+import { sha256Hex } from './vault.js';
 
 /** A server key with whatever this browser holds for it. */
 export interface KeyEntry {
@@ -26,6 +28,11 @@ export interface KeyOverview {
   entries: KeyEntry[];
   /** Client keys whose server key no longer exists. */
   orphans: StoredClientKey[];
+}
+
+/** Whether proven inputs can be sent for this key from this browser. */
+export function canProve(entry: KeyEntry): boolean {
+  return entry.server.supports_proofs && entry.local?.publicKey !== undefined;
 }
 
 export async function loadKeyOverview(): Promise<KeyOverview> {
@@ -41,6 +48,7 @@ class FheSession {
   /** The server key whose client key is loaded in the worker, if any. */
   unlockedKeyId = $state<string | null>(null);
   #client: FheClient | null = null;
+  #crs: Promise<{ sha256: string; bytes: Uint8Array<ArrayBuffer> }> | null = null;
 
   get supported(): boolean {
     return FheClient.isSupported();
@@ -58,12 +66,21 @@ class FheSession {
   async generate(passphrase: string, onUploading?: () => void): Promise<ServerKeyInfo> {
     const generated = await this.#worker.generateKeys(passphrase);
     onUploading?.();
-    const info = await keys.upload(generated.compressedServerKey);
+    let info = await keys.upload(generated.compressedServerKey);
     try {
       if (info.sha256 !== generated.serverKeySha256) {
         throw new Error('The server registered a different key than this browser sent.');
       }
-      await saveSealedKey(info.id, generated.serverKeySha256, generated.sealed);
+      if (info.supports_proofs) {
+        info = await keys.uploadPublicKey(info.id, generated.publicKey);
+      }
+      await saveSealedKey(
+        info.id,
+        generated.serverKeySha256,
+        generated.sealed,
+        undefined,
+        generated.publicKey
+      );
     } catch (e) {
       // Without its client key the server key is useless; don't leave it behind.
       await keys.remove(info.id).catch(() => {});
@@ -104,7 +121,11 @@ class FheSession {
     }
     // Opening it proves the passphrase before anything is stored.
     await this.#worker.unlock(file.sealed, file.serverKeySha256, passphrase);
-    await saveSealedKey(file.keyId, file.serverKeySha256, file.sealed, file.createdAt);
+    const publicKey = keyFilePublicKey(file);
+    await saveSealedKey(file.keyId, file.serverKeySha256, file.sealed, file.createdAt, publicKey);
+    if (publicKey && server.supports_proofs && !server.has_public_key) {
+      await keys.uploadPublicKey(file.keyId, publicKey);
+    }
     this.unlockedKeyId = file.keyId;
     return file.keyId;
   }
@@ -126,12 +147,38 @@ class FheSession {
     this.unlockedKeyId = null;
   }
 
-  encrypt(values: number[]): Promise<Uint8Array<ArrayBuffer>[]> {
-    return this.#worker.encrypt(values);
+  encrypt(type: IntegerType, values: string[]): Promise<Uint8Array<ArrayBuffer>[]> {
+    return this.#worker.encrypt(type, values);
   }
 
-  decrypt(ciphertext: Uint8Array<ArrayBuffer>): Promise<number> {
-    return this.#worker.decrypt(ciphertext);
+  decrypt(type: ValueType, ciphertext: Uint8Array<ArrayBuffer>): Promise<string> {
+    return this.#worker.decrypt(type, ciphertext);
+  }
+
+  /** The server's CRS, downloaded once and checked against its advertised hash. */
+  #loadCrs(): Promise<{ sha256: string; bytes: Uint8Array<ArrayBuffer> }> {
+    this.#crs ??= (async () => {
+      const params = await he.params();
+      if (!params.proofs) throw new Error('This server does not accept proven inputs.');
+      const bytes = await he.crs();
+      const sha256 = await sha256Hex(bytes);
+      if (sha256 !== params.proofs.crs_sha256) {
+        throw new Error('The proof parameters downloaded do not match the server’s.');
+      }
+      return { sha256, bytes };
+    })();
+    this.#crs.catch(() => (this.#crs = null));
+    return this.#crs;
+  }
+
+  /**
+   * Encrypts `values` under the key's public key into one list with a proof
+   * that they are well-formed encryptions, for the job's `proven_inputs`.
+   */
+  async prove(keyId: string, type: IntegerType, values: string[]): Promise<Uint8Array<ArrayBuffer>> {
+    const publicKey = (await getClientKey(keyId))?.publicKey;
+    if (!publicKey) throw new Error('This key has no public key in this browser.');
+    return this.#worker.prove(type, values, keyId, publicKey, await this.#loadCrs());
   }
 
   /** Stops the worker (and with it the loaded key), e.g. on sign-out. */

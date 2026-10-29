@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { get } from 'svelte/store';
-import { ApiError, auth, compute, errorMessage, session, user } from './api.js';
+import { ApiError, auth, compute, errorMessage, he, keys, session, user } from './api.js';
 import { userStore } from './stores.js';
 
 function jsonResponse(status: number, body: unknown): Response {
@@ -155,7 +155,7 @@ describe('api client', () => {
       .mockRejectedValueOnce(new TypeError('fetch failed'))
       .mockResolvedValueOnce(jsonResponse(202, { id: 'job-1', status: 'pending' }));
 
-    await expect(compute.submitJob('key-1', 'add', ['YQ==', 'Yg=='])).resolves.toMatchObject({
+    await expect(compute.submitJob({ key_id: 'key-1', operation: 'add', integer_type: 'u16', inputs: ['YQ==', 'Yg=='] })).resolves.toMatchObject({
       id: 'job-1'
     });
 
@@ -170,7 +170,7 @@ describe('api client', () => {
   it('does not retry submissions the server refused', async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse(503, { error: { code: 'unavailable', message: 'The job queue is full' } }));
 
-    await expect(compute.submitJob('key-1', 'add', ['YQ==', 'Yg=='])).rejects.toMatchObject({
+    await expect(compute.submitJob({ key_id: 'key-1', operation: 'add', integer_type: 'u16', inputs: ['YQ==', 'Yg=='] })).rejects.toMatchObject({
       status: 503,
       message: 'The job queue is full'
     });
@@ -188,6 +188,22 @@ describe('api client', () => {
       status: 409,
       message: 'Job is pending'
     });
+  });
+
+  it('uploads public keys as bytes and downloads the CRS', async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(200, { id: 'k/1', has_public_key: true }))
+      .mockResolvedValueOnce(new Response(new Uint8Array([7, 8]), { status: 200 }));
+
+    await expect(keys.uploadPublicKey('k/1', new Uint8Array([1, 2]))).resolves.toMatchObject({
+      has_public_key: true
+    });
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe('/api/v1/keys/k%2F1/public-key');
+    expect(init?.method).toBe('PUT');
+    expect((init?.headers as Record<string, string>)['Content-Type']).toBe('application/octet-stream');
+    await expect(he.crs()).resolves.toEqual(new Uint8Array([7, 8]));
+    expect(fetchMock.mock.calls[1][0]).toBe('/api/v1/he/crs');
   });
 
   it('pages through jobs with a cursor', async () => {

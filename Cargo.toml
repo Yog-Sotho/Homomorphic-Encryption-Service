@@ -30,6 +30,7 @@ wiremock = "0.6"
 clap = { version = "4.6", features = ["derive", "env"] }
 rpassword = "7.5"
 tempfile = "3"
+proptest = { version = "1", default-features = false, features = ["std"] }
 
 # TFHE-rs is unusably slow without optimisation, so dependencies are built
 # release-like in dev/test while our own crates stay fast to compile. Debuginfo,

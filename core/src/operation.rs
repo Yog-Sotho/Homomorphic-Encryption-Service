@@ -237,4 +237,92 @@ mod tests {
         assert!(Operation::Sum.check_operands(1, false).is_err());
         assert!(Operation::Sum.check_operands(2, true).is_err());
     }
+
+    mod properties {
+        use super::*;
+        use proptest::prelude::*;
+
+        /// The result native Rust integers give, the reference for the oracle.
+        fn native(op: Operation, ty: IntegerType, operands: &[i128]) -> PlainValue {
+            macro_rules! with {
+                ($t:ty) => {{
+                    let v: Vec<$t> = operands.iter().map(|&x| x as $t).collect();
+                    let (a, b) = (v[0], *v.get(1).unwrap_or(&0));
+                    match op {
+                        Operation::Add => PlainValue::Int(a.wrapping_add(b) as i128),
+                        Operation::Subtract => PlainValue::Int(a.wrapping_sub(b) as i128),
+                        Operation::Multiply => PlainValue::Int(a.wrapping_mul(b) as i128),
+                        Operation::Min => PlainValue::Int(a.min(b) as i128),
+                        Operation::Max => PlainValue::Int(a.max(b) as i128),
+                        Operation::Eq => PlainValue::Bool(a == b),
+                        Operation::Ne => PlainValue::Bool(a != b),
+                        Operation::Lt => PlainValue::Bool(a < b),
+                        Operation::Le => PlainValue::Bool(a <= b),
+                        Operation::Gt => PlainValue::Bool(a > b),
+                        Operation::Ge => PlainValue::Bool(a >= b),
+                        Operation::Sum => PlainValue::Int(
+                            v.iter().fold(0 as $t, |acc, &x| acc.wrapping_add(x)) as i128,
+                        ),
+                    }
+                }};
+            }
+            match ty {
+                U8 => with!(u8),
+                U16 => with!(u16),
+                U32 => with!(u32),
+                U64 => with!(u64),
+                I8 => with!(i8),
+                I16 => with!(i16),
+                I32 => with!(i32),
+                I64 => with!(i64),
+            }
+        }
+
+        fn typed_operands() -> impl Strategy<Value = (Operation, IntegerType, Vec<i128>)> {
+            (
+                proptest::sample::select(Operation::ALL.to_vec()),
+                proptest::sample::select(IntegerType::ALL.to_vec()),
+            )
+                .prop_flat_map(|(op, ty)| {
+                    let count = if op == Operation::Sum {
+                        2..=MAX_INPUTS
+                    } else {
+                        2..=2
+                    };
+                    let values = proptest::collection::vec(ty.min_value()..=ty.max_value(), count);
+                    (Just(op), Just(ty), values)
+                })
+        }
+
+        proptest! {
+            #[test]
+            fn the_oracle_matches_native_integers((op, ty, operands) in typed_operands()) {
+                prop_assert_eq!(op.apply_plain(ty, &operands), native(op, ty, &operands));
+            }
+
+            #[test]
+            fn wrapping_lands_in_range_and_is_congruent(
+                ty in proptest::sample::select(IntegerType::ALL.to_vec()),
+                value in -(1i128 << 100)..(1i128 << 100),
+            ) {
+                let wrapped = ty.wrap(value);
+                prop_assert!(ty.min_value() <= wrapped && wrapped <= ty.max_value());
+                prop_assert_eq!((value - wrapped).rem_euclid(1i128 << ty.bits()), 0);
+                prop_assert_eq!(ty.wrap(wrapped), wrapped);
+            }
+
+            #[test]
+            fn values_parse_back_and_out_of_range_ones_do_not(
+                ty in proptest::sample::select(IntegerType::ALL.to_vec()),
+                value in any::<i128>(),
+            ) {
+                let parsed = ty.parse_value(&value.to_string());
+                if (ty.min_value()..=ty.max_value()).contains(&value) {
+                    prop_assert_eq!(parsed, Ok(value));
+                } else {
+                    prop_assert!(parsed.is_err());
+                }
+            }
+        }
+    }
 }

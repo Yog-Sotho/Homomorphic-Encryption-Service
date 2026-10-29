@@ -8,7 +8,9 @@
 //!   temporary files (dot-files) are skipped.
 //!
 //! Users' server keys are needed to finish their queued jobs, and the job store
-//! holds results not yet fetched. Neither contains a secret key.
+//! holds results not yet fetched. The key store also holds users' public keys
+//! and the proof CRS (`crs.bin`): restoring it keeps proofs made against that
+//! CRS valid. None of it contains a secret key.
 //!
 //! Restore: stop the server, put the three back where `DATABASE_URL`,
 //! `KEY_STORE_DIR` and `JOB_STORE_DIR` point, start it.

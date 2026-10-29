@@ -27,3 +27,7 @@ frontend/e2e-fullstack/.backend.log
 !.env.example
 data/
 backups/
+
+# Coverage reports
+frontend/coverage/
+lcov.info
