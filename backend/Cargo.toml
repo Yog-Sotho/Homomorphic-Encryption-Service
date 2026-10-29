@@ -52,3 +52,4 @@ actix-http = "3"
 wiremock.workspace = true
 # The SDK's own end-to-end test runs against a live server built here.
 heaas-sdk.workspace = true
+proptest.workspace = true

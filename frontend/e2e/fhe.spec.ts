@@ -11,14 +11,28 @@ const PASSPHRASE = 'tidy-lantern-orbit-42';
 
 interface Captured {
   keyUpload: Buffer | null;
+  publicKeyUpload: Buffer | null;
   bodies: Buffer[];
-  jobs: { key_id: string; operation: string; inputs: string[] }[];
+  jobs: { key_id: string; operation: string; integer_type: string; inputs: string[]; scalar?: string }[];
   idempotencyKeys: (string | undefined)[];
 }
 
 async function mockFheApi(page: Page): Promise<Captured> {
-  const captured: Captured = { keyUpload: null, bodies: [], jobs: [], idempotencyKeys: [] };
-  let registered: { id: string; sha256: string; size_bytes: number; created_at: string } | null = null;
+  const captured: Captured = {
+    keyUpload: null,
+    publicKeyUpload: null,
+    bodies: [],
+    jobs: [],
+    idempotencyKeys: []
+  };
+  let registered: {
+    id: string;
+    sha256: string;
+    size_bytes: number;
+    created_at: string;
+    supports_proofs: boolean;
+    has_public_key: boolean;
+  } | null = null;
   let polls = 0;
 
   page.on('request', (req: Request) => {
@@ -36,7 +50,9 @@ async function mockFheApi(page: Page): Promise<Captured> {
         id: KEY_ID,
         sha256: createHash('sha256').update(body).digest('hex'),
         size_bytes: body.length,
-        created_at: '2026-10-26T12:00:00'
+        created_at: '2026-10-26T12:00:00',
+        supports_proofs: true,
+        has_public_key: false
       };
       await route.fulfill({ status: 201, json: registered });
       return;
@@ -47,11 +63,26 @@ async function mockFheApi(page: Page): Promise<Captured> {
     registered = null;
     await route.fulfill({ status: 204, body: '' });
   });
+  await page.route(`**/api/v1/keys/${KEY_ID}/public-key`, async (route) => {
+    captured.publicKeyUpload = route.request().postDataBuffer();
+    registered = registered && { ...registered, has_public_key: true };
+    await route.fulfill({ json: registered });
+  });
+
+  // The mock echoes input A back, so a job's result has its input type.
+  const shape = (i: number) => ({
+    integer_type: captured.jobs[i].integer_type,
+    result_type: captured.jobs[i].integer_type,
+    input_count: captured.jobs[i].inputs.length,
+    proven: false,
+    scalar: captured.jobs[i].scalar ?? null
+  });
 
   const summary = (i: number) => ({
     id: `job-${i + 1}`,
     status: 'completed',
     operation: captured.jobs[i].operation,
+    ...shape(i),
     key_id: KEY_ID,
     attempts: 1,
     error_message: null,
@@ -89,7 +120,12 @@ async function mockFheApi(page: Page): Promise<Captured> {
     }
     polls += 1;
     await route.fulfill({
-      json: { id: 'job', status: polls < 2 ? 'processing' : 'completed', error_message: null }
+      json: {
+        id: 'job',
+        status: polls < 2 ? 'processing' : 'completed',
+        error_message: null,
+        ...shape(captured.jobs.length - 1)
+      }
     });
   });
   return captured;
@@ -167,10 +203,12 @@ async function createKey(page: Page) {
   await expect(page.getByTestId('key-entry').getByText('Unlocked')).toBeVisible({ timeout: 120_000 });
 }
 
-async function run(page: Page, op: string, a: string, b: string) {
+async function run(page: Page, op: string, a: string, b: string, options: { type?: string; scalar?: boolean } = {}) {
+  if (options.type) await page.getByLabel('Type').selectOption(options.type);
   await page.getByRole('button', { name: op, exact: true }).click();
   await page.getByLabel('Value A').fill(a);
   await page.getByLabel('Value B').fill(b);
+  await page.getByLabel('Send B unencrypted').setChecked(options.scalar ?? false);
   await page.getByRole('button', { name: 'Run' }).click();
 }
 
@@ -188,8 +226,11 @@ test('keys are made and sealed in the browser; only the evaluation key is upload
   await expect(page).toHaveURL(/\/heaas\/dashboard$/);
   await createKey(page);
 
-  // The upload is the ~60 MB compressed server key, not the ~31 KB client key.
+  // The upload is the ~60 MB compressed server key, not the ~48 KB client key,
+  // and then the ~33 KB compact public key proofs are checked against.
   expect(captured.keyUpload?.length ?? 0).toBeGreaterThan(10_000_000);
+  expect(captured.publicKeyUpload?.length ?? 0).toBeGreaterThan(10_000);
+  expect(captured.publicKeyUpload?.length ?? 0).toBeLessThan(1_000_000);
   // Stored sealed under the passphrase only, with OWASP's PBKDF2 work factor.
   const [record] = await storedRecords(page);
   expect(record.keyId).toBe(KEY_ID);
@@ -219,10 +260,24 @@ test('keys are made and sealed in the browser; only the evaluation key is upload
     expect(bytes.includes(Buffer.from('51234'))).toBe(false);
   }
 
-  // The jobs page decrypts stored results too.
+  // A 64-bit signed value beyond JavaScript's safe integers, and a plain operand:
+  // min(A, 5) = A, which is what the mock echoes.
+  const big = '-9007199254740993';
+  await run(page, 'Min', big, '5', { type: 'i64', scalar: true });
+  await expect(page.getByTestId('result-value')).toHaveText(big, { timeout: 60_000 });
+  await expect(page.getByText('Matches expected')).toBeVisible();
+  const second = captured.jobs[1];
+  expect(second).toMatchObject({ operation: 'min', integer_type: 'i64', scalar: '5' });
+  expect(second.inputs).toHaveLength(1);
+  expect(Buffer.from(second.inputs[0], 'base64').length).toBeGreaterThan(400_000); // FheInt64
+
+  // The jobs page decrypts stored results too, each as its type.
   await page.getByRole('link', { name: 'Jobs', exact: true }).click();
-  await page.getByTestId('job-row').getByRole('button', { name: 'Decrypt' }).click();
-  await expect(page.getByTestId('job-value')).toHaveText('51234', { timeout: 30_000 });
+  await expect(page.getByTestId('job-row')).toHaveCount(2);
+  for (const row of await page.getByTestId('job-row').all()) {
+    await row.getByRole('button', { name: 'Decrypt' }).click();
+  }
+  await expect(page.getByTestId('job-value')).toHaveText([big, '51234'], { timeout: 30_000 });
 
   // No request body ever contains the client key or the passphrase.
   const secret = clientKey.subarray(clientKey.length / 2, clientKey.length / 2 + 64);

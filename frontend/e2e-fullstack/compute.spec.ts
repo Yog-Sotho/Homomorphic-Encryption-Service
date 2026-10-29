@@ -26,6 +26,7 @@ async function register(request: import('@playwright/test').APIRequestContext) {
 }
 
 test('register, generate a key in the browser and compute on encrypted data', async ({ page, request }) => {
+  test.setTimeout(420_000);
   const problems = trackProblems(page);
   const { email, link } = await register(request);
 
@@ -64,13 +65,37 @@ test('register, generate a key in the browser and compute on encrypted data', as
   await expect(page.getByTestId('result-value')).toHaveText('65529', { timeout: 120_000 });
   await expect(page.getByText('Matches expected')).toBeVisible();
 
-  // The server keeps both results; the jobs page decrypts them here.
+  // A signed comparison against a plain number: an encrypted boolean comes back.
+  await page.getByLabel('Type').selectOption('i32');
+  await page.getByRole('button', { name: 'Less', exact: true }).click();
+  await page.getByLabel('Value A').fill('-5');
+  await page.getByLabel('Value B').fill('3');
+  await page.getByLabel('Send B unencrypted').check();
+  await page.getByRole('button', { name: 'Run' }).click();
+  await expect(page.getByTestId('result-value')).toHaveText('true', { timeout: 120_000 });
+  await expect(page.getByText('Matches expected')).toBeVisible();
+
+  // A sum of inputs proven in the browser and verified by the server:
+  // 200 + 100 + 1 + 2 = 303 ≡ 47 (mod 256).
+  await page.getByLabel('Type').selectOption('u8');
+  await page.getByRole('button', { name: 'Sum', exact: true }).click();
+  await page.getByLabel('Values, separated by commas').fill('200, 100, 1, 2');
+  await page.getByLabel('Prove the inputs are well-formed encryptions').check();
+  await page.getByRole('button', { name: 'Run' }).click();
+  await expect(page.getByTestId('result-value')).toHaveText('47', { timeout: 180_000 });
+  await expect(page.getByText('Matches expected')).toBeVisible();
+  await expect(page.getByText(/1 proven list of 4/)).toBeVisible();
+
+  // The server keeps every result; the jobs page decrypts them here, each as its type.
   await page.getByRole('link', { name: 'Jobs', exact: true }).click();
-  await expect(page.getByTestId('job-row')).toHaveCount(2);
+  await expect(page.getByTestId('job-row')).toHaveCount(4);
+  await expect(page.getByTestId('job-row').first()).toContainText('Sum (u8, 4 inputs, proven)');
   for (const row of await page.getByTestId('job-row').all()) {
     await row.getByRole('button', { name: 'Decrypt' }).click();
   }
-  await expect(page.getByTestId('job-value')).toHaveText(['65529', '24464'], { timeout: 30_000 });
+  await expect(page.getByTestId('job-value')).toHaveText(['47', 'true', '65529', '24464'], {
+    timeout: 30_000
+  });
 
   // After a reload the key must be unlocked again.
   await page.goto('/heaas/dashboard');

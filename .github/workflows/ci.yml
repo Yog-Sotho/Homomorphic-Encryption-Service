@@ -34,6 +34,32 @@ jobs:
       - name: Test (backend, core, SDK and CLI; includes the OpenAPI drift check)
         run: cargo test --locked --workspace
 
+  coverage:
+    name: Rust coverage (llvm-cov)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: coverage
+      # Runs the whole test suite instrumented; fails if line coverage drops
+      # below the floor (measured at ~91% when it was set).
+      - name: Test with coverage
+        run: cargo llvm-cov --locked --workspace --fail-under-lines 88 --lcov --output-path lcov.info
+      - name: Summary
+        run: cargo llvm-cov report --summary-only
+      - uses: actions/upload-artifact@v7
+        with:
+          name: rust-coverage
+          path: lcov.info
+          retention-days: 14
+
   backend-msrv:
     name: Rust workspace (MSRV build)
     runs-on: ubuntu-latest
@@ -86,8 +112,8 @@ jobs:
         run: pnpm audit --audit-level=moderate
       - name: Type check
         run: pnpm check
-      - name: Unit tests
-        run: pnpm test
+      - name: Unit tests (with a coverage floor, see vite.config.ts)
+        run: pnpm test:coverage
       - name: Build
         run: pnpm build
       - name: Install Playwright browser

@@ -30,6 +30,7 @@ use utoipa::{Modify, OpenApi};
         super::health::health,
         super::health::ready,
         params::get_params,
+        params::get_crs,
         auth::password::register,
         auth::password::login,
         auth::password::verify_email,
@@ -52,6 +53,7 @@ use utoipa::{Modify, OpenApi};
         keys::upload_key,
         keys::list_keys,
         keys::delete_key,
+        keys::upload_public_key,
         compute::submit_job,
         compute::list_jobs,
         compute::get_job_status,
@@ -266,7 +268,7 @@ mod tests {
                 );
                 let public = path.starts_with("/auth/")
                     || path.starts_with("/health")
-                    || path == "/he/params";
+                    || path.starts_with("/he/");
                 if !public {
                     assert_eq!(
                         op["security"][0]["bearer"],

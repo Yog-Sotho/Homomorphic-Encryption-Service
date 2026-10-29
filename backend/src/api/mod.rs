@@ -61,6 +61,7 @@ fn api_scope(prefix: &str, config: &Config) -> actix_web::Scope {
         .route("/health", web::get().to(health::health))
         .route("/health/ready", web::get().to(health::ready))
         .route("/he/params", web::get().to(params::get_params))
+        .route("/he/crs", web::get().to(params::get_crs))
         .route("/openapi.json", web::get().to(openapi::openapi_json))
         .service(
             web::scope("/auth")
@@ -108,7 +109,14 @@ fn api_scope(prefix: &str, config: &Config) -> actix_web::Scope {
                         .route(web::post().to(keys::upload_key))
                         .route(web::get().to(keys::list_keys)),
                 )
-                .route("/{id}", web::delete().to(keys::delete_key)),
+                .route("/{id}", web::delete().to(keys::delete_key))
+                .service(
+                    web::resource("/{id}/public-key")
+                        .app_data(web::PayloadConfig::new(
+                            crate::crypto::params::MAX_PUBLIC_KEY_BYTES as usize,
+                        ))
+                        .route(web::put().to(keys::upload_public_key)),
+                ),
         )
         .service(
             web::scope("/compute")

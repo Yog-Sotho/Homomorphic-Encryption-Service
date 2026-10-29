@@ -12,7 +12,7 @@
   let loading = $state(false);
   let error = $state('');
   /** Decrypted results by job id (only ever held in this page). */
-  let decrypted = $state<Record<string, number | string>>({});
+  let decrypted = $state<Record<string, string>>({});
 
   async function load(cursor?: string) {
     loading = true;
@@ -33,7 +33,7 @@
   async function decrypt(job: JobSummary) {
     try {
       const ciphertext = await compute.getJobResult(job.id);
-      decrypted[job.id] = await fheSession.decrypt(ciphertext);
+      decrypted[job.id] = await fheSession.decrypt(job.result_type, ciphertext);
     } catch (e) {
       decrypted[job.id] = errorMessage(e, 'Could not decrypt');
     }
@@ -48,8 +48,14 @@
     }
   }
 
-  function label(op: string): string {
-    return OPERATIONS.find((o) => o.id === op)?.label ?? op;
+  /** E.g. "Less (i32, scalar 5, proven)". */
+  function label(job: JobSummary): string {
+    const name = OPERATIONS.find((o) => o.id === job.operation)?.label ?? job.operation;
+    const details: string[] = [job.integer_type];
+    if (job.operation === 'sum') details.push(`${job.input_count} inputs`);
+    if (job.scalar !== null) details.push(`scalar ${job.scalar}`);
+    if (job.proven) details.push('proven');
+    return `${name} (${details.join(', ')})`;
   }
 
   function when(iso: string): string {
@@ -102,7 +108,7 @@
           {#each jobs as job (job.id)}
             <tr data-testid="job-row">
               <td>{when(job.created_at)}</td>
-              <td>{label(job.operation)}</td>
+              <td>{label(job)}</td>
               <td>
                 <span class={`badge badge-${TONE[job.status]}`}>{job.status}</span>
                 {#if job.attempts > 1}<span class="meta">{job.attempts} attempts</span>{/if}

@@ -53,7 +53,7 @@ counts as unset.
 |---|---|---|
 | `JWT_SECRET` | — (required, ≥ 32 bytes) | Secret from which token-signing and OAuth-state keys are derived (e.g. `openssl rand -base64 48`) |
 | `DATABASE_URL` | `sqlite://./he_saas.db` | SQLite database |
-| `KEY_STORE_DIR` | `./data/keys` | Uploaded server keys (~60 MB each) |
+| `KEY_STORE_DIR` | `./data/keys` | Uploaded server keys (~60 MB each), their public keys, and the proof CRS (`crs.bin`, made on first start) |
 | `SERVER_ADDR` | `127.0.0.1:8080` | Listen address (`host:port`) |
 | `MAX_SERVER_KEY_BYTES` | 80 MiB | Largest accepted key upload (1 MiB – 1 GiB) |
 | `MAX_KEYS_PER_USER` | 2 | Server keys per account (1–100) |
@@ -137,7 +137,8 @@ archives older than `KEEP_DAYS` (default 7).
 A backup holds:
 - `he_saas.db`: a consistent SQLite snapshot (`VACUUM INTO`), taken while the server
   runs;
-- `keys/`: users' server keys, needed to run their queued jobs;
+- `keys/`: users' server and public keys, needed to run their queued jobs, and the
+  proof CRS (restoring it keeps proofs made against it valid);
 - `jobs/`: job ciphertexts, including results not yet fetched.
 
 None of these contain a secret key. Outside Docker, run `he-backend backup <new

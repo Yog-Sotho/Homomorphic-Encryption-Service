@@ -4,6 +4,7 @@
  * importing needs it, which also proves the file and passphrase belong together.
  */
 
+import { base64ToBytes, bytesToBase64 } from './encoding.js';
 import type { ProtectedClientKey } from './keystore.js';
 import { isSealedKey, type SealedKey } from './vault.js';
 
@@ -18,6 +19,8 @@ export interface KeyFile {
   serverKeySha256: string;
   createdAt: string;
   sealed: SealedKey;
+  /** Base64 compact public key, for proven inputs (absent on older keys). */
+  publicKey?: string;
 }
 
 export function toKeyFile(record: ProtectedClientKey): string {
@@ -29,7 +32,13 @@ export function toKeyFile(record: ProtectedClientKey): string {
     createdAt: record.createdAt,
     sealed: record.sealed
   };
+  if (record.publicKey) file.publicKey = bytesToBase64(record.publicKey);
   return JSON.stringify(file, null, 2);
+}
+
+/** The public key carried by a key file, if any. */
+export function keyFilePublicKey(file: KeyFile): Uint8Array<ArrayBuffer> | undefined {
+  return file.publicKey === undefined ? undefined : base64ToBytes(file.publicKey);
 }
 
 export function keyFileName(keyId: string): string {
@@ -55,7 +64,9 @@ export function parseKeyFile(text: string): KeyFile {
     typeof file.serverKeySha256 === 'string' &&
     /^[0-9a-f]{64}$/.test(file.serverKeySha256) &&
     typeof file.createdAt === 'string' &&
-    isSealedKey(file.sealed);
+    isSealedKey(file.sealed) &&
+    (file.publicKey === undefined ||
+      (typeof file.publicKey === 'string' && /^[A-Za-z0-9+/]+={0,2}$/.test(file.publicKey)));
   if (!valid) throw new Error('This key file is damaged.');
   return file as KeyFile;
 }

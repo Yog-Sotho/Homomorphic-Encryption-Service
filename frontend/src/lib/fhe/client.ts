@@ -1,3 +1,4 @@
+import type { IntegerType, ValueType } from '../api.js';
 import type { GeneratedKeys, WorkerRequest, WorkerResponse, WorkerResult } from './protocol.js';
 import { WrongPassphraseError, type SealedKey } from './vault.js';
 
@@ -96,16 +97,42 @@ export class FheClient {
     await this.#call({ kind: 'lock' });
   }
 
-  async encrypt(values: number[]): Promise<Uint8Array<ArrayBuffer>[]> {
-    const result = await this.#call({ kind: 'encrypt', values });
+  /** Encrypts decimal `values` as `type` ciphertexts with the unlocked client key. */
+  async encrypt(type: IntegerType, values: string[]): Promise<Uint8Array<ArrayBuffer>[]> {
+    const result = await this.#call({ kind: 'encrypt', type, values });
     if (result.kind !== 'encrypt') throw new Error('Unexpected worker reply');
     return result.ciphertexts;
   }
 
-  async decrypt(ciphertext: Uint8Array<ArrayBuffer>): Promise<number> {
-    const result = await this.#call({ kind: 'decrypt', ciphertext });
+  /** Decrypts a `type` ciphertext; `"true"`/`"false"` or a decimal integer. */
+  async decrypt(type: ValueType, ciphertext: Uint8Array<ArrayBuffer>): Promise<string> {
+    const result = await this.#call({ kind: 'decrypt', type, ciphertext });
     if (result.kind !== 'decrypt') throw new Error('Unexpected worker reply');
     return result.value;
+  }
+
+  /**
+   * Encrypts `values` under `publicKey` (the one uploaded for `keyId`) into one
+   * proven list against the server's CRS. Needs no unlocked key.
+   */
+  async prove(
+    type: IntegerType,
+    values: string[],
+    keyId: string,
+    publicKey: Uint8Array<ArrayBuffer>,
+    crs: { sha256: string; bytes: Uint8Array<ArrayBuffer> }
+  ): Promise<Uint8Array<ArrayBuffer>> {
+    const result = await this.#call({
+      kind: 'prove',
+      type,
+      values,
+      keyId,
+      publicKey: publicKey.slice(),
+      crsSha256: crs.sha256,
+      crs: crs.bytes
+    });
+    if (result.kind !== 'prove') throw new Error('Unexpected worker reply');
+    return result.list;
   }
 
   terminate(): void {

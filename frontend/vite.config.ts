@@ -80,6 +80,16 @@ export default defineConfig({
   optimizeDeps: { exclude: ['tfhe'] },
   test: {
     // Playwright specs live in e2e/ and run under `pnpm test:e2e`.
-    include: ['src/**/*.test.ts']
+    include: ['src/**/*.test.ts'],
+    coverage: {
+      provider: 'v8',
+      // The library code unit tests cover. Pages, the TFHE worker and the
+      // session wrapper need a browser: the Playwright suites cover them.
+      include: ['src/lib/**/*.ts'],
+      exclude: ['src/lib/**/*.test.ts', 'src/lib/fhe/worker.ts', 'src/lib/**/*.svelte.ts'],
+      reporter: ['text', 'lcov'],
+      // CI fails below these (measured: ~92% of lines).
+      thresholds: { lines: 88, statements: 85, branches: 75, functions: 75 }
+    }
   }
 });

@@ -828,7 +828,7 @@
         "tags": [
           "jobs"
         ],
-        "summary": "`POST /api/v1/compute/jobs` — queue `operation(inputs[0], inputs[1])`.",
+        "summary": "`POST /api/v1/compute/jobs` — queue `operation` on the encrypted inputs.",
         "description": "Honours an `Idempotency-Key` header: resending the same request with the same\nkey returns the original job (with `Idempotent-Replayed: true`) instead of\nqueuing and charging a second one.",
         "operationId": "submit_job",
         "parameters": [
@@ -881,7 +881,7 @@
             }
           },
           "400": {
-            "description": "Wrong number of inputs, bad base64 or a bad Idempotency-Key",
+            "description": "Wrong number or shape of inputs, bad base64, a malformed proven list, a scalar out of range, or a bad Idempotency-Key",
             "content": {
               "application/json": {
                 "schema": {
@@ -914,7 +914,7 @@
             }
           },
           "422": {
-            "description": "Unknown operation, or the Idempotency-Key was used for a different request",
+            "description": "Unknown operation or type; proven inputs for a key without proof support or public key; or the Idempotency-Key was used for a different request",
             "content": {
               "application/json": {
                 "schema": {
@@ -1066,7 +1066,7 @@
         "tags": [
           "jobs"
         ],
-        "summary": "`GET /api/v1/compute/jobs/{id}/result` — the encrypted result as\n`application/octet-stream` (a `safe_serialize`d `FheUint16`).",
+        "summary": "`GET /api/v1/compute/jobs/{id}/result` — the encrypted result as\n`application/octet-stream`: a `safe_serialize`d ciphertext of the job's\n`result_type` (`FheBool` for comparisons).",
         "operationId": "get_job_result",
         "parameters": [
           {
@@ -1081,7 +1081,7 @@
         ],
         "responses": {
           "200": {
-            "description": "The encrypted result: a `safe_serialize`d `FheUint16`",
+            "description": "The encrypted result: a `safe_serialize`d ciphertext of the job's `result_type` (e.g. `FheUint16`, or `FheBool` for comparisons)",
             "content": {
               "application/octet-stream": {
                 "schema": {
@@ -1122,6 +1122,45 @@
           {
             "bearer": []
           }
+        ]
+      }
+    },
+    "/he/crs": {
+      "get": {
+        "tags": [
+          "he"
+        ],
+        "summary": "The CRS proven inputs are made against, as `application/octet-stream`.",
+        "operationId": "get_crs",
+        "responses": {
+          "200": {
+            "description": "A `safe_serialize`d (compressed) TFHE-rs `CompactPkeCrs`; its SHA-256 is `proofs.crs_sha256` of `/he/params`",
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The quoted SHA-256"
+              }
+            },
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "Unchanged since the `If-None-Match` ETag"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {}
         ]
       }
     },
@@ -1377,6 +1416,101 @@
         ]
       }
     },
+    "/keys/{id}/public-key": {
+      "put": {
+        "tags": [
+          "keys"
+        ],
+        "summary": "`PUT /api/v1/keys/{id}/public-key` — body is a `safe_serialize`d TFHE\n`CompactPublicKey` made from the same client key as server key `id`.",
+        "operationId": "upload_public_key",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Key id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "A `safe_serialize`d TFHE-rs `CompactPublicKey` (at most `proofs.max_public_key_bytes`)",
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Stored; proven inputs can now be sent for this key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServerKeyInfo"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Not a compact public key for these parameters",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "description": "No such key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Larger than `proofs.max_public_key_bytes`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The server key was made without proof support",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
     "/user/account": {
       "delete": {
         "tags": [
@@ -1612,11 +1746,10 @@
       },
       "CreateJobRequest": {
         "type": "object",
-        "description": "`POST /api/v1/compute/jobs`: compute `operation(inputs[0], inputs[1])`.",
+        "description": "`POST /api/v1/compute/jobs`: compute `operation` on encrypted inputs.\n\nThe inputs are either `inputs` (one ciphertext each) or `proven_inputs` (one\nzero-knowledge-proven list holding all of them), never both. Binary operations\ntake two inputs, or one input and a `scalar`; `sum` takes 2 to `max_inputs`.",
         "required": [
           "key_id",
-          "operation",
-          "inputs"
+          "operation"
         ],
         "properties": {
           "inputs": {
@@ -1624,7 +1757,11 @@
             "items": {
               "type": "string"
             },
-            "description": "Standard base64 of exactly two `safe_serialize`d `FheUint16` ciphertexts,\nencrypted with the client key that belongs to `key_id`."
+            "description": "Standard base64 of `safe_serialize`d ciphertexts of `integer_type` (e.g.\n`FheUint16`), encrypted with the client key that belongs to `key_id`."
+          },
+          "integer_type": {
+            "$ref": "#/components/schemas/IntegerType",
+            "description": "The inputs' type; `u16` if absent."
           },
           "key_id": {
             "type": "string",
@@ -1632,6 +1769,20 @@
           },
           "operation": {
             "$ref": "#/components/schemas/Operation"
+          },
+          "proven_inputs": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Standard base64 of one `safe_serialize`d `ProvenCompactCiphertextList`\nencrypted under the key's public key, proven against the server's CRS with\nmetadata `he-engine/proof/v1/<key_id>`."
+          },
+          "scalar": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A plaintext right-hand operand in decimal, e.g. `\"-7\"`. The server sees it."
           }
         }
       },
@@ -1752,11 +1903,19 @@
         "properties": {
           "config": {
             "type": "string",
-            "example": "ConfigBuilder::default()"
+            "example": "ConfigBuilder::default() + PARAM_PKE_MESSAGE_2_CARRY_2_KS_PBS_TUNIFORM_2M128"
           },
           "integer_type": {
             "type": "string",
+            "description": "The TFHE-rs type of the default `integer_type` (`u16`).",
             "example": "FheUint16"
+          },
+          "integer_types": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/IntegerType"
+            },
+            "description": "Every type a job can compute on (absent before HE Engine 0.5: `u16` only)."
           },
           "library": {
             "type": "string",
@@ -1765,6 +1924,17 @@
           "max_ciphertext_bytes": {
             "type": "integer",
             "format": "int64",
+            "minimum": 0
+          },
+          "max_inputs": {
+            "type": "integer",
+            "description": "Most encrypted inputs one job takes (a `sum`).",
+            "minimum": 0
+          },
+          "max_job_input_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Most input bytes one job takes, all inputs together.",
             "minimum": 0
           },
           "max_keys_per_user": {
@@ -1785,7 +1955,19 @@
           "plaintext_modulus": {
             "type": "integer",
             "format": "int64",
+            "description": "The default type's plaintext modulus (2^16).",
             "minimum": 0
+          },
+          "proofs": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ProofParams",
+                "description": "Absent on servers before HE Engine 0.5, which take no proven inputs."
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "scheme": {
             "type": "string",
@@ -1814,6 +1996,20 @@
             "description": "The server's version."
           }
         }
+      },
+      "IntegerType": {
+        "type": "string",
+        "description": "The encrypted integer types jobs can compute on. Arithmetic wraps modulo\n2^bits; signed types use two's complement.",
+        "enum": [
+          "u8",
+          "u16",
+          "u32",
+          "u64",
+          "i8",
+          "i16",
+          "i32",
+          "i64"
+        ]
       },
       "JobPage": {
         "type": "object",
@@ -1891,6 +2087,14 @@
             "format": "int64",
             "description": "Total size of the submitted ciphertexts."
           },
+          "input_count": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Number of encrypted inputs."
+          },
+          "integer_type": {
+            "$ref": "#/components/schemas/IntegerType"
+          },
           "key_id": {
             "type": [
               "string",
@@ -1901,6 +2105,10 @@
           "operation": {
             "$ref": "#/components/schemas/Operation"
           },
+          "proven": {
+            "type": "boolean",
+            "description": "The inputs were a zero-knowledge-proven list."
+          },
           "result_bytes": {
             "type": [
               "integer",
@@ -1908,6 +2116,17 @@
             ],
             "format": "int64",
             "description": "Size of the encrypted result (`GET /api/v1/compute/jobs/{id}/result`)."
+          },
+          "result_type": {
+            "$ref": "#/components/schemas/ValueType",
+            "description": "The type to decrypt the result as: `bool` for comparisons."
+          },
+          "scalar": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The plaintext right-hand operand, if the job has one."
           },
           "started_at": {
             "type": [
@@ -1990,14 +2209,58 @@
       },
       "Operation": {
         "type": "string",
-        "description": "Binary operations on `FheUint16`. Arithmetic wraps modulo 2^16.",
+        "description": "Homomorphic operations. Arithmetic wraps modulo 2^bits of the input type;\ncomparisons return an encrypted boolean.\n\nEvery operation except [`Sum`](Operation::Sum) takes two operands: two\nciphertexts, or one ciphertext and a plaintext `scalar` as the right-hand side.\n`Sum` adds 2 to [`MAX_INPUTS`] ciphertexts.",
         "enum": [
           "add",
           "subtract",
           "multiply",
           "min",
-          "max"
+          "max",
+          "eq",
+          "ne",
+          "lt",
+          "le",
+          "gt",
+          "ge",
+          "sum"
         ]
+      },
+      "ProofParams": {
+        "type": "object",
+        "description": "How to send zero-knowledge-proven inputs.",
+        "required": [
+          "crs_sha256",
+          "max_bits",
+          "max_list_bytes",
+          "max_public_key_bytes",
+          "metadata_prefix"
+        ],
+        "properties": {
+          "crs_sha256": {
+            "type": "string",
+            "description": "Lower-case hex SHA-256 of the CRS served at `GET /api/v1/he/crs`."
+          },
+          "max_bits": {
+            "type": "integer",
+            "description": "Most plaintext bits one proven list may hold.",
+            "minimum": 0
+          },
+          "max_list_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "max_public_key_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "metadata_prefix": {
+            "type": "string",
+            "description": "Proofs are made with metadata `<metadata_prefix><key id>`.",
+            "example": "he-engine/proof/v1/"
+          }
+        }
       },
       "Providers": {
         "type": "object",
@@ -2059,6 +2322,10 @@
             "type": "string",
             "format": "date-time"
           },
+          "has_public_key": {
+            "type": "boolean",
+            "description": "The matching compact public key has been uploaded\n(`PUT /api/v1/keys/{id}/public-key`)."
+          },
           "id": {
             "type": "string"
           },
@@ -2069,6 +2336,10 @@
           "size_bytes": {
             "type": "integer",
             "format": "int64"
+          },
+          "supports_proofs": {
+            "type": "boolean",
+            "description": "The key was made with the compact-public-key parameters, so it can take\nproven inputs once its public key is uploaded. Keys from before HE Engine\n0.5 cannot."
           }
         }
       },
@@ -2102,6 +2373,21 @@
             "type": "string"
           }
         }
+      },
+      "ValueType": {
+        "type": "string",
+        "description": "The type of a job's encrypted result: the input type, or `bool` for comparisons.",
+        "enum": [
+          "bool",
+          "u8",
+          "u16",
+          "u32",
+          "u64",
+          "i8",
+          "i16",
+          "i32",
+          "i64"
+        ]
       }
     },
     "responses": {

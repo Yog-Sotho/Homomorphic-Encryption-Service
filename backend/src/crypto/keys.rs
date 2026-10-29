@@ -5,32 +5,43 @@
 //! decrypt them. Keys are validated against [`params`](crate::crypto::params) on
 //! upload, stored as files named by key id, and decompressed on first use into a
 //! small in-memory LRU (a decompressed key is ~180 MB).
+//!
+//! A key that supports proven inputs also needs the client's compact public key,
+//! stored beside it as `<id>.pk`, to check the proofs against.
 
-use crate::crypto::params::server_key_conformance;
+use crate::crypto::params::{
+    legacy_server_key_conformance, server_key_conformance, MAX_PUBLIC_KEY_BYTES,
+    PUBLIC_KEY_PARAMETERS,
+};
 use crate::storage::write_atomic;
 use std::fs;
 use std::io;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tfhe::safe_serialization::safe_deserialize_conformant;
-use tfhe::{CompressedServerKey, FheUint16ConformanceParams, ServerKey};
+use tfhe::{CompactPublicKey, CompressedServerKey, ServerKey};
 
 /// A user's decompressed server key, ready for evaluation.
 pub struct UserServerKey {
     pub server_key: ServerKey,
-    /// Ciphertexts must match this key's parameters to be evaluated.
-    pub ciphertext_conformance: FheUint16ConformanceParams,
+    /// Made with the compact-public-key parameters (it holds the casting key
+    /// proven inputs need).
+    pub supports_proofs: bool,
 }
 
 impl UserServerKey {
-    fn from_compressed(compressed: &CompressedServerKey) -> Self {
-        let server_key = compressed.decompress();
-        let ciphertext_conformance = FheUint16ConformanceParams::from(&server_key);
+    fn from_compressed(compressed: &CompressedServerKey, supports_proofs: bool) -> Self {
         UserServerKey {
-            server_key,
-            ciphertext_conformance,
+            server_key: compressed.decompress(),
+            supports_proofs,
         }
     }
+}
+
+/// A checked upload: the key, and whether it can take proven inputs.
+pub struct ValidKey {
+    pub key: CompressedServerKey,
+    pub supports_proofs: bool,
 }
 
 #[derive(Debug)]
@@ -63,18 +74,34 @@ impl From<io::Error> for KeyStoreError {
     }
 }
 
-/// Parses and checks an uploaded compressed server key. CPU-bound: call from a
-/// blocking thread.
-pub fn validate_compressed_key(
-    bytes: &[u8],
-    limit: u64,
-) -> Result<CompressedServerKey, KeyStoreError> {
-    safe_deserialize_conformant(bytes, limit, &server_key_conformance()).map_err(|_| {
-        KeyStoreError::Invalid(
-            "Not a compressed server key for this service's parameters \
-             (TFHE-rs ConfigBuilder::default()). Generate it with the same TFHE-rs release."
-                .to_string(),
-        )
+/// Parses and checks an uploaded compressed server key: the current parameters,
+/// or the ones keys from before HE Engine 0.5 were made with. CPU-bound: call
+/// from a blocking thread.
+pub fn validate_compressed_key(bytes: &[u8], limit: u64) -> Result<ValidKey, KeyStoreError> {
+    if let Ok(key) = safe_deserialize_conformant(bytes, limit, &server_key_conformance()) {
+        return Ok(ValidKey {
+            key,
+            supports_proofs: true,
+        });
+    }
+    safe_deserialize_conformant(bytes, limit, &legacy_server_key_conformance())
+        .map(|key| ValidKey {
+            key,
+            supports_proofs: false,
+        })
+        .map_err(|_| {
+            KeyStoreError::Invalid(
+                "Not a compressed server key for this service's parameters \
+                 (see GET /api/v1/he/params). Generate it with the same TFHE-rs release."
+                    .to_string(),
+            )
+        })
+}
+
+/// Parses and checks an uploaded compact public key.
+pub fn validate_public_key(bytes: &[u8]) -> Result<CompactPublicKey, KeyStoreError> {
+    safe_deserialize_conformant(bytes, MAX_PUBLIC_KEY_BYTES, &PUBLIC_KEY_PARAMETERS).map_err(|_| {
+        KeyStoreError::Invalid("Not a compact public key for this service's parameters".to_string())
     })
 }
 
@@ -104,8 +131,27 @@ impl KeyStore {
 
     /// Key ids are server-generated UUIDs; anything else never touches the filesystem.
     fn path_for(&self, key_id: &str) -> Result<PathBuf, KeyStoreError> {
-        uuid::Uuid::parse_str(key_id).map_err(|_| KeyStoreError::NotFound)?;
-        Ok(self.dir.join(format!("{key_id}.bin")))
+        self.file_for(key_id, "bin")
+    }
+
+    fn public_key_path(&self, key_id: &str) -> Result<PathBuf, KeyStoreError> {
+        self.file_for(key_id, "pk")
+    }
+
+    fn file_for(&self, key_id: &str, extension: &str) -> Result<PathBuf, KeyStoreError> {
+        let id = uuid::Uuid::parse_str(key_id).map_err(|_| KeyStoreError::NotFound)?;
+        Ok(self.dir.join(format!("{}.{extension}", id.hyphenated())))
+    }
+
+    /// Stores a validated public key for `key_id`, replacing any earlier one.
+    pub fn save_public_key(&self, key_id: &str, bytes: &[u8]) -> Result<(), KeyStoreError> {
+        write_atomic(&self.public_key_path(key_id)?, bytes)?;
+        Ok(())
+    }
+
+    /// The public key uploaded for `key_id`. Small (~33 KB): read per use.
+    pub fn load_public_key(&self, key_id: &str) -> Result<CompactPublicKey, KeyStoreError> {
+        validate_public_key(&fs::read(self.public_key_path(key_id)?)?)
     }
 
     /// Writes a validated key durably: temp file, fsync, rename, fsync directory.
@@ -124,8 +170,11 @@ impl KeyStore {
         crate::telemetry::METRICS.key_cache_lookup(false);
         let bytes = fs::read(self.path_for(key_id)?)?;
         // Re-validated on load as well: the file is the only copy of the key.
-        let compressed = validate_compressed_key(&bytes, self.max_key_bytes)?;
-        let key = Arc::new(UserServerKey::from_compressed(&compressed));
+        let valid = validate_compressed_key(&bytes, self.max_key_bytes)?;
+        let key = Arc::new(UserServerKey::from_compressed(
+            &valid.key,
+            valid.supports_proofs,
+        ));
 
         let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
         cache.retain(|(id, _)| id != key_id);
@@ -151,10 +200,13 @@ impl KeyStore {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .retain(|(id, _)| id != key_id);
-        match fs::remove_file(self.path_for(key_id)?) {
-            Err(e) if e.kind() != io::ErrorKind::NotFound => Err(KeyStoreError::Io(e)),
-            _ => Ok(()),
+        for path in [self.public_key_path(key_id)?, self.path_for(key_id)?] {
+            match fs::remove_file(path) {
+                Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(KeyStoreError::Io(e)),
+                _ => {}
+            }
         }
+        Ok(())
     }
 
     #[cfg(test)]
@@ -175,6 +227,8 @@ pub mod test_support {
     struct Fixture {
         client_key: ClientKey,
         compressed_bytes: Vec<u8>,
+        public_key: CompactPublicKey,
+        public_key_bytes: Vec<u8>,
         server_key: Arc<UserServerKey>,
     }
 
@@ -185,13 +239,28 @@ pub mod test_support {
             let compressed = CompressedServerKey::new(&client_key);
             let mut compressed_bytes = Vec::new();
             safe_serialize(&compressed, &mut compressed_bytes, 1 << 30).unwrap();
-            let server_key = Arc::new(UserServerKey::from_compressed(&compressed));
+            let public_key = CompactPublicKey::new(&client_key);
+            let mut public_key_bytes = Vec::new();
+            safe_serialize(&public_key, &mut public_key_bytes, MAX_PUBLIC_KEY_BYTES).unwrap();
+            let server_key = Arc::new(UserServerKey::from_compressed(&compressed, true));
             Fixture {
                 client_key,
                 compressed_bytes,
+                public_key,
+                public_key_bytes,
                 server_key,
             }
         })
+    }
+
+    /// The client's compact public key, which proven inputs are encrypted under.
+    pub fn public_key() -> &'static CompactPublicKey {
+        &fixture().public_key
+    }
+
+    /// What a client uploads to `PUT /api/v1/keys/{id}/public-key`.
+    pub fn public_key_bytes() -> &'static [u8] {
+        &fixture().public_key_bytes
     }
 
     /// The client's secret key. Only tests ever hold one on the server side.
@@ -224,7 +293,27 @@ mod tests {
     #[test]
     fn accepts_a_conforming_key_and_rejects_others() {
         let bytes = compressed_server_key_bytes();
-        assert!(validate_compressed_key(bytes, 1 << 30).is_ok());
+        assert!(
+            validate_compressed_key(bytes, 1 << 30)
+                .unwrap()
+                .supports_proofs
+        );
+
+        // Keys from before 0.5 (no compact-public-key parameters) still work.
+        let mut legacy = Vec::new();
+        safe_serialize(
+            &CompressedServerKey::new(&ClientKey::generate(
+                crate::crypto::params::legacy_tfhe_config(),
+            )),
+            &mut legacy,
+            1 << 30,
+        )
+        .unwrap();
+        assert!(
+            !validate_compressed_key(&legacy, 1 << 30)
+                .unwrap()
+                .supports_proofs
+        );
 
         // Over the size limit.
         assert!(matches!(
@@ -261,6 +350,14 @@ mod tests {
 
         store.save(&id, compressed_server_key_bytes()).unwrap();
         assert!(store.contains_file(&id));
+        assert!(matches!(
+            store.load_public_key(&id),
+            Err(KeyStoreError::NotFound)
+        ));
+        store.save_public_key(&id, public_key_bytes()).unwrap();
+        store.load_public_key(&id).unwrap();
+        assert!(validate_public_key(b"nonsense").is_err());
+        assert!(validate_public_key(compressed_server_key_bytes()).is_err());
         let first = store.load(&id).unwrap();
         let second = store.load(&id).unwrap();
         assert!(
@@ -271,6 +368,10 @@ mod tests {
         store.remove(&id).unwrap();
         assert!(!store.contains_file(&id));
         assert!(matches!(store.load(&id), Err(KeyStoreError::NotFound)));
+        assert!(matches!(
+            store.load_public_key(&id),
+            Err(KeyStoreError::NotFound)
+        ));
         store.remove(&id).unwrap(); // idempotent
         fs::remove_dir_all(dir).unwrap();
     }

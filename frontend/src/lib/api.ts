@@ -215,7 +215,32 @@ export interface UserProfile extends PublicUser {
   daily_usage: { count: number; quota: number; date: string };
 }
 
-export type Operation = 'add' | 'subtract' | 'multiply' | 'min' | 'max';
+export type Operation =
+  | 'add'
+  | 'subtract'
+  | 'multiply'
+  | 'min'
+  | 'max'
+  | 'eq'
+  | 'ne'
+  | 'lt'
+  | 'le'
+  | 'gt'
+  | 'ge'
+  | 'sum';
+
+export type IntegerType = 'u8' | 'u16' | 'u32' | 'u64' | 'i8' | 'i16' | 'i32' | 'i64';
+/** A job result's type: the input type, or `bool` for comparisons. */
+export type ValueType = IntegerType | 'bool';
+
+export interface ProofParams {
+  /** Hex SHA-256 of the CRS served at `/he/crs`. */
+  crs_sha256: string;
+  max_bits: number;
+  max_list_bytes: number;
+  max_public_key_bytes: number;
+  metadata_prefix: string;
+}
 
 export interface HeParams {
   scheme: string;
@@ -224,10 +249,14 @@ export interface HeParams {
   config: string;
   integer_type: string;
   plaintext_modulus: number;
+  integer_types: IntegerType[];
   operations: Operation[];
   max_ciphertext_bytes: number;
+  max_inputs: number;
+  max_job_input_bytes: number;
   max_server_key_bytes: number;
   max_keys_per_user: number;
+  proofs: ProofParams | null;
 }
 
 export interface ServerKeyInfo {
@@ -235,6 +264,10 @@ export interface ServerKeyInfo {
   sha256: string;
   size_bytes: number;
   created_at: string;
+  /** Made with the compact-public-key parameters: can take proven inputs. */
+  supports_proofs: boolean;
+  /** Its public key has been uploaded, so proofs can be checked. */
+  has_public_key: boolean;
 }
 
 export type JobStatus = 'pending' | 'processing' | 'completed' | 'failed';
@@ -244,6 +277,12 @@ export interface JobSummary {
   id: string;
   status: JobStatus;
   operation: Operation;
+  integer_type: IntegerType;
+  result_type: ValueType;
+  input_count: number;
+  proven: boolean;
+  /** The plaintext right-hand operand, if any. */
+  scalar: string | null;
   key_id: string | null;
   attempts: number;
   error_message: string | null;
@@ -295,7 +334,9 @@ export const user = {
 };
 
 export const he = {
-  params: () => request<HeParams>('GET', '/he/params')
+  params: () => request<HeParams>('GET', '/he/params'),
+  /** The CRS proven inputs are made against (~2 MB). */
+  crs: () => requestBytes('/he/crs')
 };
 
 export const keys = {
@@ -305,21 +346,38 @@ export const keys = {
       body: { binary: compressedServerKey },
       timeoutMs: KEY_UPLOAD_TIMEOUT_MS
     }),
+  /** Attaches the key's `safe_serialize`d compact public key, for proven inputs. */
+  uploadPublicKey: (keyId: string, publicKey: Uint8Array<ArrayBuffer>) =>
+    request<ServerKeyInfo>('PUT', `/keys/${encodeURIComponent(keyId)}/public-key`, {
+      body: { binary: publicKey }
+    }),
   list: () => request<ServerKeyInfo[]>('GET', '/keys'),
   remove: (keyId: string) => request<void>('DELETE', `/keys/${encodeURIComponent(keyId)}`)
 };
 
 const jobPath = (jobId: string) => `/compute/jobs/${encodeURIComponent(jobId)}`;
 
+/** `POST /compute/jobs`: ciphertexts (`inputs`) or one proven list, never both. */
+export interface JobRequest {
+  key_id: string;
+  operation: Operation;
+  integer_type: IntegerType;
+  /** Base64 `safe_serialize`d ciphertexts of `integer_type`. */
+  inputs?: string[];
+  /** Base64 `safe_serialize`d ProvenCompactCiphertextList. */
+  proven_inputs?: string;
+  /** A plaintext right-hand operand in decimal; the server sees it. */
+  scalar?: string;
+}
+
 export const compute = {
   /**
-   * Queues a job. `inputs` are base64 `safe_serialize`d FheUint16 ciphertexts.
-   * A network failure is retried once with the same `Idempotency-Key`, so the
-   * job is never queued (or charged) twice.
+   * Queues a job. A network failure is retried once with the same
+   * `Idempotency-Key`, so the job is never queued (or charged) twice.
    */
-  submitJob: async (keyId: string, operation: Operation, inputs: [string, string]) => {
+  submitJob: async (job: JobRequest) => {
     const options: RequestOptions = {
-      ...json({ key_id: keyId, operation, inputs }),
+      ...json(job),
       headers: { 'Idempotency-Key': crypto.randomUUID() }
     };
     try {
@@ -330,7 +388,7 @@ export const compute = {
     }
   },
   getJobStatus: (jobId: string) => request<JobSummary>('GET', jobPath(jobId)),
-  /** The encrypted result of a completed job (a `safe_serialize`d FheUint16). */
+  /** The encrypted result of a completed job, a ciphertext of its `result_type`. */
   getJobResult: (jobId: string) => requestBytes(`${jobPath(jobId)}/result`),
   listJobs: (cursor?: string, limit?: number) => {
     const query = new URLSearchParams();

@@ -11,6 +11,7 @@ mod telemetry;
 
 use crate::api::auth::email::Mailer;
 use crate::crypto::keys::KeyStore;
+use crate::crypto::proofs::Crs;
 use crate::jobs::store::JobStore;
 use crate::jobs::worker::{WorkerPool, WorkerSettings};
 use crate::middleware::rate_limit::RateLimits;
@@ -146,6 +147,14 @@ async fn serve() -> std::io::Result<()> {
         )
         .map_err(|e| fail("Could not open the key store directory", &e))?,
     );
+    // The CRS clients prove their inputs against; made once (seconds) on first start.
+    let crs_dir = config.key_store_dir.clone();
+    let crs = web::Data::new(
+        tokio::task::spawn_blocking(move || Crs::load_or_create(&crs_dir))
+            .await
+            .map_err(|e| fail("Could not prepare the proof CRS", &e))?
+            .map_err(|e| fail("Could not prepare the proof CRS", &e))?,
+    );
     let job_store = web::Data::new(
         JobStore::new(&config.job_store_dir)
             .map_err(|e| fail("Could not open the job store directory", &e))?,
@@ -153,7 +162,7 @@ async fn serve() -> std::io::Result<()> {
     let workers = WorkerPool::start(
         pool.clone(),
         job_store.clone().into_inner(),
-        jobs::evaluator(key_store.clone().into_inner()),
+        jobs::evaluator(key_store.clone().into_inner(), crs.clone().into_inner()),
         WorkerSettings {
             workers: config.he_workers,
             job_timeout: config.job_timeout,
@@ -188,6 +197,7 @@ async fn serve() -> std::io::Result<()> {
             .wrap(from_fn(telemetry::request_context))
             .app_data(web::Data::new(app_pool.clone()))
             .app_data(key_store.clone())
+            .app_data(crs.clone())
             .app_data(job_store.clone())
             .app_data(notifier.clone())
             .app_data(config_data.clone())

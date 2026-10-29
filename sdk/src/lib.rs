@@ -12,6 +12,6 @@ mod client;
 mod error;
 pub mod fhe;
 
-pub use client::Client;
+pub use client::{encode, Client};
 pub use error::{Error, Result};
-pub use heaas_core::{api, params, Operation};
+pub use heaas_core::{api, params, IntegerType, Operation, PlainValue, ValueType};

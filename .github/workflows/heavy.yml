@@ -1,0 +1,36 @@
+name: Heavy TFHE tests
+
+# The property tests marked #[ignore]: every operation on every type (64-bit
+# multiplications take seconds each) and proven inputs, with many more cases
+# than the normal CI run. Too slow for every pull request.
+on:
+  schedule:
+    - cron: "37 3 * * *"
+  workflow_dispatch:
+    inputs:
+      cases:
+        description: Cases per property
+        default: "64"
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  heavy:
+    name: Property tests on every type (release build)
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: heavy
+      - name: Ignored (heavy) tests
+        env:
+          HEAAS_PROPTEST_CASES: ${{ inputs.cases || '64' }}
+        run: cargo test --locked --release -p he-backend -- --ignored

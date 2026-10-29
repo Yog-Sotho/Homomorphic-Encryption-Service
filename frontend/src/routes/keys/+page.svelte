@@ -4,7 +4,7 @@
   import UnlockForm from '#lib/components/UnlockForm.svelte';
   import { keyFileName, toKeyFile } from '#lib/fhe/keyfile.js';
   import { isProtected, type StoredClientKey } from '#lib/fhe/keystore.js';
-  import { fheSession, loadKeyOverview, type KeyEntry, type KeyOverview } from '#lib/fhe/session.svelte.js';
+  import { canProve, fheSession, loadKeyOverview, type KeyEntry, type KeyOverview } from '#lib/fhe/session.svelte.js';
   import { PASSPHRASE_MIN_LENGTH, WrongPassphraseError } from '#lib/fhe/vault.js';
 
   type Panel = { keyId: string; kind: 'unlock' | 'import' | 'delete' } | null;
@@ -207,6 +207,11 @@
             </div>
             <p class="meta">
               Created {formatDate(entry.server.created_at)} · evaluation key {formatBytes(entry.server.size_bytes)}
+              · {canProve(entry)
+                ? 'takes proven inputs'
+                : entry.server.supports_proofs
+                  ? 'proven inputs need its public key, from this key’s backup file'
+                  : 'made before proven inputs'}
             </p>
             <div class="actions">
               {#if fheSession.unlockedKeyId === id}

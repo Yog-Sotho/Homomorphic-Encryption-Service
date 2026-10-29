@@ -1,29 +1,64 @@
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
   import { resolve } from '$app/paths';
-  import { compute, errorMessage, type JobSummary, type Operation } from '#lib/api.js';
+  import {
+    compute,
+    errorMessage,
+    type IntegerType,
+    type JobRequest,
+    type JobSummary,
+    type Operation
+  } from '#lib/api.js';
   import UnlockForm from '#lib/components/UnlockForm.svelte';
   import { bytesToBase64 } from '#lib/fhe/encoding.js';
   import type { StoredClientKey } from '#lib/fhe/keystore.js';
-  import { OPERATIONS, UINT16_MAX, expectedResult, isUint16 } from '#lib/fhe/operations.js';
-  import { fheSession, loadKeyOverview, type KeyEntry, type KeyOverview } from '#lib/fhe/session.svelte.js';
+  import {
+    INTEGER_TYPES,
+    MAX_SUM_INPUTS,
+    OPERATIONS,
+    expectedResult,
+    operationKind,
+    parsePlainValue,
+    parseValue,
+    typeInfo,
+    typeRange,
+    wrap,
+    type PlainValue
+  } from '#lib/fhe/operations.js';
+  import {
+    canProve,
+    fheSession,
+    loadKeyOverview,
+    type KeyEntry,
+    type KeyOverview
+  } from '#lib/fhe/session.svelte.js';
 
   const POLL_INTERVAL_MS = 750;
-  const JOB_TIMEOUT_MS = 120_000;
+  const JOB_TIMEOUT_MS = 300_000;
 
-  type Step = 'encrypting' | 'submitting' | 'computing' | 'decrypting';
+  type Step = 'encrypting' | 'proving' | 'submitting' | 'computing' | 'decrypting';
   type LocalEntry = KeyEntry & { local: StoredClientKey };
 
   let overview = $state<KeyOverview | null>(null);
   let loadError = $state('');
   let chosenKeyId = $state('');
 
-  let val1 = $state(10);
-  let val2 = $state(5);
+  let integerType = $state<IntegerType>('u16');
   let operation = $state<Operation>('add');
+  let val1 = $state('10');
+  let val2 = $state('5');
+  /** Value B goes to the server as a plain number. */
+  let scalarB = $state(false);
+  let sumValues = $state('1, 2, 3');
+  let prove = $state(false);
   let step = $state<Step | null>(null);
-  let result = $state<{ value: number; expected: number; jobId: string; ciphertextBytes: number } | null>(null);
-  let inputBytes = $state(0);
+  let result = $state<{
+    value: PlainValue;
+    expected: PlainValue;
+    jobId: string;
+    ciphertextBytes: number;
+    sent: string;
+  } | null>(null);
   let computeError = $state('');
   let destroyed = false;
 
@@ -34,9 +69,23 @@
     (overview?.entries ?? []).filter((e): e is LocalEntry => e.local !== undefined)
   );
   const chosen = $derived(localEntries.find((e) => e.server.id === chosenKeyId) ?? localEntries[0]);
+  const unlockedEntry = $derived(overview?.entries.find((e) => e.server.id === unlockedKeyId));
+  const proofsAvailable = $derived(unlockedEntry !== undefined && canProve(unlockedEntry));
   const opInfo = $derived(OPERATIONS.find((o) => o.id === operation) ?? OPERATIONS[0]);
-  const valid = $derived(isUint16(val1) && isUint16(val2));
-  const expected = $derived(valid ? expectedResult(operation, val1, val2) : null);
+  const kind = $derived(operationKind(operation));
+  const range = $derived(typeRange(integerType));
+  const operandTexts = $derived(
+    kind === 'sum' ? sumValues.split(',').map((v) => v.trim()) : [val1, val2]
+  );
+  const operands = $derived(operandTexts.map((t) => parseValue(integerType, t)));
+  const valid = $derived(
+    operands.every((v) => v !== null) &&
+      (kind !== 'sum' || (operands.length >= 2 && operands.length <= MAX_SUM_INPUTS))
+  );
+  const expected = $derived(
+    valid ? expectedResult(operation, integerType, operands as bigint[]) : null
+  );
+  const usesScalar = $derived(scalarB && kind !== 'sum');
 
   onMount(async () => {
     supported = fheSession.supported;
@@ -67,15 +116,32 @@
     event.preventDefault();
     if (!unlockedKeyId || !valid || expected === null) return;
     const want = expected;
+    const keyId = unlockedKeyId;
+    const texts = operands.map((v) => String(v));
+    const encrypted = usesScalar ? texts.slice(0, 1) : texts;
+    const request: JobRequest = { key_id: keyId, operation, integer_type: integerType };
+    if (usesScalar) request.scalar = texts[1];
+    const proven = prove && proofsAvailable;
     computeError = '';
     result = null;
     try {
-      step = 'encrypting';
-      const [a, b] = await fheSession.encrypt([val1, val2]);
-      inputBytes = a.length + b.length;
+      let sent: string;
+      if (proven) {
+        step = 'proving';
+        const list = await fheSession.prove(keyId, integerType, encrypted);
+        request.proven_inputs = bytesToBase64(list);
+        sent = `1 proven list of ${encrypted.length}, ${formatBytes(list.length)}`;
+      } else {
+        step = 'encrypting';
+        const ciphertexts = await fheSession.encrypt(integerType, encrypted);
+        request.inputs = ciphertexts.map(bytesToBase64);
+        const bytes = ciphertexts.reduce((n, c) => n + c.length, 0);
+        sent = `${ciphertexts.length} ciphertext${ciphertexts.length === 1 ? '' : 's'}, ${formatBytes(bytes)}`;
+      }
+      if (usesScalar) sent += ` and the plain number ${texts[1]}`;
 
       step = 'submitting';
-      const job = await compute.submitJob(unlockedKeyId, operation, [bytesToBase64(a), bytesToBase64(b)]);
+      const job = await compute.submitJob(request);
 
       step = 'computing';
       const done = await waitForJob(job.id);
@@ -85,8 +151,11 @@
       const ciphertext = await compute.getJobResult(job.id);
 
       step = 'decrypting';
-      const value = await fheSession.decrypt(ciphertext);
-      result = { value, expected: want, jobId: job.id, ciphertextBytes: ciphertext.length };
+      const value = parsePlainValue(
+        done.result_type,
+        await fheSession.decrypt(done.result_type, ciphertext)
+      );
+      result = { value, expected: want, jobId: job.id, ciphertextBytes: ciphertext.length, sent };
     } catch (e) {
       computeError = errorMessage(e, 'Computation failed');
     } finally {
@@ -100,9 +169,16 @@
     computeError = '';
   }
 
+  /** A uniformly random value of the current type. */
+  function randomValue(): string {
+    const words = crypto.getRandomValues(new Uint32Array(2));
+    return String(wrap(integerType, (BigInt(words[0]) << 32n) | BigInt(words[1])));
+  }
+
   function randomizeValues() {
-    val1 = Math.floor(Math.random() * (UINT16_MAX + 1));
-    val2 = Math.floor(Math.random() * (UINT16_MAX + 1));
+    val1 = randomValue();
+    val2 = randomValue();
+    sumValues = Array.from({ length: 4 }, randomValue).join(', ');
   }
 
   function formatBytes(n: number): string {
@@ -111,6 +187,7 @@
 
   const STEP_LABELS: Record<Step, string> = {
     encrypting: 'Encrypting in your browser…',
+    proving: 'Encrypting and proving in your browser…',
     submitting: 'Sending ciphertexts…',
     computing: 'Server computing on encrypted data…',
     decrypting: 'Decrypting in your browser…'
@@ -128,7 +205,7 @@
     <div class="spec-row">
       <span class="spec">TFHE (CGGI) · TFHE-rs</span>
       <span class="spec-sep" aria-hidden="true">•</span>
-      <span class="spec">FheUint16</span>
+      <span class="spec">8–64-bit integers</span>
       <span class="spec-sep" aria-hidden="true">•</span>
       <span class="spec">Keys stay in your browser</span>
     </div>
@@ -187,6 +264,15 @@
       </div>
 
       <form onsubmit={run} class="compute-form">
+        <div class="field-block type-block">
+          <label for="int-type">Type</label>
+          <select id="int-type" bind:value={integerType}>
+            {#each INTEGER_TYPES as t (t.id)}
+              <option value={t.id}>{t.id} — {t.signed ? 'signed' : 'unsigned'} {t.bits}-bit ({t.tfhe})</option>
+            {/each}
+          </select>
+        </div>
+
         <div class="field-block">
           <div id="op-label" class="label-like">Operation</div>
           <div class="op-tabs" role="group" aria-labelledby="op-label">
@@ -202,25 +288,54 @@
               </button>
             {/each}
           </div>
-          <p class="field-hint">Unsigned 16-bit integers (0–65535); arithmetic wraps around modulo 65536.</p>
+          <p class="field-hint">
+            {range.min} to {range.max}; arithmetic wraps around modulo 2^{typeInfo(integerType).bits}.
+            Comparisons return an encrypted true or false.
+          </p>
         </div>
 
-        <div class="inputs-row">
-          <div class="field-block">
-            <label for="val1">Value A <span class="required" aria-hidden="true">*</span></label>
-            <input id="val1" type="number" bind:value={val1} min="0" max={UINT16_MAX} step="1" required />
+        {#if kind === 'sum'}
+          <div class="inputs-row sum-row">
+            <div class="field-block">
+              <label for="sum-values">Values, separated by commas (2 to {MAX_SUM_INPUTS})</label>
+              <input id="sum-values" type="text" inputmode="numeric" bind:value={sumValues} required />
+            </div>
+            <div class="op-glyph" aria-hidden="true">=</div>
+            <div class="field-block expected-block">
+              <div class="label-like">Expected</div>
+              <div class="expected-val">{expected ?? '—'}</div>
+            </div>
           </div>
-          <div class="op-glyph" aria-hidden="true">{opInfo.symbol}</div>
-          <div class="field-block">
-            <label for="val2">Value B <span class="required" aria-hidden="true">*</span></label>
-            <input id="val2" type="number" bind:value={val2} min="0" max={UINT16_MAX} step="1" required />
+        {:else}
+          <div class="inputs-row">
+            <div class="field-block">
+              <label for="val1">Value A <span class="required" aria-hidden="true">*</span></label>
+              <input id="val1" type="text" inputmode="numeric" bind:value={val1} required />
+            </div>
+            <div class="op-glyph" aria-hidden="true">{opInfo.symbol}</div>
+            <div class="field-block">
+              <label for="val2">Value B{usesScalar ? ' (plain)' : ''} <span class="required" aria-hidden="true">*</span></label>
+              <input id="val2" type="text" inputmode="numeric" bind:value={val2} required />
+            </div>
+            <div class="op-glyph" aria-hidden="true">=</div>
+            <div class="field-block expected-block">
+              <div class="label-like">Expected</div>
+              <div class="expected-val">{expected ?? '—'}</div>
+            </div>
           </div>
-          <div class="op-glyph" aria-hidden="true">=</div>
-          <div class="field-block expected-block">
-            <div class="label-like">Expected</div>
-            <div class="expected-val">{expected ?? '—'}</div>
-          </div>
-        </div>
+          <label class="check">
+            <input type="checkbox" bind:checked={scalarB} />
+            Send B unencrypted (faster; the server sees it)
+          </label>
+        {/if}
+
+        <label class="check">
+          <input type="checkbox" bind:checked={prove} disabled={!proofsAvailable} />
+          Prove the inputs are well-formed encryptions (zero-knowledge proof)
+        </label>
+        {#if !proofsAvailable}
+          <p class="field-hint check-hint">This key was made before proofs were available. Create a new key to use them.</p>
+        {/if}
 
         <button type="submit" class="btn-primary" disabled={step !== null || !valid}>
           {#if step}
@@ -251,7 +366,7 @@
           {#if result.value === result.expected}
             <span class="badge badge-green badge-match">Matches expected</span>
           {:else}
-            <span class="badge badge-red">Does not match {result.expected}</span>
+            <span class="badge badge-red">Does not match {String(result.expected)}</span>
           {/if}
         </div>
         <button class="btn-ghost dismiss-btn" onclick={() => (result = null)} type="button">Clear</button>
@@ -261,13 +376,13 @@
         <div class="result-label-row">
           <span class="result-label">Result</span>
         </div>
-        <span class="result-number" data-testid="result-value">{result.value}</span>
+        <span class="result-number" data-testid="result-value">{String(result.value)}</span>
       </div>
 
       <div class="divider"></div>
 
       <dl class="result-facts">
-        <div><dt>Sent to the server</dt><dd>2 ciphertexts, {formatBytes(inputBytes)}</dd></div>
+        <div><dt>Sent to the server</dt><dd>{result.sent}</dd></div>
         <div><dt>Received</dt><dd>1 ciphertext, {formatBytes(result.ciphertextBytes)}</dd></div>
         <div><dt>Job</dt><dd><code>{result.jobId}</code> · <a href={resolve('/jobs')}>all jobs</a></dd></div>
       </dl>
@@ -336,8 +451,19 @@
     text-transform: uppercase;
   }
 
+  .type-block { max-width: 24rem; margin-bottom: 1rem; }
+  .type-block select { margin-bottom: 0; }
+  .sum-row { grid-template-columns: 3fr auto 1fr; }
+  .check {
+    display: flex; align-items: center; gap: 0.5rem;
+    font-size: 0.85rem; color: var(--text-secondary);
+    margin-bottom: 0.75rem;
+  }
+  .check input { width: auto; margin: 0; }
+  .check-hint { margin-top: -0.5rem; }
+
   .op-tabs {
-    display: inline-flex; gap: 0.25rem;
+    display: inline-flex; flex-wrap: wrap; gap: 0.25rem;
     background: var(--bg-secondary);
     padding: 0.2rem;
     border-radius: var(--radius-sm);
