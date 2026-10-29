@@ -230,6 +230,7 @@ impl Operands {
             inputs,
             proven_inputs,
             scalar: self.scalar.clone(),
+            program: None,
         }
     }
 }

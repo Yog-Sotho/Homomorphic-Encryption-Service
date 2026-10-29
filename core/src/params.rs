@@ -32,8 +32,11 @@ pub const DEFAULT_INTEGER_TYPE: IntegerType = IntegerType::U16;
 /// length prefix cannot force unbounded allocations.
 pub const MAX_CIPHERTEXT_BYTES: u64 = 1 << 20;
 
-/// Most encrypted inputs one job takes (a `sum`).
+/// Most encrypted inputs one job takes (a `sum` or a program).
 pub const MAX_INPUTS: usize = 16;
+
+/// Most steps in one program.
+pub const MAX_PROGRAM_STEPS: usize = 64;
 
 /// Most input bytes one job takes: [`MAX_INPUTS`] `FheUint64`s fit.
 pub const MAX_JOB_INPUT_BYTES: u64 = 9 << 20;

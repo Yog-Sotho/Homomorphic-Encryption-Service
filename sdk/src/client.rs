@@ -388,6 +388,7 @@ fn binary_request(key_id: &str, operation: Operation, a: &[u8], b: &[u8]) -> Cre
         inputs: vec![encode(a), encode(b)],
         proven_inputs: None,
         scalar: None,
+        program: None,
     }
 }
 

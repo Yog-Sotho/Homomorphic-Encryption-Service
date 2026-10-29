@@ -2,6 +2,7 @@
 //!
 //! Timestamps are UTC without an offset (`2026-10-27T10:00:00`).
 
+use crate::program::Program;
 use crate::{IntegerType, Operation, ValueType};
 use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
@@ -237,6 +238,9 @@ pub struct CreateJobRequest {
     /// A plaintext right-hand operand in decimal, e.g. `"-7"`. The server sees it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scalar: Option<String>,
+    /// The steps to run, for `operation: "program"` (and only then).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub program: Option<Program>,
 }
 
 /// A job as its owner sees it: metadata only, never ciphertexts.
@@ -262,6 +266,10 @@ pub struct JobSummary {
     /// The plaintext right-hand operand, if the job has one.
     #[serde(default)]
     pub scalar: Option<String>,
+    /// The program, for `operation: "program"`.
+    #[serde(default)]
+    #[cfg_attr(feature = "sqlx", sqlx(json(nullable)))]
+    pub program: Option<Program>,
     /// The server key the job is evaluated with; `None` once that key is deleted.
     pub key_id: Option<String>,
     /// Attempts started so far (internal errors are retried).
@@ -303,7 +311,7 @@ mod tests {
         let json = serde_json::json!({
             "id": "j", "status": "completed", "operation": "multiply",
             "integer_type": "u16", "result_type": "u16", "input_count": 2,
-            "proven": false, "scalar": null, "key_id": null,
+            "proven": false, "scalar": null, "program": null, "key_id": null,
             "attempts": 1, "error_message": null, "input_bytes": 264000,
             "result_bytes": 132000, "created_at": "2026-10-27T10:00:00",
             "started_at": null, "finished_at": "2026-10-27T10:00:02"

@@ -938,6 +938,82 @@ async fn typed_jobs_take_scalars_and_sums_and_report_result_types() {
 }
 
 #[actix_web::test]
+async fn program_jobs_run_several_operations_on_encrypted_values() {
+    let env = TestEnv::new().await;
+    let app = env.app().await;
+    let alice = env.user("alice").await;
+    let key_id = register_key(&app, &alice).await;
+
+    // (a + b) * 3 < c ? a - b : b - a, all encrypted on the server.
+    let compiled = heaas_core::parse_expression("(a + b) * 3 < c ? a - b : b - a").unwrap();
+    let body = json!({
+        "key_id": key_id, "operation": "program", "integer_type": "i16",
+        "inputs": ciphertexts(IntegerType::I16, &[5, 7, 100]),
+        "program": compiled.program,
+    });
+    assert_eq!(run_job(&app, &alice, body).await, PlainValue::Int(-2));
+
+    let page: Value = test::read_body_json(get(&app, &alice, "/api/v1/compute/jobs").await).await;
+    let job = &page["data"][0];
+    assert_eq!(
+        (&job["operation"], &job["result_type"]),
+        (&json!("program"), &json!("i16"))
+    );
+    assert_eq!(job["program"], json!(compiled.program));
+
+    // A program ending in a comparison returns an encrypted boolean.
+    let compare = heaas_core::parse_expression("a / b >= 3 && a % b == 1").unwrap();
+    let body = json!({
+        "key_id": key_id, "operation": "program", "integer_type": "u8",
+        "inputs": ciphertexts(IntegerType::U8, &[10, 3]), "program": compare.program,
+    });
+    assert_eq!(run_job(&app, &alice, body).await, PlainValue::Bool(true));
+
+    // Refused before anything is queued.
+    let one = ciphertexts(IntegerType::U8, &[1]);
+    let add = heaas_core::parse_expression("a + b").unwrap().program;
+    for (body, why) in [
+        (
+            json!({ "key_id": key_id, "operation": "program", "integer_type": "u8", "inputs": one }),
+            "no program",
+        ),
+        (
+            json!({ "key_id": key_id, "operation": "add", "integer_type": "u8", "inputs": [one[0], one[0]], "program": add }),
+            "a program on another operation",
+        ),
+        (
+            json!({ "key_id": key_id, "operation": "program", "integer_type": "u8", "inputs": one, "program": add }),
+            "reads an input it does not have",
+        ),
+        (
+            json!({ "key_id": key_id, "operation": "program", "integer_type": "u8", "inputs": one, "scalar": "1",
+                 "program": heaas_core::parse_expression("a + 1").unwrap().program }),
+            "a scalar",
+        ),
+        (
+            json!({ "key_id": key_id, "operation": "program", "integer_type": "u8", "inputs": one,
+                 "program": { "steps": [{ "op": "divide", "args": [{ "input": 0 }, { "const": "0" }] }] } }),
+            "division by the constant 0",
+        ),
+    ] {
+        let resp = submit_job(&app, &alice, body).await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "{why}");
+    }
+    let resp = submit_job(
+        &app,
+        &alice,
+        json!({ "key_id": key_id, "operation": "program", "integer_type": "u8",
+        "inputs": one, "program": { "steps": [{ "op": "sqrt", "args": [{ "input": 0 }] }] } }),
+    )
+    .await;
+    assert_eq!(
+        resp.status(),
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "unknown step operation"
+    );
+}
+
+#[actix_web::test]
 async fn proven_inputs_need_the_public_key_and_a_valid_proof() {
     let env = TestEnv::new().await;
     let app = env.app().await;
@@ -1188,7 +1264,7 @@ async fn the_sdk_runs_the_whole_flow_against_a_live_server() {
         fhe::encrypt(secret, 300).unwrap(),
         fhe::encrypt(secret, 7).unwrap(),
     );
-    for op in Operation::ALL {
+    for op in Operation::BASIC {
         let request = heaas_core::api::CreateJobRequest {
             key_id: key.id.clone(),
             operation: op,
@@ -1196,6 +1272,7 @@ async fn the_sdk_runs_the_whole_flow_against_a_live_server() {
             inputs: vec![heaas_sdk::encode(&a), heaas_sdk::encode(&b)],
             proven_inputs: None,
             scalar: None,
+            program: None,
         };
         let (job, result) = client
             .compute_job(&request, Duration::from_secs(300))
@@ -1236,6 +1313,7 @@ async fn the_sdk_runs_the_whole_flow_against_a_live_server() {
         inputs: Vec::new(),
         proven_inputs: Some(heaas_sdk::encode(&list)),
         scalar: None,
+        program: None,
     };
     let (job, result) = client
         .compute_job(&request, Duration::from_secs(300))
@@ -1268,7 +1346,10 @@ async fn the_sdk_runs_the_whole_flow_against_a_live_server() {
         .list_jobs(page.next_cursor.as_deref(), None)
         .await
         .unwrap();
-    assert_eq!(page.data.len() + rest.data.len(), Operation::ALL.len() + 3);
+    assert_eq!(
+        page.data.len() + rest.data.len(),
+        Operation::BASIC.len() + 3
+    );
 
     // Errors arrive typed, with the envelope's code.
     let missing = client

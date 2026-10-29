@@ -21,6 +21,7 @@ use crate::middleware::quota::{consume_compute_quota, refund_compute_quota, Quot
 use actix_web::{http::header, web, HttpRequest, HttpResponse, Responder};
 use base64::{engine::general_purpose, Engine as _};
 use heaas_core::api::{CreateJobRequest, JobPage, JobStatus, JobSummary};
+use heaas_core::Operation;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use sqlx::SqlitePool;
@@ -43,7 +44,7 @@ const IDEMPOTENCY_KEY: &str = "Idempotency-Key";
 const MAX_IDEMPOTENCY_KEY_LEN: usize = 255;
 
 const SUMMARY_COLUMNS: &str = "id, status, operation, integer_type, result_type, input_count, \
-     proven, scalar, key_id, attempts, error_message, input_bytes, result_bytes, created_at, \
+     proven, scalar, program, key_id, attempts, error_message, input_bytes, result_bytes, created_at, \
      started_at, finished_at";
 
 /// How long a client should wait before retrying a submission refused for load.
@@ -102,6 +103,9 @@ struct Checked {
     proven: bool,
     /// Normalized decimal scalar.
     scalar: Option<String>,
+    result_type: heaas_core::ValueType,
+    /// The program as JSON, for `operation = 'program'`.
+    program_json: Option<String>,
 }
 
 /// Checks everything about a submission that does not need the caller's key:
@@ -144,11 +148,34 @@ async fn check_request(req: &CreateJobRequest, crs: &web::Data<Crs>) -> Result<C
     req.operation
         .check_operands(input_count, scalar.is_some())
         .map_err(AppError::bad_request)?;
+    let (result_type, program_json) = match (req.operation, &req.program) {
+        (Operation::Program, Some(program)) => {
+            let checked = program
+                .check(ty, input_count)
+                .map_err(|e| AppError::bad_request(format!("Invalid program: {e}")))?;
+            let json = serde_json::to_string(program)
+                .map_err(|e| AppError::internal(format!("encoding the program: {e}")))?;
+            (checked.result_type(), Some(json))
+        }
+        (Operation::Program, None) => {
+            return Err(AppError::bad_request(
+                "operation \"program\" needs a program",
+            ))
+        }
+        (op, Some(_)) => {
+            return Err(AppError::bad_request(format!(
+                "Only operation \"program\" takes a program, not {op}"
+            )))
+        }
+        (op, None) => (op.result_type(ty), None),
+    };
     Ok(Checked {
         files,
         input_count,
         proven,
         scalar,
+        result_type,
+        program_json,
     })
 }
 
@@ -264,9 +291,9 @@ struct NewJob<'a> {
 async fn enqueue(pool: &SqlitePool, config: &Config, job: &NewJob<'_>) -> Result<(), Refusal> {
     let inserted: Option<(String,)> = sqlx::query_as(
         "INSERT INTO jobs (id, user_id, status, input_data_b64, operation, integer_type,
-                           result_type, input_count, proven, scalar, key_id,
+                           result_type, input_count, proven, scalar, program, key_id,
                            input_bytes, idempotency_key, request_sha256)
-         SELECT ?, ?, 'pending', '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+         SELECT ?, ?, 'pending', '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
          WHERE (SELECT COUNT(*) FROM jobs WHERE status IN ('pending', 'processing')) < ?
            AND (SELECT COUNT(*) FROM jobs
                 WHERE user_id = ? AND status IN ('pending', 'processing')) < ?
@@ -276,10 +303,11 @@ async fn enqueue(pool: &SqlitePool, config: &Config, job: &NewJob<'_>) -> Result
     .bind(job.user_id)
     .bind(job.request.operation.as_str())
     .bind(job.request.integer_type)
-    .bind(job.request.operation.result_type(job.request.integer_type))
+    .bind(job.checked.result_type)
     .bind(job.checked.input_count as i64)
     .bind(job.checked.proven)
     .bind(&job.checked.scalar)
+    .bind(&job.checked.program_json)
     .bind(&job.request.key_id)
     .bind(job.input_bytes as i64)
     .bind(job.idempotency_key)
@@ -384,6 +412,7 @@ pub async fn submit_job(
                 "ciphertexts"
             },
             checked.scalar.as_deref().unwrap_or(""),
+            checked.program_json.as_deref().unwrap_or(""),
         ],
         &checked.files,
     );
@@ -683,6 +712,7 @@ mod tests {
             input_count: 2,
             proven: false,
             scalar: None,
+            program: None,
             key_id: None,
             attempts: 1,
             error_message: None,

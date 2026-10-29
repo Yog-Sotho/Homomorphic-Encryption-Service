@@ -61,11 +61,16 @@ fn api_scope(prefix: &str, config: &Config) -> actix_web::Scope {
         .route("/health", web::get().to(health::health))
         .route("/health/ready", web::get().to(health::ready))
         .route("/he/params", web::get().to(params::get_params))
-        .route("/he/crs", web::get().to(params::get_crs))
+        // ~2 MB to anyone: limited per client IP (clients cache it by ETag).
+        .service(
+            web::resource("/he/crs")
+                .wrap(from_fn(middleware::rate_limit::limit_per_client_ip))
+                .route(web::get().to(params::get_crs)),
+        )
         .route("/openapi.json", web::get().to(openapi::openapi_json))
         .service(
             web::scope("/auth")
-                .wrap(from_fn(middleware::rate_limit::limit_auth_requests))
+                .wrap(from_fn(middleware::rate_limit::limit_per_client_ip))
                 .wrap(from_fn(middleware::origin::require_allowed_origin))
                 .route("/register", web::post().to(password::register))
                 .route("/login", web::post().to(password::login))

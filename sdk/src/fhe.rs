@@ -17,61 +17,7 @@ use tfhe::{ClientKey, CompactCiphertextList, CompactPublicKey, CompressedServerK
 
 pub use tfhe::ClientKey as SecretKey;
 
-/// Runs `$body` with `$fhe` and `$clear` naming the TFHE-rs and Rust types of `$ty`.
-macro_rules! per_type {
-    ($ty:expr, $fhe:ident, $clear:ident, $conformance:ident => $body:expr) => {
-        match $ty {
-            IntegerType::U8 => {
-                type $fhe = tfhe::FheUint8;
-                type $clear = u8;
-                type $conformance = tfhe::FheUint8ConformanceParams;
-                $body
-            }
-            IntegerType::U16 => {
-                type $fhe = tfhe::FheUint16;
-                type $clear = u16;
-                type $conformance = tfhe::FheUint16ConformanceParams;
-                $body
-            }
-            IntegerType::U32 => {
-                type $fhe = tfhe::FheUint32;
-                type $clear = u32;
-                type $conformance = tfhe::FheUint32ConformanceParams;
-                $body
-            }
-            IntegerType::U64 => {
-                type $fhe = tfhe::FheUint64;
-                type $clear = u64;
-                type $conformance = tfhe::FheUint64ConformanceParams;
-                $body
-            }
-            IntegerType::I8 => {
-                type $fhe = tfhe::FheInt8;
-                type $clear = i8;
-                type $conformance = tfhe::FheInt8ConformanceParams;
-                $body
-            }
-            IntegerType::I16 => {
-                type $fhe = tfhe::FheInt16;
-                type $clear = i16;
-                type $conformance = tfhe::FheInt16ConformanceParams;
-                $body
-            }
-            IntegerType::I32 => {
-                type $fhe = tfhe::FheInt32;
-                type $clear = i32;
-                type $conformance = tfhe::FheInt32ConformanceParams;
-                $body
-            }
-            IntegerType::I64 => {
-                type $fhe = tfhe::FheInt64;
-                type $clear = i64;
-                type $conformance = tfhe::FheInt64ConformanceParams;
-                $body
-            }
-        }
-    };
-}
+use heaas_core::with_fhe_type as per_type;
 
 fn out_of_range(ty: IntegerType, value: i128) -> Error {
     Error::Encoding(format!(
