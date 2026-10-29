@@ -231,7 +231,7 @@ impl Program {
                     Arg::Step(s) => {
                         return Err(fail(format!("step {} is not an earlier step", s + 1)))
                     }
-                    Arg::Const(text) => Operand::Const(ty.parse_value(text).map_err(&fail)?),
+                    Arg::Const(text) => Operand::Const(ty.parse_value(text).map_err(fail)?),
                 });
             }
             let kind_of = |operand: &Operand| match operand {

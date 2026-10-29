@@ -89,7 +89,7 @@ fn check_job(
 fn random_program(ty: IntegerType, inputs: usize, choices: &[u32]) -> Program {
     let mut steps: Vec<Step> = Vec::new();
     let mut kinds: Vec<Kind> = Vec::new();
-    for c in choices.chunks_exact(4) {
+    for c in choices.as_chunks::<4>().0 {
         let ints: Vec<Arg> = (0..inputs)
             .map(Arg::Input)
             .chain(
