@@ -1,6 +1,6 @@
 # Both services run as non-root users with a read-only root filesystem, no
 # Linux capabilities and no privilege escalation. State lives in the named
-# volume `heaas-data` (see README "Backups" to back it up and to migrate from
+# volume `heaas-data` (see docs/self-hosting.md "Backups" to back it up and to migrate from
 # the old ./data bind mount).
 x-hardened: &hardened
   read_only: true

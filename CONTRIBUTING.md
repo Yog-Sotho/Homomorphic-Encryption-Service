@@ -21,6 +21,9 @@ JWT_SECRET=dev-secret-at-least-32-bytes-long cargo run -p he-backend   # :8080
 cd frontend && pnpm install && pnpm dev                                # :3000/heaas
 ```
 
+Without SMTP settings, debug builds log email verification and reset links instead
+of sending them.
+
 ## Before you open a pull request
 
 CI runs all of these; run them locally first.

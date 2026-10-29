@@ -1,0 +1,98 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="560" viewBox="0 0 1200 560" role="img" aria-labelledby="t d">
+  <title id="t">HEaaS architecture</title>
+  <desc id="d">Clients (the web app with TFHE in WebAssembly, or the Rust SDK and CLI) hold the secret keys and reach nginx over HTTPS. nginx routes the app to the frontend and the API to the backend. The backend queues jobs in SQLite; a worker pool evaluates them with TFHE-rs using the user's evaluation key. Data lives in the database, the key store and the job store. Logs, metrics and health checks are exposed for operations.</desc>
+  <defs>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#6366f1"/>
+      <stop offset="1" stop-color="#a855f7"/>
+    </linearGradient>
+    <marker id="a" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 0 L10 5 L0 10 z" fill="#6b7280"/>
+    </marker>
+  </defs>
+  <rect width="1200" height="560" rx="20" fill="#ffffff"/>
+  <rect x="1" y="1" width="1198" height="558" rx="19" fill="none" stroke="#e5e7eb" stroke-width="2"/>
+
+  <g font-family="Inter, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif">
+    <!-- Zone labels -->
+    <g font-size="13" font-weight="700" fill="#6b7280" letter-spacing="1.5">
+      <text x="40" y="44">CLIENTS · HOLD THE SECRET KEYS</text>
+      <text x="460" y="44">HEaaS · HOLDS EVALUATION KEYS ONLY</text>
+    </g>
+
+    <!-- Clients -->
+    <rect x="40" y="64" width="320" height="452" rx="16" fill="#f5f7ff" stroke="#c7d2fe" stroke-width="2"/>
+    <g>
+      <rect x="64" y="96" width="272" height="150" rx="12" fill="#ffffff" stroke="#c7d2fe"/>
+      <text x="84" y="128" font-size="18" font-weight="700" fill="#111827">Web app</text>
+      <text x="84" y="154" font-size="14" fill="#374151">Runs in the browser</text>
+      <text x="84" y="182" font-size="14" fill="#374151">• Keys made in a Web Worker</text>
+      <text x="84" y="204" font-size="14" fill="#374151">• TFHE-rs compiled to WebAssembly</text>
+      <text x="84" y="226" font-size="14" fill="#374151">• Secret key sealed by a passphrase</text>
+    </g>
+    <g>
+      <rect x="64" y="270" width="272" height="128" rx="12" fill="#ffffff" stroke="#c7d2fe"/>
+      <text x="84" y="302" font-size="18" font-weight="700" fill="#111827">Rust SDK &amp; CLI</text>
+      <text x="84" y="328" font-size="14" fill="#374151">For your own systems and scripts</text>
+      <text x="84" y="356" font-size="14" fill="#374151">• Same TFHE-rs as the server</text>
+      <text x="84" y="378" font-size="14" fill="#374151">• Secret key in a private local file</text>
+    </g>
+    <text x="200" y="440" text-anchor="middle" font-size="14" fill="#4b5563">Send: evaluation key, ciphertexts</text>
+    <text x="200" y="462" text-anchor="middle" font-size="14" fill="#4b5563">Receive: encrypted results</text>
+
+    <!-- Server zone -->
+    <rect x="440" y="64" width="720" height="452" rx="16" fill="#f9fafb" stroke="#e5e7eb" stroke-width="2"/>
+
+    <!-- nginx -->
+    <rect x="468" y="96" width="140" height="302" rx="12" fill="#111827"/>
+    <text x="538" y="232" text-anchor="middle" font-size="18" font-weight="700" fill="#ffffff">nginx</text>
+    <text x="538" y="256" text-anchor="middle" font-size="13" fill="#d1d5db">HTTPS, HSTS</text>
+    <text x="538" y="276" text-anchor="middle" font-size="13" fill="#d1d5db">only public entry</text>
+
+    <!-- Frontend -->
+    <rect x="652" y="96" width="220" height="92" rx="12" fill="#ffffff" stroke="#d1d5db"/>
+    <text x="672" y="128" font-size="17" font-weight="700" fill="#111827">Frontend</text>
+    <text x="672" y="152" font-size="14" fill="#374151">Serves the web app</text>
+    <text x="672" y="172" font-size="13" fill="#6b7280">/heaas/</text>
+
+    <!-- Backend -->
+    <rect x="652" y="212" width="220" height="186" rx="12" fill="url(#accent)"/>
+    <text x="672" y="244" font-size="17" font-weight="700" fill="#ffffff">Backend API</text>
+    <text x="672" y="268" font-size="14" fill="#eef2ff">Accounts and sessions</text>
+    <text x="672" y="290" font-size="14" fill="#eef2ff">Key registration</text>
+    <text x="672" y="312" font-size="14" fill="#eef2ff">Job queue</text>
+    <text x="672" y="342" font-size="13" fill="#e0e7ff">/api/v1 · OpenAPI 3.1</text>
+
+    <!-- Workers -->
+    <rect x="916" y="212" width="216" height="186" rx="12" fill="#ffffff" stroke="#c7d2fe" stroke-width="2"/>
+    <text x="936" y="244" font-size="17" font-weight="700" fill="#111827">Job workers</text>
+    <text x="936" y="268" font-size="14" fill="#374151">Compute with TFHE-rs</text>
+    <text x="936" y="290" font-size="14" fill="#374151">on ciphertexts, using</text>
+    <text x="936" y="312" font-size="14" fill="#374151">the user's evaluation key</text>
+    <text x="936" y="342" font-size="13" fill="#6b7280">bounded · retried · durable</text>
+
+    <!-- Storage -->
+    <g>
+      <rect x="652" y="428" width="480" height="64" rx="12" fill="#ffffff" stroke="#d1d5db"/>
+      <text x="672" y="456" font-size="16" font-weight="700" fill="#111827">Storage</text>
+      <text x="672" y="478" font-size="14" fill="#374151">SQLite database · evaluation keys · job ciphertexts</text>
+    </g>
+
+    <!-- Ops -->
+    <rect x="916" y="96" width="216" height="92" rx="12" fill="#ffffff" stroke="#d1d5db" stroke-dasharray="5 4"/>
+    <text x="936" y="128" font-size="17" font-weight="700" fill="#111827">Operations</text>
+    <text x="936" y="152" font-size="14" fill="#374151">JSON logs · metrics</text>
+    <text x="936" y="172" font-size="14" fill="#374151">health · backups</text>
+
+    <!-- Arrows -->
+    <g stroke="#6b7280" stroke-width="2" fill="none" marker-end="url(#a)">
+      <path d="M336 171 H458"/>
+      <path d="M336 334 H458"/>
+      <path d="M608 142 H642"/>
+      <path d="M608 305 H642"/>
+      <path d="M872 305 H906"/>
+      <path d="M762 398 V418"/>
+      <path d="M1024 398 V418"/>
+    </g>
+  </g>
+</svg>

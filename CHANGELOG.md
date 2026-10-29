@@ -51,6 +51,12 @@ history is in git.
   and a full-stack browser test against the real backend.
 - `docs/parameters.md`, generated from the code; `SECURITY.md`,
   `CONTRIBUTING.md`, this changelog.
+- A new banner, logo and diagrams, a dashboard screenshot, a short README and
+  separate guides in `docs/`: user guide (formerly `Customer_guide.md`),
+  how it works, API, self-hosting.
+- A new banner, logo and diagrams, a dashboard screenshot, a short README and
+  separate guides in `docs/`: user guide (formerly `Customer_guide.md`),
+  how it works, API, self-hosting.
 
 ### Changed
 - The API moved to `/api/v1`. `/api/...` still answers, with `Deprecation`
@@ -79,6 +85,6 @@ history is in git.
 - Users sign in again once (the refresh cookie moved to `/api/v1/auth`).
 - Register `<APP_BASE_URL>/api/v1/auth/{google,github}/callback` with the
   OAuth providers.
-- Docker: copy `./data` into the `heaas-data` volume once (README, "Backups").
+- Docker: copy `./data` into the `heaas-data` volume once (docs/self-hosting.md, "Backups").
 - Server-generated keys from before the rebuild cannot be used; users create
   a key in the dashboard or with `heaas keygen`.
