@@ -65,9 +65,6 @@ history is in git.
 - A new banner, logo and diagrams, a dashboard screenshot, a short README and
   separate guides in `docs/`: user guide (formerly `Customer_guide.md`),
   how it works, API, self-hosting.
-- A new banner, logo and diagrams, a dashboard screenshot, a short README and
-  separate guides in `docs/`: user guide (formerly `Customer_guide.md`),
-  how it works, API, self-hosting.
 
 ### Changed
 - The API moved to `/api/v1`. `/api/...` still answers, with `Deprecation`
