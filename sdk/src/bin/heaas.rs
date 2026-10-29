@@ -8,13 +8,17 @@
 //! heaas run --key-id <id> --op lt --type i32 -- -5 3           # prints true
 //! heaas run --key-id <id> --op add --scalar 10 5               # 5 + 10 (10 sent in clear)
 //! heaas run --key-id <id> --op sum --type u8 --prove 1 2 3     # proven inputs
+//! heaas run --key-id <id> --expr "(a + b) * 3 < c ? a : b" 1 2 10   # a program
 //! ```
 //!
 //! Step by step: `encrypt` (or `prove`), `submit`, `wait`, `result`, `decrypt`.
 
 use clap::{Parser, Subcommand};
 use heaas_sdk::api::CreateJobRequest;
-use heaas_sdk::{encode, fhe, Client, IntegerType, Operation, PlainValue, ValueType};
+use heaas_sdk::program::{CheckedProgram, Program};
+use heaas_sdk::{
+    encode, fhe, parse_expression, Client, IntegerType, Operation, PlainValue, ValueType,
+};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
@@ -49,8 +53,13 @@ struct Cli {
 struct Operands {
     #[arg(long)]
     key_id: String,
-    #[arg(long)]
-    op: Operation,
+    /// One operation.
+    #[arg(long, required_unless_present = "expr", conflicts_with = "expr")]
+    op: Option<Operation>,
+    /// A program, written as an expression over the inputs a, b, c, …, e.g.
+    /// "(a + b) * 3 < c ? a : b" (see `heaas_core::parse_expression`).
+    #[arg(long, conflicts_with = "scalar")]
+    expr: Option<String>,
     /// The inputs' type.
     #[arg(long = "type", default_value = "u16")]
     integer_type: IntegerType,
@@ -221,16 +230,60 @@ fn parse_values(ty: IntegerType, values: &[String]) -> Result<Vec<i128>, String>
     values.iter().map(|v| ty.parse_value(v)).collect()
 }
 
+/// The operation, or the program, a job runs.
+struct Plan {
+    operation: Operation,
+    program: Option<(Program, CheckedProgram)>,
+}
+
 impl Operands {
-    fn request(&self, inputs: Vec<String>, proven_inputs: Option<String>) -> CreateJobRequest {
+    /// Checks the operation or compiles the expression, for `inputs` encrypted
+    /// inputs (`None`: not known here, e.g. a proven list; the server checks).
+    fn plan(&self, inputs: Option<usize>) -> Result<Plan, String> {
+        let scalar = self.scalar.is_some();
+        match (&self.op, &self.expr) {
+            (Some(op), _) => {
+                if let Some(inputs) = inputs {
+                    op.check_operands(inputs, scalar)?;
+                }
+                Ok(Plan {
+                    operation: *op,
+                    program: None,
+                })
+            }
+            (None, Some(expr)) => {
+                let compiled = parse_expression(expr)?;
+                let inputs = inputs.unwrap_or(compiled.input_count);
+                if compiled.input_count != inputs {
+                    return Err(format!(
+                        "the expression reads {} input(s), but {inputs} were given",
+                        compiled.input_count
+                    ));
+                }
+                let checked = compiled.program.check(self.integer_type, inputs)?;
+                Ok(Plan {
+                    operation: Operation::Program,
+                    program: Some((compiled.program, checked)),
+                })
+            }
+            (None, None) => Err("give --op or --expr".into()),
+        }
+    }
+
+    fn request(
+        &self,
+        plan: &Plan,
+        inputs: Vec<String>,
+        proven_inputs: Option<String>,
+    ) -> CreateJobRequest {
         CreateJobRequest {
             key_id: self.key_id.clone(),
-            operation: self.op,
+            operation: plan.operation,
             integer_type: self.integer_type,
             inputs,
             proven_inputs,
             scalar: self.scalar.clone(),
-            program: None,
+            program: plan.program.as_ref().map(|(program, _)| program.clone()),
         }
     }
 }
@@ -311,14 +364,18 @@ async fn run(cli: Cli) -> Outcome {
             idempotency_key,
         } => {
             let request = match proven {
-                Some(path) => operands.request(Vec::new(), Some(encode(&std::fs::read(path)?))),
-                None => operands.request(
-                    inputs
+                Some(path) => {
+                    let plan = operands.plan(None)?;
+                    operands.request(&plan, Vec::new(), Some(encode(&std::fs::read(path)?)))
+                }
+                None => {
+                    let plan = operands.plan(Some(inputs.len()))?;
+                    let inputs = inputs
                         .iter()
                         .map(|p| std::fs::read(p).map(|b| encode(&b)))
-                        .collect::<Result<_, _>>()?,
-                    None,
-                ),
+                        .collect::<Result<_, _>>()?;
+                    operands.request(&plan, inputs, None)
+                }
             };
             let client = signed_in(&cli).await?;
             let job = match idempotency_key {
@@ -364,7 +421,7 @@ async fn run(cli: Cli) -> Outcome {
                 .as_deref()
                 .map(|s| ty.parse_value(s))
                 .transpose()?;
-            operands.op.check_operands(values.len(), scalar.is_some())?;
+            let plan = operands.plan(Some(values.len()))?;
             let secret = fhe::load_client_key(client_key)?;
             let client = signed_in(&cli).await?;
             client.check_compatible().await?;
@@ -372,20 +429,25 @@ async fn run(cli: Cli) -> Outcome {
                 let public_key = fhe::public_key_from_bytes(&std::fs::read(public_key)?)?;
                 let crs = client.crs().await?;
                 let list = fhe::prove(&public_key, &crs, &operands.key_id, ty, &values)?;
-                operands.request(Vec::new(), Some(encode(&list)))
+                operands.request(&plan, Vec::new(), Some(encode(&list)))
             } else {
                 let inputs = values
                     .iter()
                     .map(|&v| fhe::encrypt_as(&secret, ty, v).map(|b| encode(&b)))
                     .collect::<Result<_, _>>()?;
-                operands.request(inputs, None)
+                operands.request(&plan, inputs, None)
             };
             let (job, result) = client
                 .compute_job(&request, Duration::from_secs(*timeout))
                 .await?;
             let value = fhe::decrypt_as(&secret, job.result_type, &result)?;
-            let operands_plain: Vec<i128> = values.iter().copied().chain(scalar).collect();
-            let expected = operands.op.apply_plain(ty, &operands_plain);
+            let expected = match &plan.program {
+                Some((_, checked)) => checked.eval_plain(&values),
+                None => {
+                    let operands_plain: Vec<i128> = values.iter().copied().chain(scalar).collect();
+                    plan.operation.apply_plain(ty, &operands_plain)
+                }
+            };
             if value != expected {
                 return Err(format!(
                     "decrypted {value}, but the expected result is {expected}: the key id may not belong to {}",

@@ -1325,6 +1325,29 @@ async fn the_sdk_runs_the_whole_flow_against_a_live_server() {
         PlainValue::Int(6)
     );
 
+    // A program, compiled from an expression by the SDK's parser.
+    let compiled = heaas_sdk::parse_expression("a * a - b > 80 ? a : b").unwrap();
+    let request = heaas_core::api::CreateJobRequest {
+        key_id: key.id.clone(),
+        operation: Operation::Program,
+        integer_type: IntegerType::I32,
+        inputs: vec![
+            heaas_sdk::encode(&fhe::encrypt_as(secret, IntegerType::I32, 9).unwrap()),
+            heaas_sdk::encode(&fhe::encrypt_as(secret, IntegerType::I32, -4).unwrap()),
+        ],
+        proven_inputs: None,
+        scalar: None,
+        program: Some(compiled.program),
+    };
+    let (job, result) = client
+        .compute_job(&request, Duration::from_secs(300))
+        .await
+        .unwrap();
+    assert_eq!(
+        fhe::decrypt_as(secret, job.result_type, &result).unwrap(),
+        PlainValue::Int(9)
+    );
+
     // A resubmission with the same idempotency key is the same job.
     let first = client
         .submit_idempotent(&key.id, Operation::Add, &a, &b, "sdk-retry")
@@ -1348,7 +1371,7 @@ async fn the_sdk_runs_the_whole_flow_against_a_live_server() {
         .unwrap();
     assert_eq!(
         page.data.len() + rest.data.len(),
-        Operation::BASIC.len() + 3
+        Operation::BASIC.len() + 4
     );
 
     // Errors arrive typed, with the envelope's code.
