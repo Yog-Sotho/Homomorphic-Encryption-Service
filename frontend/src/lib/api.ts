@@ -1,3 +1,4 @@
+import type { Program } from './fhe/program.js';
 import { resolve } from '$app/paths';
 import { userStore } from './stores.js';
 
@@ -227,7 +228,8 @@ export type Operation =
   | 'le'
   | 'gt'
   | 'ge'
-  | 'sum';
+  | 'sum'
+  | 'program';
 
 export type IntegerType = 'u8' | 'u16' | 'u32' | 'u64' | 'i8' | 'i16' | 'i32' | 'i64';
 /** A job result's type: the input type, or `bool` for comparisons. */
@@ -283,6 +285,8 @@ export interface JobSummary {
   proven: boolean;
   /** The plaintext right-hand operand, if any. */
   scalar: string | null;
+  /** For `operation: 'program'`. */
+  program: Program | null;
   key_id: string | null;
   attempts: number;
   error_message: string | null;
@@ -368,6 +372,8 @@ export interface JobRequest {
   proven_inputs?: string;
   /** A plaintext right-hand operand in decimal; the server sees it. */
   scalar?: string;
+  /** For `operation: 'program'`: the steps to run. */
+  program?: Program;
 }
 
 export const compute = {

@@ -54,7 +54,7 @@ export function parseValue(type: IntegerType, text: string): bigint | null {
 /** Most inputs of a sum (`max_inputs` of `/he/params`). */
 export const MAX_SUM_INPUTS = 16;
 
-export type OperationKind = 'arithmetic' | 'comparison' | 'sum';
+export type OperationKind = 'arithmetic' | 'comparison' | 'sum' | 'program';
 
 export const OPERATIONS: { id: Operation; label: string; symbol: string; kind: OperationKind }[] = [
   { id: 'add', label: 'Add', symbol: '+', kind: 'arithmetic' },
@@ -68,7 +68,8 @@ export const OPERATIONS: { id: Operation; label: string; symbol: string; kind: O
   { id: 'le', label: 'Less or equal', symbol: '≤', kind: 'comparison' },
   { id: 'gt', label: 'Greater', symbol: '>', kind: 'comparison' },
   { id: 'ge', label: 'Greater or equal', symbol: '≥', kind: 'comparison' },
-  { id: 'sum', label: 'Sum', symbol: 'Σ', kind: 'sum' }
+  { id: 'sum', label: 'Sum', symbol: 'Σ', kind: 'sum' },
+  { id: 'program', label: 'Expression', symbol: 'ƒ', kind: 'program' }
 ];
 
 export function operationKind(op: Operation): OperationKind {
@@ -86,6 +87,7 @@ export function resultType(op: Operation, type: IntegerType): ValueType {
  * are in the type's range; binary operations take two (the scalar last).
  */
 export function expectedResult(op: Operation, type: IntegerType, operands: bigint[]): PlainValue {
+  if (op === 'program') throw new Error('programs are evaluated by evalProgram');
   if (op === 'sum') return wrap(type, operands.reduce((acc, v) => acc + v, 0n));
   const [a, b] = operands;
   switch (op) {

@@ -13,7 +13,14 @@ interface Captured {
   keyUpload: Buffer | null;
   publicKeyUpload: Buffer | null;
   bodies: Buffer[];
-  jobs: { key_id: string; operation: string; integer_type: string; inputs: string[]; scalar?: string }[];
+  jobs: {
+    key_id: string;
+    operation: string;
+    integer_type: string;
+    inputs: string[];
+    scalar?: string;
+    program?: { steps: { op: string; args: unknown[] }[] };
+  }[];
   idempotencyKeys: (string | undefined)[];
 }
 
@@ -75,7 +82,8 @@ async function mockFheApi(page: Page): Promise<Captured> {
     result_type: captured.jobs[i].integer_type,
     input_count: captured.jobs[i].inputs.length,
     proven: false,
-    scalar: captured.jobs[i].scalar ?? null
+    scalar: captured.jobs[i].scalar ?? null,
+    program: captured.jobs[i].program ?? null
   });
 
   const summary = (i: number) => ({
@@ -271,13 +279,29 @@ test('keys are made and sealed in the browser; only the evaluation key is upload
   expect(second.inputs).toHaveLength(1);
   expect(Buffer.from(second.inputs[0], 'base64').length).toBeGreaterThan(400_000); // FheInt64
 
+  // An expression: compiled in the browser and sent as program steps.
+  // max(a, b) with a > b is a, which is what the mock echoes.
+  await page.getByLabel('Type').selectOption('u8');
+  await page.getByRole('button', { name: 'Expression', exact: true }).click();
+  await page.getByLabel('Expression').fill('a +');
+  await expect(page.getByText('The expression ends too early')).toBeVisible();
+  await page.getByLabel('Expression').fill('max(a, b)');
+  await page.getByLabel(/^Values for a, b/).fill('200, 3');
+  await page.getByRole('button', { name: 'Run' }).click();
+  await expect(page.getByTestId('result-value')).toHaveText('200', { timeout: 60_000 });
+  const third = captured.jobs[2];
+  expect(third.operation).toBe('program');
+  expect(third.program?.steps).toEqual([{ op: 'max', args: [{ input: 0 }, { input: 1 }] }]);
+  expect(third.inputs).toHaveLength(2);
+
   // The jobs page decrypts stored results too, each as its type.
   await page.getByRole('link', { name: 'Jobs', exact: true }).click();
-  await expect(page.getByTestId('job-row')).toHaveCount(2);
+  await expect(page.getByTestId('job-row')).toHaveCount(3);
+  await expect(page.getByTestId('job-row').first()).toContainText('max(a, b) (u8, 2 inputs)');
   for (const row of await page.getByTestId('job-row').all()) {
     await row.getByRole('button', { name: 'Decrypt' }).click();
   }
-  await expect(page.getByTestId('job-value')).toHaveText([big, '51234'], { timeout: 30_000 });
+  await expect(page.getByTestId('job-value')).toHaveText(['200', big, '51234'], { timeout: 30_000 });
 
   // No request body ever contains the client key or the passphrase.
   const secret = clientKey.subarray(clientKey.length / 2, clientKey.length / 2 + 64);

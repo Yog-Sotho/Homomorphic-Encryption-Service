@@ -86,14 +86,25 @@ test('register, generate a key in the browser and compute on encrypted data', as
   await expect(page.getByText('Matches expected')).toBeVisible();
   await expect(page.getByText(/1 proven list of 4/)).toBeVisible();
 
+  // A program: (5 + 7) * 3 = 36 < 100, so a - b = -2, every step on ciphertexts.
+  await page.getByLabel('Type').selectOption('i16');
+  await page.getByRole('button', { name: 'Expression', exact: true }).click();
+  await page.getByLabel('Expression').fill('(a + b) * 3 < c ? a - b : b - a');
+  await page.getByLabel(/^Values for a, b, c/).fill('5, 7, 100');
+  await page.getByLabel('Prove the inputs are well-formed encryptions').uncheck();
+  await page.getByRole('button', { name: 'Run' }).click();
+  await expect(page.getByTestId('result-value')).toHaveText('-2', { timeout: 180_000 });
+  await expect(page.getByText('Matches expected')).toBeVisible();
+
   // The server keeps every result; the jobs page decrypts them here, each as its type.
   await page.getByRole('link', { name: 'Jobs', exact: true }).click();
-  await expect(page.getByTestId('job-row')).toHaveCount(4);
-  await expect(page.getByTestId('job-row').first()).toContainText('Sum (u8, 4 inputs, proven)');
+  await expect(page.getByTestId('job-row')).toHaveCount(5);
+  await expect(page.getByTestId('job-row').first()).toContainText('(((a + b) * 3) < c) ? (a - b) : (b - a)');
+  await expect(page.getByTestId('job-row').nth(1)).toContainText('Sum (u8, 4 inputs, proven)');
   for (const row of await page.getByTestId('job-row').all()) {
     await row.getByRole('button', { name: 'Decrypt' }).click();
   }
-  await expect(page.getByTestId('job-value')).toHaveText(['47', 'true', '65529', '24464'], {
+  await expect(page.getByTestId('job-value')).toHaveText(['-2', '47', 'true', '65529', '24464'], {
     timeout: 30_000
   });
 
