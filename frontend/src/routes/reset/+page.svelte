@@ -36,7 +36,7 @@
   }
 </script>
 
-<svelte:head><title>Reset password · HEaaS</title></svelte:head>
+<svelte:head><title>Reset password · HE Engine</title></svelte:head>
 
 <div class="container">
   <h1>Choose a new password</h1>

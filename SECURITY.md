@@ -13,9 +13,9 @@ if you want it.
 
 Only the latest release on `master` gets security fixes.
 
-## What HEaaS protects, and what it does not
+## What the HE Engine protects, and what it does not
 
-HEaaS computes on TFHE ciphertexts (TFHE-rs, see [`docs/parameters.md`](docs/parameters.md)).
+The HE Engine computes on TFHE ciphertexts (TFHE-rs, see [`docs/parameters.md`](docs/parameters.md)).
 In brief:
 
 - **Inputs and results are confidential from the server.** It only ever holds
@@ -35,7 +35,7 @@ In brief:
   writes them to a file readable only by its owner. Anyone with the passphrase
   and the sealed key, or with the key file, can decrypt that user's data.
 - **Account security** (sessions, OAuth, rate limits, email links) is described
-  in [How HEaaS works](docs/how-it-works.md#accounts-and-sessions).
+  in [How the HE Engine works](docs/how-it-works.md#accounts-and-sessions).
 
 ## For operators
 

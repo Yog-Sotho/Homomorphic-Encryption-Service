@@ -1,4 +1,4 @@
-//! `heaas`: generate TFHE keys, encrypt, compute on a HEaaS server, decrypt.
+//! `heaas`: generate TFHE keys, encrypt, compute on a HE Engine server, decrypt.
 //!
 //! ```sh
 //! export HEAAS_URL=https://heaas.example.com HEAAS_EMAIL=you@example.com
@@ -19,7 +19,7 @@ use std::time::Duration;
 #[command(
     name = "heaas",
     version,
-    about = "Compute on encrypted data with a HEaaS server"
+    about = "Compute on encrypted data with a HE Engine server"
 )]
 struct Cli {
     /// The site's URL.

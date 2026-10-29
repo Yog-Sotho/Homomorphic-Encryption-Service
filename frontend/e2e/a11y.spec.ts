@@ -78,7 +78,7 @@ async function mockSignedInApi(page: Page) {
 test('sign-in, registration and password pages', async ({ page }) => {
   await mockPublicAuthApi(page);
   await page.goto('/heaas/login');
-  await expect(page.getByRole('heading', { name: 'HE SaaS Login' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Sign in to HE Engine' })).toBeVisible();
   await scan(page);
   await page.getByRole('button', { name: 'Register' }).click();
   await page.locator('#password').fill('weak');

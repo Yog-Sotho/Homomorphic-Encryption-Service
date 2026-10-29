@@ -38,7 +38,7 @@ export function keyFileName(keyId: string): string {
 
 /** Parses and validates a key file; throws an `Error` with a message for the user. */
 export function parseKeyFile(text: string): KeyFile {
-  const invalid = new Error('This is not a HEaaS key file.');
+  const invalid = new Error('This is not a HE Engine key file.');
   if (text.length > MAX_KEY_FILE_BYTES) throw invalid;
   let data: unknown;
   try {
@@ -48,7 +48,7 @@ export function parseKeyFile(text: string): KeyFile {
   }
   const file = data as Partial<KeyFile> | null;
   if (typeof file !== 'object' || file === null || file.format !== KEY_FILE_FORMAT) throw invalid;
-  if (file.version !== 1) throw new Error('This key file was made by a newer version of HEaaS.');
+  if (file.version !== 1) throw new Error('This key file was made by a newer version of HE Engine.');
   const valid =
     typeof file.keyId === 'string' &&
     /^[0-9a-f-]{36}$/i.test(file.keyId) &&

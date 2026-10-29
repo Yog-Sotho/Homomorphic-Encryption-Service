@@ -43,7 +43,7 @@
   <div class="app">
     <header class="topbar">
       <a class="brand" href={resolve('/dashboard')}>
-        <img src={asset('logo.svg')} alt="HEaaS home" class="brand-logo" />
+        <img src={asset('logo.svg')} alt="HE Engine home" class="brand-logo" />
       </a>
       <nav class="nav" aria-label="Main">
         {#each NAV as item (item.href)}

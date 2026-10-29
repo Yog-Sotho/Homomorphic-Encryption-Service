@@ -24,7 +24,7 @@ const SUBMIT_ATTEMPTS: u32 = 3;
 /// A `Retry-After` longer than this is not waited out; the error is returned.
 const MAX_RETRY_AFTER: Duration = Duration::from_secs(30);
 
-/// A client for one HEaaS server.
+/// A client for one HE Engine server.
 ///
 /// ```no_run
 /// # async fn demo() -> heaas_sdk::Result<()> {

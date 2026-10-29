@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="430" viewBox="0 0 1200 430" role="img" aria-labelledby="t d">
-  <title id="t">How HEaaS works</title>
+  <title id="t">How the HE Engine works</title>
   <desc id="d">Your device encrypts the numbers with a secret key that never leaves it. The server computes directly on the encrypted values using only an evaluation key. Your device decrypts the encrypted result.</desc>
   <defs>
     <linearGradient id="accent" x1="0" y1="0" x2="1" y2="1">

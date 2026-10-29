@@ -69,7 +69,7 @@
   };
 </script>
 
-<svelte:head><title>Jobs · HEaaS</title></svelte:head>
+<svelte:head><title>Jobs · HE Engine</title></svelte:head>
 
 <div class="page">
   <div class="title-row">

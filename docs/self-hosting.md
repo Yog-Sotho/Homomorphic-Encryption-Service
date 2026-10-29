@@ -1,6 +1,6 @@
 # Self-hosting
 
-How to run HEaaS on your own server: deployment, configuration, monitoring and
+How to run the HE Engine on your own server: deployment, configuration, monitoring and
 backups. For development setup and the checks a change must pass, see
 [CONTRIBUTING.md](../CONTRIBUTING.md).
 
@@ -85,7 +85,7 @@ counts as unset.
 | `SMTP_TLS` | `starttls` | `starttls` (required STARTTLS), `implicit` (TLS from the start) or `none` (local relays only) |
 | `SMTP_PORT` | 587 / 465 / 25 | Defaults to the port of the `SMTP_TLS` mode |
 | `SMTP_USER`, `SMTP_PASS` | — | Relay credentials (both or neither) |
-| `FROM_EMAIL` | — (required with `SMTP_HOST`) | Sender, e.g. `HEaaS <noreply@example.com>` |
+| `FROM_EMAIL` | — (required with `SMTP_HOST`) | Sender, e.g. `HE Engine <noreply@example.com>` |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` | — | OAuth sign-in (both of a pair or neither). Callback URLs: `<APP_BASE_URL>/api/v1/auth/google/callback`, `…/github/callback` |
 
 ## Observability

@@ -69,7 +69,7 @@ pub fn http_client() -> reqwest::Client {
         .connect_timeout(Duration::from_secs(5))
         .timeout(Duration::from_secs(15))
         .redirect(reqwest::redirect::Policy::none())
-        .user_agent(concat!("HEaaS/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("HE-Engine/", env!("CARGO_PKG_VERSION")))
         .build()
         .expect("TLS backend available")
 }

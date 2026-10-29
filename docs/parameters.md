@@ -1,9 +1,9 @@
 <!-- Generated from core/src/params.rs by `UPDATE_DOCS=1 cargo test -p heaas-core`; do not edit. -->
 # Cryptographic parameters
 
-Every key and ciphertext HEaaS accepts is made with these parameters; servers
+Every key and ciphertext HE Engine accepts is made with these parameters; servers
 reject keys and ciphertexts that do not conform to them. They are TFHE-rs's
-defaults, which HEaaS does not tune. Zama states that its default parameters
+defaults, which HE Engine does not tune. Zama states that its default parameters
 give at least 128 bits of security (Lattice Estimator, MATZOV cost model) with
 a bootstrapping failure probability of at most 2^-128, chosen for the IND-CPA^D
 model: see [Security and cryptography](https://docs.zama.org/tfhe-rs/get-started/security-and-cryptography).

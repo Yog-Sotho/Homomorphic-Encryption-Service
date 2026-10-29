@@ -30,7 +30,7 @@ test('login page is served with a CSP header and hydrates without violations', a
   expect(response?.headers()['cross-origin-embedder-policy']).toBe('require-corp');
   expect(await page.evaluate(() => crossOriginIsolated)).toBe(true);
 
-  await expect(page.getByRole('heading', { name: 'HE SaaS Login' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Sign in to HE Engine' })).toBeVisible();
   // Only works once Svelte has hydrated the page.
   await page.getByRole('button', { name: 'Register' }).click();
   await expect(page.getByRole('heading', { name: 'Create an Account' })).toBeVisible();

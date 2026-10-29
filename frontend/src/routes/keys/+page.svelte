@@ -136,7 +136,7 @@
   }
 </script>
 
-<svelte:head><title>Keys · HEaaS</title></svelte:head>
+<svelte:head><title>Keys · HE Engine</title></svelte:head>
 
 <div class="page">
   <h1>Encryption keys</h1>

@@ -98,7 +98,7 @@
   }
 </script>
 
-<svelte:head><title>Account · HEaaS</title></svelte:head>
+<svelte:head><title>Account · HE Engine</title></svelte:head>
 
 
 <div class="page">
