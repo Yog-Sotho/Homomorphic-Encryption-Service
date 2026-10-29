@@ -38,6 +38,10 @@ pub const MAX_INPUTS: usize = 16;
 /// Most steps in one program.
 pub const MAX_PROGRAM_STEPS: usize = 64;
 
+/// Most jobs in one batch submission. All their inputs together are limited
+/// like one job's ([`MAX_JOB_INPUT_BYTES`]).
+pub const MAX_BATCH_JOBS: usize = 16;
+
 /// Most input bytes one job takes: [`MAX_INPUTS`] `FheUint64`s fit.
 pub const MAX_JOB_INPUT_BYTES: u64 = 9 << 20;
 

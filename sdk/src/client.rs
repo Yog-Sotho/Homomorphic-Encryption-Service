@@ -3,8 +3,8 @@
 use crate::error::{Error, Result};
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use heaas_core::api::{
-    error_codes, AuthResponse, CreateJobRequest, Credentials, ErrorBody, HeParams, JobPage,
-    JobStatus, JobSummary, ServerKeyInfo,
+    error_codes, AuthResponse, BatchJobsRequest, BatchJobsResponse, CreateJobRequest, Credentials,
+    ErrorBody, HeParams, JobPage, JobStatus, JobSummary, ServerKeyInfo,
 };
 use heaas_core::params::{DEFAULT_INTEGER_TYPE, TFHE_VERSION};
 use heaas_core::Operation;
@@ -264,13 +264,48 @@ impl Client {
         request: &CreateJobRequest,
         idempotency_key: &str,
     ) -> Result<JobSummary> {
+        self.post_retried(&["compute", "jobs"], request, idempotency_key)
+            .await
+    }
+
+    /// Queues several jobs at once: all of them, or none (e.g. when the quota
+    /// does not cover them all). Retried like [`Client::submit`].
+    pub async fn submit_batch(&self, requests: &[CreateJobRequest]) -> Result<Vec<JobSummary>> {
+        let idempotency_key = uuid::Uuid::new_v4().to_string();
+        self.submit_batch_idempotent(requests, &idempotency_key)
+            .await
+    }
+
+    /// [`Client::submit_batch`] with your own idempotency key.
+    pub async fn submit_batch_idempotent(
+        &self,
+        requests: &[CreateJobRequest],
+        idempotency_key: &str,
+    ) -> Result<Vec<JobSummary>> {
+        let body = BatchJobsRequest {
+            jobs: requests.to_vec(),
+        };
+        let response: BatchJobsResponse = self
+            .post_retried(&["compute", "jobs", "batch"], &body, idempotency_key)
+            .await?;
+        Ok(response.jobs)
+    }
+
+    /// POSTs `body` with an idempotency key, retrying transport failures and a
+    /// full queue (503) with the same key.
+    async fn post_retried<B: serde::Serialize, T: DeserializeOwned>(
+        &self,
+        path: &[&str],
+        body: &B,
+        idempotency_key: &str,
+    ) -> Result<T> {
         let mut attempt = 1;
         loop {
             let sent = self
                 .json(
-                    self.request(Method::POST, &["compute", "jobs"])
+                    self.request(Method::POST, path)
                         .header("Idempotency-Key", idempotency_key)
-                        .json(request),
+                        .json(body),
                 )
                 .await;
             let wait = match &sent {

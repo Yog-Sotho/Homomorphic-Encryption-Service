@@ -128,9 +128,15 @@ fn api_scope(prefix: &str, config: &Config) -> actix_web::Scope {
                 .wrap(from_fn(middleware::jwt::jwt_validator))
                 .service(
                     web::resource("/jobs")
-                        .app_data(submit_limit)
+                        .app_data(submit_limit.clone())
                         .route(web::post().to(compute::submit_job))
                         .route(web::get().to(compute::list_jobs)),
+                )
+                // Before /jobs/{id}, which would otherwise match "batch".
+                .service(
+                    web::resource("/jobs/batch")
+                        .app_data(submit_limit)
+                        .route(web::post().to(compute::submit_batch)),
                 )
                 .service(
                     web::resource("/jobs/{id}")

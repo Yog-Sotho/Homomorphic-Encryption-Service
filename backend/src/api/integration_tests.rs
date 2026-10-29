@@ -1013,6 +1013,144 @@ async fn program_jobs_run_several_operations_on_encrypted_values() {
     );
 }
 
+async fn submit_batch(
+    app: &impl Service<actix_http::Request, Response = ServiceResponse, Error = actix_web::Error>,
+    token: &str,
+    key: Option<&str>,
+    jobs: Vec<Value>,
+) -> ServiceResponse {
+    let mut req = test::TestRequest::post()
+        .uri("/api/v1/compute/jobs/batch")
+        .insert_header(("Authorization", token))
+        .set_json(json!({ "jobs": jobs }));
+    if let Some(key) = key {
+        req = req.insert_header(("Idempotency-Key", key));
+    }
+    test::call_service(app, req.to_request()).await
+}
+
+#[actix_web::test]
+async fn batches_queue_every_job_or_none() {
+    let env = TestEnv::new().await;
+    let app = env.app().await;
+    let alice = env.user("alice").await;
+    let key_id = register_key(&app, &alice).await;
+    let program = heaas_core::parse_expression("a * b - 1").unwrap().program;
+    let jobs = vec![
+        json!({ "key_id": key_id, "operation": "add", "integer_type": "u8",
+                "inputs": ciphertexts(IntegerType::U8, &[200, 100]) }),
+        json!({ "key_id": key_id, "operation": "program", "integer_type": "i16",
+                "inputs": ciphertexts(IntegerType::I16, &[-3, 4]), "program": program }),
+        json!({ "key_id": key_id, "operation": "lt", "integer_type": "u16",
+                "inputs": ciphertexts(IntegerType::U16, &[7]), "scalar": "9" }),
+    ];
+    let resp = submit_batch(&app, &alice, Some("batch-1"), jobs.clone()).await;
+    assert_eq!(resp.status(), StatusCode::ACCEPTED);
+    let body: Value = test::read_body_json(resp).await;
+    let ids: Vec<String> = body["jobs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|j| j["id"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(ids.len(), 3);
+    assert_eq!(body["jobs"][1]["operation"], "program");
+    assert_eq!(usage_count(&env.pool, "alice").await, 3);
+
+    let expected = [
+        PlainValue::Int(44),
+        PlainValue::Int(-13),
+        PlainValue::Bool(true),
+    ];
+    for (id, want) in ids.iter().zip(expected) {
+        let done = wait_for_job(&app, &alice, id).await;
+        assert_eq!(done["status"], "completed", "{done}");
+        let result_type: ValueType = serde_json::from_value(done["result_type"].clone()).unwrap();
+        let resp = get(&app, &alice, &format!("/api/v1/compute/jobs/{id}/result")).await;
+        let bytes = test::read_body(resp).await;
+        assert_eq!(
+            heaas_sdk::fhe::decrypt_as(client_key(), result_type, &bytes).unwrap(),
+            want
+        );
+    }
+
+    // The same batch with the same key is the same jobs, not charged again;
+    // the key with another batch is refused.
+    let resp = submit_batch(&app, &alice, Some("batch-1"), jobs.clone()).await;
+    assert_eq!(resp.status(), StatusCode::ACCEPTED);
+    assert_eq!(resp.headers().get("Idempotent-Replayed").unwrap(), "true");
+    let again: Value = test::read_body_json(resp).await;
+    assert_eq!(again["jobs"][2]["id"], json!(ids[2]));
+    assert_eq!(usage_count(&env.pool, "alice").await, 3);
+    let resp = submit_batch(&app, &alice, Some("batch-1"), jobs[..2].to_vec()).await;
+    assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+    // One bad job refuses the batch, naming it; nothing is queued or charged.
+    let mut bad = jobs.clone();
+    bad[1]["scalar"] = json!("1");
+    let resp = submit_batch(&app, &alice, None, bad).await;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let error: Value = test::read_body_json(resp).await;
+    assert!(
+        error["error"]["message"]
+            .as_str()
+            .unwrap()
+            .starts_with("Job 2: "),
+        "{error}"
+    );
+    for (jobs, why) in [(vec![], "empty"), (vec![jobs[0].clone(); 17], "too many")] {
+        let resp = submit_batch(&app, &alice, None, jobs).await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "{why}");
+    }
+    let page: Value = test::read_body_json(get(&app, &alice, "/api/v1/compute/jobs").await).await;
+    assert_eq!(page["data"].as_array().unwrap().len(), 3);
+    assert_eq!(usage_count(&env.pool, "alice").await, 3);
+}
+
+#[actix_web::test]
+async fn a_batch_beyond_the_limits_queues_nothing_and_charges_nothing() {
+    let env = TestEnv::without_workers(|c| {
+        c.max_active_jobs_per_user = 2;
+        c.daily_compute_quota = 4;
+    })
+    .await;
+    let app = env.app().await;
+    let alice = env.user("alice").await;
+    let key_id = register_key(&app, &alice).await;
+    let job = json!({ "key_id": key_id, "operation": "add", "integer_type": "u8",
+                      "inputs": ciphertexts(IntegerType::U8, &[1, 2]) });
+
+    // Three jobs, room for two: none is queued.
+    let resp = submit_batch(&app, &alice, None, vec![job.clone(); 3]).await;
+    assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(usage_count(&env.pool, "alice").await, 0);
+    let page: Value = test::read_body_json(get(&app, &alice, "/api/v1/compute/jobs").await).await;
+    assert!(page["data"].as_array().unwrap().is_empty());
+    assert!(std::fs::read_dir(&env.config.job_store_dir)
+        .unwrap()
+        .next()
+        .is_none());
+
+    // Two fit. Then a batch the quota cannot cover leaves the rest of it.
+    let resp = submit_batch(&app, &alice, None, vec![job.clone(); 2]).await;
+    assert_eq!(resp.status(), StatusCode::ACCEPTED);
+    sqlx::query("UPDATE jobs SET status = 'completed'")
+        .execute(&env.pool)
+        .await
+        .unwrap();
+    let resp = submit_batch(&app, &alice, None, vec![job.clone(); 3]).await;
+    assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+    let error: Value = test::read_body_json(resp).await;
+    assert!(
+        error["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("2 left"),
+        "{error}"
+    );
+    assert_eq!(usage_count(&env.pool, "alice").await, 2);
+}
+
 #[actix_web::test]
 async fn proven_inputs_need_the_public_key_and_a_valid_proof() {
     let env = TestEnv::new().await;
@@ -1325,6 +1463,34 @@ async fn the_sdk_runs_the_whole_flow_against_a_live_server() {
         PlainValue::Int(6)
     );
 
+    // A batch: both jobs queued in one request.
+    let make = |op: Operation, x: u16, y: u16| heaas_core::api::CreateJobRequest {
+        key_id: key.id.clone(),
+        operation: op,
+        integer_type: IntegerType::U16,
+        inputs: vec![
+            heaas_sdk::encode(&fhe::encrypt(secret, x).unwrap()),
+            heaas_sdk::encode(&fhe::encrypt(secret, y).unwrap()),
+        ],
+        proven_inputs: None,
+        scalar: None,
+        program: None,
+    };
+    let batch = client
+        .submit_batch(&[make(Operation::Max, 3, 9), make(Operation::Subtract, 3, 9)])
+        .await
+        .unwrap();
+    assert_eq!(batch.len(), 2);
+    let mut decrypted = Vec::new();
+    for job in &batch {
+        client
+            .wait(&job.id, Duration::from_secs(300))
+            .await
+            .unwrap();
+        decrypted.push(fhe::decrypt(secret, &client.result(&job.id).await.unwrap()).unwrap());
+    }
+    assert_eq!(decrypted, [9, 65530]);
+
     // A program, compiled from an expression by the SDK's parser.
     let compiled = heaas_sdk::parse_expression("a * a - b > 80 ? a : b").unwrap();
     let request = heaas_core::api::CreateJobRequest {
@@ -1371,7 +1537,7 @@ async fn the_sdk_runs_the_whole_flow_against_a_live_server() {
         .unwrap();
     assert_eq!(
         page.data.len() + rest.data.len(),
-        Operation::BASIC.len() + 4
+        Operation::BASIC.len() + 6
     );
 
     // Errors arrive typed, with the envelope's code.

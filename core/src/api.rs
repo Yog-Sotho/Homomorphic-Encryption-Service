@@ -103,6 +103,13 @@ pub struct HeParams {
     /// Most input bytes one job takes, all inputs together.
     #[serde(default)]
     pub max_job_input_bytes: u64,
+    /// Most jobs in one batch (`POST /api/v1/compute/jobs/batch`); a batch's
+    /// inputs together are limited like one job's.
+    #[serde(default)]
+    pub max_batch_jobs: usize,
+    /// Most steps in one program.
+    #[serde(default)]
+    pub max_program_steps: usize,
     pub max_server_key_bytes: u64,
     pub max_keys_per_user: i64,
     /// Absent on servers before HE Engine 0.5, which take no proven inputs.
@@ -241,6 +248,21 @@ pub struct CreateJobRequest {
     /// The steps to run, for `operation: "program"` (and only then).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub program: Option<Program>,
+}
+
+/// `POST /api/v1/compute/jobs/batch`: several jobs, queued together or not at all.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(ToSchema))]
+pub struct BatchJobsRequest {
+    /// 1 to `max_batch_jobs` jobs, each as for `POST /api/v1/compute/jobs`.
+    pub jobs: Vec<CreateJobRequest>,
+}
+
+/// The queued jobs of a batch, in request order.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(ToSchema))]
+pub struct BatchJobsResponse {
+    pub jobs: Vec<JobSummary>,
 }
 
 /// A job as its owner sees it: metadata only, never ciphertexts.
