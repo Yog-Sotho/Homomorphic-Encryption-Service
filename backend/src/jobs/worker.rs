@@ -9,7 +9,6 @@
 
 use super::queue::{self, ClaimedJob};
 use super::store::JobStore;
-use super::INPUT_COUNT;
 use crate::crypto::eval::EvalError;
 use crate::telemetry::METRICS;
 use sqlx::SqlitePool;
@@ -226,7 +225,7 @@ async fn run(ctx: &Context, job: ClaimedJob) {
 
     match recorded {
         Ok(true) if finished => {
-            if let Err(e) = ctx.store.remove_inputs(id, INPUT_COUNT) {
+            if let Err(e) = ctx.store.remove_inputs(id, job.stored_inputs()) {
                 tracing::error!("Failed to delete inputs of job {id}: {e}");
             }
         }
@@ -263,7 +262,7 @@ async fn retry_or_fail(
 }
 
 async fn attempt(ctx: &Context, job: &ClaimedJob) -> Outcome {
-    let inputs = match ctx.store.read_inputs(&job.id, INPUT_COUNT) {
+    let inputs = match ctx.store.read_inputs(&job.id, job.stored_inputs()) {
         Ok(inputs) => inputs,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             return Outcome::Rejected("Job inputs are no longer available".into())
@@ -404,7 +403,7 @@ mod tests {
 
         assert_eq!(h.wait_until_finished(&id).await.0, "completed");
         assert_eq!(h.store.read_result(&id).unwrap(), b"ab");
-        assert!(h.store.read_inputs(&id, INPUT_COUNT).is_err());
+        assert!(h.store.read_inputs(&id, 2).is_err());
         assert!(completed() > before);
         workers.shutdown(Duration::from_secs(5)).await;
         assert_eq!(liveness.alive(), 0);

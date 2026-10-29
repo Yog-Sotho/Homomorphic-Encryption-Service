@@ -5,9 +5,12 @@
 use crate::api::{self, auth::make_jwt};
 use crate::config::Config;
 use crate::crypto::eval::Operation;
-use crate::crypto::keys::test_support::{client_key, compressed_server_key_bytes, temp_store_dir};
+use crate::crypto::keys::test_support::{
+    client_key, compressed_server_key_bytes, public_key_bytes, temp_store_dir,
+};
 use crate::crypto::keys::KeyStore;
 use crate::crypto::params::{MAX_CIPHERTEXT_BYTES, TFHE_VERSION};
+use crate::crypto::proofs::{test_support::crs, Crs};
 use crate::jobs::store::JobStore;
 use crate::jobs::worker::{JobNotifier, Liveness, WorkerPool, WorkerSettings};
 use crate::middleware::rate_limit::RateLimits;
@@ -15,6 +18,7 @@ use actix_web::dev::{Service, ServiceResponse};
 use actix_web::http::StatusCode;
 use actix_web::{test, web, App};
 use base64::{engine::general_purpose::STANDARD, Engine as _};
+use heaas_core::{IntegerType, PlainValue, ValueType};
 use serde_json::{json, Value};
 use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::SqlitePool;
@@ -29,6 +33,7 @@ pub(super) struct TestEnv {
     pub(super) pool: SqlitePool,
     pub(super) config: Arc<Config>,
     store: web::Data<KeyStore>,
+    crs: web::Data<Crs>,
     jobs: web::Data<JobStore>,
     notifier: web::Data<JobNotifier>,
     liveness: web::Data<Liveness>,
@@ -39,7 +44,7 @@ pub(super) struct TestEnv {
 
 /// The app `main` builds, from a test environment's parts.
 macro_rules! app {
-    ($pool:expr, $config:expr, $store:expr, $jobs:expr, $notifier:expr, $liveness:expr) => {{
+    ($pool:expr, $config:expr, $store:expr, $crs:expr, $jobs:expr, $notifier:expr, $liveness:expr) => {{
         let config: Arc<Config> = $config;
         let routes = config.clone();
         App::new()
@@ -49,6 +54,7 @@ macro_rules! app {
             .app_data(web::Data::new($pool))
             .app_data(web::Data::new(config.clone()))
             .app_data($store)
+            .app_data($crs)
             .app_data($jobs)
             .app_data($notifier)
             .app_data($liveness)
@@ -93,6 +99,7 @@ impl TestEnv {
             )
             .unwrap(),
         );
+        let crs = web::Data::from(crs());
         let jobs = web::Data::new(JobStore::new(&config.job_store_dir).unwrap());
         let workers = if run_workers {
             let settings = WorkerSettings {
@@ -101,7 +108,8 @@ impl TestEnv {
                 max_attempts: config.max_job_attempts,
                 retention_days: config.job_retention_days,
             };
-            let processor = crate::jobs::evaluator(store.clone().into_inner());
+            let processor =
+                crate::jobs::evaluator(store.clone().into_inner(), crs.clone().into_inner());
             Some(
                 WorkerPool::start(pool.clone(), jobs.clone().into_inner(), processor, settings)
                     .await
@@ -124,6 +132,7 @@ impl TestEnv {
             pool,
             config,
             store,
+            crs,
             jobs,
             notifier,
             liveness,
@@ -140,6 +149,7 @@ impl TestEnv {
             self.pool.clone(),
             self.config.clone(),
             self.store.clone(),
+            self.crs.clone(),
             self.jobs.clone(),
             self.notifier.clone(),
             self.liveness.clone()
@@ -154,13 +164,14 @@ impl TestEnv {
             self.pool.clone(),
             self.config.clone(),
             self.store.clone(),
+            self.crs.clone(),
             self.jobs.clone(),
             self.notifier.clone(),
             self.liveness.clone(),
         );
         let server = actix_web::HttpServer::new(move || {
-            let (pool, config, store, jobs, notifier, liveness) = parts.clone();
-            app!(pool, config, store, jobs, notifier, liveness)
+            let (pool, config, store, crs, jobs, notifier, liveness) = parts.clone();
+            app!(pool, config, store, crs, jobs, notifier, liveness)
         })
         .workers(1)
         .bind(("127.0.0.1", 0))
@@ -369,7 +380,11 @@ async fn client_key_never_leaves_the_client_and_results_decrypt_correctly() {
         );
         let bytes = test::read_body(resp).await;
         assert_eq!(done["result_bytes"], bytes.len());
-        assert_eq!(decrypt(&bytes), op.apply_plain(a, b), "{op:?}({a}, {b})");
+        assert_eq!(
+            PlainValue::Int(decrypt(&bytes).into()),
+            op.apply_plain(IntegerType::U16, &[a.into(), b.into()]),
+            "{op:?}({a}, {b})"
+        );
         // Only the result is kept once a job has finished.
         assert!(env.jobs.read_inputs(id, 2).is_err());
     }
@@ -763,11 +778,218 @@ async fn params_endpoint_describes_what_clients_must_match() {
     let params: Value = test::call_and_read_body_json(&app, req).await;
     assert_eq!(params["tfhe_version"], TFHE_VERSION);
     assert_eq!(params["integer_type"], "FheUint16");
-    assert_eq!(
-        params["operations"],
-        json!(["add", "subtract", "multiply", "min", "max"])
-    );
+    assert_eq!(params["operations"], json!(Operation::ALL));
+    assert_eq!(params["integer_types"], json!(IntegerType::ALL));
     assert_eq!(params["max_keys_per_user"], env.config.max_keys_per_user);
+    assert_eq!(params["proofs"]["crs_sha256"], env.crs.sha256);
+
+    // The CRS is served as advertised, and revalidates by its ETag.
+    let resp = test::call_service(
+        &app,
+        test::TestRequest::get().uri("/api/v1/he/crs").to_request(),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let etag = resp
+        .headers()
+        .get("etag")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(etag, format!("\"{}\"", env.crs.sha256));
+    let bytes = test::read_body(resp).await;
+    assert_eq!(bytes.as_ref(), env.crs.bytes.as_slice());
+    heaas_sdk::fhe::crs_from_bytes(&bytes).unwrap();
+    let req = test::TestRequest::get()
+        .uri("/api/v1/he/crs")
+        .insert_header(("If-None-Match", etag))
+        .to_request();
+    assert_eq!(
+        test::call_service(&app, req).await.status(),
+        StatusCode::NOT_MODIFIED
+    );
+}
+
+async fn upload_public_key(
+    app: &impl Service<actix_http::Request, Response = ServiceResponse, Error = actix_web::Error>,
+    token: &str,
+    key_id: &str,
+    body: &[u8],
+) -> ServiceResponse {
+    let req = test::TestRequest::put()
+        .uri(&format!("/api/v1/keys/{key_id}/public-key"))
+        .insert_header(("Authorization", token))
+        .insert_header(("Content-Type", "application/octet-stream"))
+        .set_payload(body.to_vec())
+        .to_request();
+    test::call_service(app, req).await
+}
+
+/// Submits a job, waits for it and decrypts its result as its `result_type`.
+async fn run_job(
+    app: &impl Service<actix_http::Request, Response = ServiceResponse, Error = actix_web::Error>,
+    token: &str,
+    body: Value,
+) -> PlainValue {
+    let id = queue_job(app, token, body).await;
+    let done = wait_for_job(app, token, &id).await;
+    assert_eq!(done["status"], "completed", "{done}");
+    let resp = get(app, token, &format!("/api/v1/compute/jobs/{id}/result")).await;
+    let result_type: ValueType = serde_json::from_value(done["result_type"].clone()).unwrap();
+    heaas_sdk::fhe::decrypt_as(client_key(), result_type, &test::read_body(resp).await).unwrap()
+}
+
+fn ciphertexts(ty: IntegerType, values: &[i128]) -> Vec<String> {
+    values
+        .iter()
+        .map(|&v| STANDARD.encode(heaas_sdk::fhe::encrypt_as(client_key(), ty, v).unwrap()))
+        .collect()
+}
+
+#[actix_web::test]
+async fn typed_jobs_take_scalars_and_sums_and_report_result_types() {
+    let env = TestEnv::new().await;
+    let app = env.app().await;
+    let alice = env.user("alice").await;
+    let key_id = register_key(&app, &alice).await;
+
+    // A signed comparison with a scalar: the result is an encrypted boolean.
+    let lt = json!({ "key_id": key_id, "operation": "lt", "integer_type": "i32",
+                     "inputs": ciphertexts(IntegerType::I32, &[-5]), "scalar": "-4" });
+    assert_eq!(run_job(&app, &alice, lt).await, PlainValue::Bool(true));
+
+    // A sum that wraps around.
+    let sum = json!({ "key_id": key_id, "operation": "sum", "integer_type": "u8",
+                      "inputs": ciphertexts(IntegerType::U8, &[200, 100, 1, 2, 3]) });
+    assert_eq!(run_job(&app, &alice, sum).await, PlainValue::Int(50));
+
+    let page: Value = test::read_body_json(get(&app, &alice, "/api/v1/compute/jobs").await).await;
+    let (sum_job, lt_job) = (&page["data"][0], &page["data"][1]);
+    assert_eq!(
+        (
+            &lt_job["result_type"],
+            &lt_job["scalar"],
+            &lt_job["input_count"]
+        ),
+        (&json!("bool"), &json!("-4"), &json!(1))
+    );
+    assert_eq!(
+        (&sum_job["integer_type"], &sum_job["input_count"]),
+        (&json!("u8"), &json!(5))
+    );
+
+    // Shapes the server refuses before queuing anything.
+    let one = ciphertexts(IntegerType::U8, &[1]);
+    for (body, why) in [
+        (
+            json!({ "key_id": key_id, "operation": "add", "integer_type": "u8", "inputs": one, "scalar": "256" }),
+            "scalar out of range",
+        ),
+        (
+            json!({ "key_id": key_id, "operation": "add", "integer_type": "u8", "inputs": one }),
+            "one input, no scalar",
+        ),
+        (
+            json!({ "key_id": key_id, "operation": "sum", "integer_type": "u8", "inputs": one }),
+            "sum of one",
+        ),
+        (
+            json!({ "key_id": key_id, "operation": "sum", "integer_type": "u8", "inputs": [one[0], one[0]], "scalar": "1" }),
+            "sum with a scalar",
+        ),
+        (
+            json!({ "key_id": key_id, "operation": "add", "integer_type": "u8", "inputs": one, "proven_inputs": "AAAA" }),
+            "both kinds of input",
+        ),
+        (
+            json!({ "key_id": key_id, "operation": "add", "integer_type": "u8" }),
+            "no inputs",
+        ),
+        (
+            json!({ "key_id": key_id, "operation": "add", "proven_inputs": "bm90IGEgbGlzdA==" }),
+            "a malformed proven list",
+        ),
+    ] {
+        let resp = submit_job(&app, &alice, body).await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "{why}");
+    }
+    let resp = submit_job(
+        &app,
+        &alice,
+        json!({ "key_id": key_id, "operation": "add", "integer_type": "u128", "inputs": one }),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+    // Ciphertexts of another type than declared fail the job, not the server.
+    let wrong = json!({ "key_id": key_id, "operation": "add", "integer_type": "u16",
+                        "inputs": ciphertexts(IntegerType::U8, &[1, 2]) });
+    let id = queue_job(&app, &alice, wrong).await;
+    let done = wait_for_job(&app, &alice, &id).await;
+    assert_eq!(done["status"], "failed");
+    assert!(
+        done["error_message"]
+            .as_str()
+            .unwrap()
+            .contains("FheUint16"),
+        "{done}"
+    );
+}
+
+#[actix_web::test]
+async fn proven_inputs_need_the_public_key_and_a_valid_proof() {
+    let env = TestEnv::new().await;
+    let app = env.app().await;
+    let alice = env.user("alice").await;
+    let key_id = register_key(&app, &alice).await;
+    // Proofs are checked against the uploaded public key: prove with that one.
+    let public_key = crate::crypto::keys::test_support::public_key();
+    let prove = |key: &str, values: &[i128]| {
+        STANDARD.encode(
+            heaas_sdk::fhe::prove(public_key, &env.crs.crs, key, IntegerType::I16, values).unwrap(),
+        )
+    };
+    let body = |list: String| json!({ "key_id": key_id, "operation": "multiply", "integer_type": "i16", "proven_inputs": list });
+
+    // Without the public key the server cannot check the proof.
+    let resp = submit_job(&app, &alice, body(prove(&key_id, &[-3, 7]))).await;
+    assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+    let resp = upload_public_key(&app, &alice, &key_id, b"not a key").await;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let resp = upload_public_key(&app, &alice, &key_id, public_key_bytes()).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let info: Value = test::read_body_json(resp).await;
+    assert_eq!(
+        (&info["supports_proofs"], &info["has_public_key"]),
+        (&json!(true), &json!(true))
+    );
+    let mallory = env.user("mallory").await;
+    let resp = upload_public_key(&app, &mallory, &key_id, public_key_bytes()).await;
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+
+    assert_eq!(
+        run_job(&app, &alice, body(prove(&key_id, &[-3, 7]))).await,
+        PlainValue::Int(-21)
+    );
+
+    // A proof bound to another key id is refused when the job runs.
+    let other = prove(&uuid::Uuid::new_v4().to_string(), &[1, 2]);
+    let id = queue_job(&app, &alice, body(other)).await;
+    let done = wait_for_job(&app, &alice, &id).await;
+    assert_eq!(done["status"], "failed");
+    assert!(
+        done["error_message"].as_str().unwrap().contains("proof"),
+        "{done}"
+    );
+
+    // A list of another type is refused at submission.
+    let u8_list = STANDARD.encode(
+        heaas_sdk::fhe::prove(public_key, &env.crs.crs, &key_id, IntegerType::U8, &[1, 2]).unwrap(),
+    );
+    let resp = submit_job(&app, &alice, body(u8_list)).await;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 }
 
 #[actix_web::test]
@@ -967,16 +1189,63 @@ async fn the_sdk_runs_the_whole_flow_against_a_live_server() {
         fhe::encrypt(secret, 7).unwrap(),
     );
     for op in Operation::ALL {
-        let result = client
-            .compute(&key.id, op, &a, &b, Duration::from_secs(300))
+        let request = heaas_core::api::CreateJobRequest {
+            key_id: key.id.clone(),
+            operation: op,
+            integer_type: IntegerType::U16,
+            inputs: vec![heaas_sdk::encode(&a), heaas_sdk::encode(&b)],
+            proven_inputs: None,
+            scalar: None,
+        };
+        let (job, result) = client
+            .compute_job(&request, Duration::from_secs(300))
             .await
             .unwrap();
         assert_eq!(
-            fhe::decrypt(secret, &result).unwrap(),
-            op.apply_plain(300, 7),
+            fhe::decrypt_as(secret, job.result_type, &result).unwrap(),
+            op.apply_plain(IntegerType::U16, &[300, 7]),
             "{op}"
         );
     }
+    let result = client
+        .compute(
+            &key.id,
+            Operation::Multiply,
+            &a,
+            &b,
+            Duration::from_secs(300),
+        )
+        .await
+        .unwrap();
+    assert_eq!(fhe::decrypt(secret, &result).unwrap(), 2100);
+
+    // Proven inputs: the public key, the server's CRS, a proof bound to the key
+    // and made with the public key that was uploaded.
+    let public_key = fhe::public_key(secret);
+    let with_public_key = client
+        .upload_public_key(&key.id, fhe::public_key_bytes(&public_key).unwrap())
+        .await
+        .unwrap();
+    assert!(with_public_key.has_public_key);
+    let crs = client.crs().await.unwrap();
+    let list = fhe::prove(&public_key, &crs, &key.id, IntegerType::U64, &[1, 2, 3]).unwrap();
+    let request = heaas_core::api::CreateJobRequest {
+        key_id: key.id.clone(),
+        operation: Operation::Sum,
+        integer_type: IntegerType::U64,
+        inputs: Vec::new(),
+        proven_inputs: Some(heaas_sdk::encode(&list)),
+        scalar: None,
+    };
+    let (job, result) = client
+        .compute_job(&request, Duration::from_secs(300))
+        .await
+        .unwrap();
+    assert!(job.proven);
+    assert_eq!(
+        fhe::decrypt_as(secret, job.result_type, &result).unwrap(),
+        PlainValue::Int(6)
+    );
 
     // A resubmission with the same idempotency key is the same job.
     let first = client
@@ -999,7 +1268,7 @@ async fn the_sdk_runs_the_whole_flow_against_a_live_server() {
         .list_jobs(page.next_cursor.as_deref(), None)
         .await
         .unwrap();
-    assert_eq!(page.data.len() + rest.data.len(), Operation::ALL.len() + 1);
+    assert_eq!(page.data.len() + rest.data.len(), Operation::ALL.len() + 3);
 
     // Errors arrive typed, with the envelope's code.
     let missing = client

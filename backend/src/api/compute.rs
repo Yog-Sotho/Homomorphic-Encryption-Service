@@ -9,11 +9,14 @@
 //! `GET /jobs/{id}/result`.
 
 use crate::config::Config;
-use crate::crypto::params::MAX_CIPHERTEXT_BYTES;
+use crate::crypto::eval::proven_input_count;
+use crate::crypto::params::{
+    MAX_CIPHERTEXT_BYTES, MAX_INPUTS, MAX_JOB_INPUT_BYTES, MAX_PROVEN_LIST_BYTES,
+};
+use crate::crypto::proofs::Crs;
 use crate::errors::AppError;
 use crate::jobs::store::JobStore;
 use crate::jobs::worker::JobNotifier;
-use crate::jobs::INPUT_COUNT;
 use crate::middleware::quota::{consume_compute_quota, refund_compute_quota, QuotaCharge};
 use actix_web::{http::header, web, HttpRequest, HttpResponse, Responder};
 use base64::{engine::general_purpose, Engine as _};
@@ -25,16 +28,23 @@ use std::sync::Arc;
 use utoipa::IntoParams;
 use uuid::Uuid;
 
+const fn b64_len(bytes: u64) -> usize {
+    (bytes as usize).div_ceil(3) * 4
+}
+
 /// Base64 length of the largest accepted ciphertext.
-pub const MAX_INPUT_B64_LEN: usize = (MAX_CIPHERTEXT_BYTES as usize).div_ceil(3) * 4;
-/// Largest accepted `POST /jobs` body: the inputs plus room for the other fields.
-pub const MAX_SUBMIT_BODY_BYTES: usize = INPUT_COUNT * MAX_INPUT_B64_LEN + 64 * 1024;
+pub const MAX_INPUT_B64_LEN: usize = b64_len(MAX_CIPHERTEXT_BYTES);
+const MAX_PROVEN_B64_LEN: usize = b64_len(MAX_PROVEN_LIST_BYTES);
+/// Largest accepted `POST /jobs` body: the inputs (each base64-encoded, in
+/// quotes and comma-separated) plus room for the other fields.
+pub const MAX_SUBMIT_BODY_BYTES: usize = b64_len(MAX_JOB_INPUT_BYTES) + MAX_INPUTS * 3 + 64 * 1024;
 
 const IDEMPOTENCY_KEY: &str = "Idempotency-Key";
 const MAX_IDEMPOTENCY_KEY_LEN: usize = 255;
 
-const SUMMARY_COLUMNS: &str = "id, status, operation, key_id, attempts, error_message, \
-     input_bytes, result_bytes, created_at, started_at, finished_at";
+const SUMMARY_COLUMNS: &str = "id, status, operation, integer_type, result_type, input_count, \
+     proven, scalar, key_id, attempts, error_message, input_bytes, result_bytes, created_at, \
+     started_at, finished_at";
 
 /// How long a client should wait before retrying a submission refused for load.
 const RETRY_FULL_QUEUE_SECS: u64 = 10;
@@ -43,30 +53,103 @@ const RETRY_USER_LIMIT_SECS: u64 = 5;
 const DEFAULT_PAGE_SIZE: u32 = 20;
 const MAX_PAGE_SIZE: u32 = 100;
 
-/// Checks the request shape and decodes the inputs (ciphertext validity is
-/// checked later against the caller's key).
-fn decode_inputs(inputs: &[String]) -> Result<Vec<Vec<u8>>, AppError> {
-    if inputs.len() != INPUT_COUNT {
+fn decode_b64(input: &str, limit: usize, which: &str, max_bytes: u64) -> Result<Vec<u8>, AppError> {
+    if input.len() > limit {
         return Err(AppError::bad_request(format!(
-            "Expected exactly {INPUT_COUNT} inputs, got {}",
+            "{which} is larger than the {max_bytes}-byte limit"
+        )));
+    }
+    general_purpose::STANDARD
+        .decode(input)
+        .map_err(|_| AppError::bad_request(format!("{which} is not valid base64")))
+}
+
+/// Decodes the ciphertext inputs, enforcing the count and size limits
+/// (ciphertext validity is checked later against the caller's key).
+fn decode_inputs(inputs: &[String]) -> Result<Vec<Vec<u8>>, AppError> {
+    if inputs.len() > MAX_INPUTS {
+        return Err(AppError::bad_request(format!(
+            "At most {MAX_INPUTS} inputs, got {}",
             inputs.len()
         )));
     }
-    inputs
+    let decoded = inputs
         .iter()
         .enumerate()
         .map(|(i, input)| {
-            if input.len() > MAX_INPUT_B64_LEN {
-                return Err(AppError::bad_request(format!(
-                    "Input {} is larger than the {MAX_CIPHERTEXT_BYTES}-byte ciphertext limit",
-                    i + 1
-                )));
-            }
-            general_purpose::STANDARD
-                .decode(input)
-                .map_err(|_| AppError::bad_request(format!("Input {} is not valid base64", i + 1)))
+            decode_b64(
+                input,
+                MAX_INPUT_B64_LEN,
+                &format!("Input {}", i + 1),
+                MAX_CIPHERTEXT_BYTES,
+            )
         })
-        .collect()
+        .collect::<Result<Vec<_>, _>>()?;
+    let total: usize = decoded.iter().map(Vec::len).sum();
+    if total as u64 > MAX_JOB_INPUT_BYTES {
+        return Err(AppError::bad_request(format!(
+            "The inputs are larger than the {MAX_JOB_INPUT_BYTES}-byte limit per job"
+        )));
+    }
+    Ok(decoded)
+}
+
+/// A submission whose shape has been checked, ready to be stored.
+struct Checked {
+    /// The files to store: one per ciphertext, or the proven list.
+    files: Vec<Vec<u8>>,
+    input_count: usize,
+    proven: bool,
+    /// Normalized decimal scalar.
+    scalar: Option<String>,
+}
+
+/// Checks everything about a submission that does not need the caller's key:
+/// input encoding and limits, the operand shape and the scalar's range.
+async fn check_request(req: &CreateJobRequest, crs: &web::Data<Crs>) -> Result<Checked, AppError> {
+    let ty = req.integer_type;
+    let scalar = req
+        .scalar
+        .as_deref()
+        .map(|s| ty.parse_value(s).map(|v| v.to_string()))
+        .transpose()
+        .map_err(|e| AppError::bad_request(format!("Invalid scalar: {e}")))?;
+    let (files, input_count, proven) = match (&req.proven_inputs, req.inputs.is_empty()) {
+        (Some(_), false) => {
+            return Err(AppError::bad_request(
+                "Send either inputs or proven_inputs, not both",
+            ))
+        }
+        (None, true) => return Err(AppError::bad_request("The job has no inputs")),
+        (None, false) => {
+            let files = decode_inputs(&req.inputs)?;
+            let count = files.len();
+            (files, count, false)
+        }
+        (Some(list), true) => {
+            let list = decode_b64(
+                list,
+                MAX_PROVEN_B64_LEN,
+                "proven_inputs",
+                MAX_PROVEN_LIST_BYTES,
+            )?;
+            let crs = crs.clone();
+            let (count, list) = web::block(move || (proven_input_count(&list, &crs.crs, ty), list))
+                .await
+                .map_err(|e| AppError::internal(format!("checking proven inputs: {e}")))?;
+            let count = count.map_err(|e| AppError::bad_request(e.to_string()))?;
+            (vec![list], count, true)
+        }
+    };
+    req.operation
+        .check_operands(input_count, scalar.is_some())
+        .map_err(AppError::bad_request)?;
+    Ok(Checked {
+        files,
+        input_count,
+        proven,
+        scalar,
+    })
 }
 
 /// The optional `Idempotency-Key` header: 1–255 visible ASCII characters.
@@ -87,12 +170,12 @@ fn idempotency_key(req: &HttpRequest) -> Result<Option<String>, AppError> {
 }
 
 /// Identifies a submission, so a reused idempotency key can be told apart from
-/// a retry of the same request.
-fn request_fingerprint(key_id: &str, operation: &str, inputs: &[Vec<u8>]) -> String {
+/// a retry of the same request: every field (length-prefixed) and every input.
+fn request_fingerprint(fields: &[&str], inputs: &[Vec<u8>]) -> String {
     let mut hasher = Sha256::new();
-    for part in [key_id.as_bytes(), operation.as_bytes()] {
+    for part in fields {
         hasher.update((part.len() as u64).to_be_bytes());
-        hasher.update(part);
+        hasher.update(part.as_bytes());
     }
     for input in inputs {
         hasher.update(Sha256::digest(input));
@@ -170,6 +253,7 @@ struct NewJob<'a> {
     id: &'a str,
     user_id: &'a str,
     request: &'a CreateJobRequest,
+    checked: &'a Checked,
     input_bytes: usize,
     idempotency_key: Option<&'a str>,
     fingerprint: &'a str,
@@ -179,9 +263,10 @@ struct NewJob<'a> {
 /// capacity checks and the insert are one statement, so they cannot race.
 async fn enqueue(pool: &SqlitePool, config: &Config, job: &NewJob<'_>) -> Result<(), Refusal> {
     let inserted: Option<(String,)> = sqlx::query_as(
-        "INSERT INTO jobs (id, user_id, status, input_data_b64, operation, key_id,
+        "INSERT INTO jobs (id, user_id, status, input_data_b64, operation, integer_type,
+                           result_type, input_count, proven, scalar, key_id,
                            input_bytes, idempotency_key, request_sha256)
-         SELECT ?, ?, 'pending', '', ?, ?, ?, ?, ?
+         SELECT ?, ?, 'pending', '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
          WHERE (SELECT COUNT(*) FROM jobs WHERE status IN ('pending', 'processing')) < ?
            AND (SELECT COUNT(*) FROM jobs
                 WHERE user_id = ? AND status IN ('pending', 'processing')) < ?
@@ -190,6 +275,11 @@ async fn enqueue(pool: &SqlitePool, config: &Config, job: &NewJob<'_>) -> Result
     .bind(job.id)
     .bind(job.user_id)
     .bind(job.request.operation.as_str())
+    .bind(job.request.integer_type)
+    .bind(job.request.operation.result_type(job.request.integer_type))
+    .bind(job.checked.input_count as i64)
+    .bind(job.checked.proven)
+    .bind(&job.checked.scalar)
     .bind(&job.request.key_id)
     .bind(job.input_bytes as i64)
     .bind(job.idempotency_key)
@@ -234,12 +324,12 @@ async fn abandon(
     let _ = web::block(move || jobs.remove_logged(&job_id)).await;
 }
 
-/// `POST /api/v1/compute/jobs` — queue `operation(inputs[0], inputs[1])`.
+/// `POST /api/v1/compute/jobs` — queue `operation` on the encrypted inputs.
 ///
 /// Honours an `Idempotency-Key` header: resending the same request with the same
 /// key returns the original job (with `Idempotent-Replayed: true`) instead of
 /// queuing and charging a second one.
-#[utoipa::path(post, path = "/compute/jobs", tag = "jobs", security(("bearer" = [])), request_body = heaas_core::api::CreateJobRequest, params(("Idempotency-Key" = Option<String>, Header, description = "1-255 visible ASCII characters. A retry with the same key and body returns the original job instead of queuing (and charging) another.")), responses((status = 202, description = "Queued (or, for a replayed idempotency key, the original job)", body = heaas_core::api::JobSummary, headers(("Location" = String, description = "The job"), ("Idempotent-Replayed" = bool, description = "`true` when this is the original job of a reused key"))), (status = 400, description = "Wrong number of inputs, bad base64 or a bad Idempotency-Key", body = heaas_core::api::ErrorBody), (status = 404, description = "No such server key", body = heaas_core::api::ErrorBody), (status = 413, description = "Body too large", body = heaas_core::api::ErrorBody), (status = 422, description = "Unknown operation, or the Idempotency-Key was used for a different request", body = heaas_core::api::ErrorBody), (status = 429, description = "Daily quota used up, or too many jobs waiting; see `Retry-After`", body = heaas_core::api::ErrorBody), (status = 503, description = "The queue is full; see `Retry-After`", body = heaas_core::api::ErrorBody)))]
+#[utoipa::path(post, path = "/compute/jobs", tag = "jobs", security(("bearer" = [])), request_body = heaas_core::api::CreateJobRequest, params(("Idempotency-Key" = Option<String>, Header, description = "1-255 visible ASCII characters. A retry with the same key and body returns the original job instead of queuing (and charging) another.")), responses((status = 202, description = "Queued (or, for a replayed idempotency key, the original job)", body = heaas_core::api::JobSummary, headers(("Location" = String, description = "The job"), ("Idempotent-Replayed" = bool, description = "`true` when this is the original job of a reused key"))), (status = 400, description = "Wrong number or shape of inputs, bad base64, a malformed proven list, a scalar out of range, or a bad Idempotency-Key", body = heaas_core::api::ErrorBody), (status = 404, description = "No such server key", body = heaas_core::api::ErrorBody), (status = 413, description = "Body too large", body = heaas_core::api::ErrorBody), (status = 422, description = "Unknown operation or type; proven inputs for a key without proof support or public key; or the Idempotency-Key was used for a different request", body = heaas_core::api::ErrorBody), (status = 429, description = "Daily quota used up, or too many jobs waiting; see `Retry-After`", body = heaas_core::api::ErrorBody), (status = 503, description = "The queue is full; see `Retry-After`", body = heaas_core::api::ErrorBody)))]
 pub async fn submit_job(
     pool: web::Data<SqlitePool>,
     config: web::Data<Arc<Config>>,
@@ -252,20 +342,51 @@ pub async fn submit_job(
     let req = req.into_inner();
     let user_id = user_id.into_inner();
     let pool = pool.get_ref();
-    let inputs = decode_inputs(&req.inputs)?;
     let idempotency_key = idempotency_key(&http)?;
+    // From the app data rather than as an extractor: handlers stay under
+    // clippy's argument limit.
+    let crs = http
+        .app_data::<web::Data<Crs>>()
+        .ok_or_else(|| AppError::internal("the proof CRS is not configured"))?;
+    let checked = check_request(&req, crs).await?;
 
-    let owns_key: Option<(String,)> =
-        sqlx::query_as("SELECT id FROM server_keys WHERE id = ? AND user_id = ?")
-            .bind(&req.key_id)
-            .bind(&user_id)
-            .fetch_optional(pool)
-            .await?;
-    if owns_key.is_none() {
+    let key: Option<(bool, bool)> = sqlx::query_as(
+        "SELECT supports_proofs, public_key_sha256 IS NOT NULL FROM server_keys
+         WHERE id = ? AND user_id = ?",
+    )
+    .bind(&req.key_id)
+    .bind(&user_id)
+    .fetch_optional(pool)
+    .await?;
+    let Some((supports_proofs, has_public_key)) = key else {
         return Err(AppError::not_found("Server key not found"));
+    };
+    if checked.proven && !supports_proofs {
+        return Err(AppError::unprocessable(
+            "This server key cannot take proven inputs: it was made before HE Engine 0.5. \
+             Create a new key to use them.",
+        ));
+    }
+    if checked.proven && !has_public_key {
+        return Err(AppError::unprocessable(
+            "Upload this key's public key (PUT /api/v1/keys/{id}/public-key) before sending proven inputs",
+        ));
     }
 
-    let fingerprint = request_fingerprint(&req.key_id, req.operation.as_str(), &inputs);
+    let fingerprint = request_fingerprint(
+        &[
+            &req.key_id,
+            req.operation.as_str(),
+            req.integer_type.as_str(),
+            if checked.proven {
+                "proven"
+            } else {
+                "ciphertexts"
+            },
+            checked.scalar.as_deref().unwrap_or(""),
+        ],
+        &checked.files,
+    );
     if let Some(key) = &idempotency_key {
         if let Some(response) = replay(pool, &user_id, key, &fingerprint).await? {
             return Ok(response);
@@ -276,10 +397,10 @@ pub async fn submit_job(
     let charge = consume_compute_quota(pool, &user_id, config.daily_compute_quota).await?;
 
     let job_id = Uuid::new_v4().to_string();
-    let input_bytes = inputs.iter().map(Vec::len).sum();
+    let input_bytes = checked.files.iter().map(Vec::len).sum();
     let stored = {
-        let (jobs, job_id) = (jobs.clone(), job_id.clone());
-        web::block(move || jobs.write_inputs(&job_id, &inputs)).await
+        let (jobs, job_id, files) = (jobs.clone(), job_id.clone(), checked.files.clone());
+        web::block(move || jobs.write_inputs(&job_id, &files)).await
     };
     if !matches!(stored, Ok(Ok(()))) {
         abandon(pool, &jobs, &user_id, &charge, job_id).await;
@@ -293,6 +414,7 @@ pub async fn submit_job(
         id: &job_id,
         user_id: &user_id,
         request: &req,
+        checked: &checked,
         input_bytes,
         idempotency_key: idempotency_key.as_deref(),
         fingerprint: &fingerprint,
@@ -341,8 +463,9 @@ pub async fn get_job_status(
 }
 
 /// `GET /api/v1/compute/jobs/{id}/result` — the encrypted result as
-/// `application/octet-stream` (a `safe_serialize`d `FheUint16`).
-#[utoipa::path(get, path = "/compute/jobs/{id}/result", tag = "jobs", security(("bearer" = [])), params(("id" = String, Path, description = "Job id")), responses((status = 200, description = "The encrypted result: a `safe_serialize`d `FheUint16`", body = inline(crate::api::openapi::Binary), content_type = "application/octet-stream"), (status = 404, description = "No such job", body = heaas_core::api::ErrorBody), (status = 409, description = "The job has not completed", body = heaas_core::api::ErrorBody)))]
+/// `application/octet-stream`: a `safe_serialize`d ciphertext of the job's
+/// `result_type` (`FheBool` for comparisons).
+#[utoipa::path(get, path = "/compute/jobs/{id}/result", tag = "jobs", security(("bearer" = [])), params(("id" = String, Path, description = "Job id")), responses((status = 200, description = "The encrypted result: a `safe_serialize`d ciphertext of the job's `result_type` (e.g. `FheUint16`, or `FheBool` for comparisons)", body = inline(crate::api::openapi::Binary), content_type = "application/octet-stream"), (status = 404, description = "No such job", body = heaas_core::api::ErrorBody), (status = 409, description = "The job has not completed", body = heaas_core::api::ErrorBody)))]
 pub async fn get_job_result(
     pool: web::Data<SqlitePool>,
     jobs: web::Data<JobStore>,
@@ -516,28 +639,36 @@ mod tests {
     fn decode_inputs_enforces_count_size_and_encoding() {
         let ok = general_purpose::STANDARD.encode(b"ciphertext");
         assert_eq!(decode_inputs(&[ok.clone(), ok.clone()]).unwrap().len(), 2);
+        assert_eq!(
+            decode_inputs(&vec![ok.clone(); MAX_INPUTS]).unwrap().len(),
+            MAX_INPUTS
+        );
 
-        assert!(decode_inputs(std::slice::from_ref(&ok)).is_err());
-        assert!(decode_inputs(&[ok.clone(), ok.clone(), ok.clone()]).is_err());
+        assert!(decode_inputs(&vec![ok.clone(); MAX_INPUTS + 1]).is_err());
         assert!(decode_inputs(&[ok.clone(), "not base64!".into()]).is_err());
         assert!(decode_inputs(&[ok, "A".repeat(MAX_INPUT_B64_LEN + 4)]).is_err());
+
+        // Each input within its limit, but too much in total.
+        let big = general_purpose::STANDARD.encode(vec![0u8; MAX_CIPHERTEXT_BYTES as usize]);
+        assert!(decode_inputs(&vec![big; 10]).is_err());
     }
 
     #[test]
-    fn fingerprints_cover_key_operation_and_every_input() {
+    fn fingerprints_cover_every_field_and_input() {
         let inputs = [b"a".to_vec(), b"b".to_vec()];
-        let base = request_fingerprint("k", "add", &inputs);
-        assert_eq!(base, request_fingerprint("k", "add", &inputs));
-        assert_ne!(base, request_fingerprint("k2", "add", &inputs));
-        assert_ne!(base, request_fingerprint("k", "max", &inputs));
+        let base = request_fingerprint(&["k", "add", "u16"], &inputs);
+        assert_eq!(base, request_fingerprint(&["k", "add", "u16"], &inputs));
+        assert_ne!(base, request_fingerprint(&["k2", "add", "u16"], &inputs));
+        assert_ne!(base, request_fingerprint(&["k", "max", "u16"], &inputs));
+        assert_ne!(base, request_fingerprint(&["k", "add", "i16"], &inputs));
         assert_ne!(
             base,
-            request_fingerprint("k", "add", &[b"b".to_vec(), b"a".to_vec()])
+            request_fingerprint(&["k", "add", "u16"], &[b"b".to_vec(), b"a".to_vec()])
         );
         // Length prefixes keep field boundaries unambiguous.
         assert_ne!(
-            request_fingerprint("ka", "dd", &inputs),
-            request_fingerprint("k", "add", &inputs)
+            request_fingerprint(&["ka", "dd", "u16"], &inputs),
+            request_fingerprint(&["k", "add", "u16"], &inputs)
         );
     }
 
@@ -547,6 +678,11 @@ mod tests {
             id: Uuid::new_v4().to_string(),
             status: JobStatus::Completed,
             operation: heaas_core::Operation::Add,
+            integer_type: heaas_core::IntegerType::U16,
+            result_type: heaas_core::ValueType::U16,
+            input_count: 2,
+            proven: false,
+            scalar: None,
             key_id: None,
             attempts: 1,
             error_message: None,

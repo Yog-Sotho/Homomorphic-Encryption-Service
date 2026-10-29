@@ -2,7 +2,7 @@
 //!
 //! Timestamps are UTC without an offset (`2026-10-27T10:00:00`).
 
-use crate::Operation;
+use crate::{IntegerType, Operation, ValueType};
 use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
 
@@ -79,15 +79,49 @@ pub struct HeParams {
     /// Clients must use exactly this TFHE-rs release.
     #[cfg_attr(feature = "openapi", schema(example = "1.8.2"))]
     pub tfhe_version: String,
-    #[cfg_attr(feature = "openapi", schema(example = "ConfigBuilder::default()"))]
+    #[cfg_attr(
+        feature = "openapi",
+        schema(
+            example = "ConfigBuilder::default() + PARAM_PKE_MESSAGE_2_CARRY_2_KS_PBS_TUNIFORM_2M128"
+        )
+    )]
     pub config: String,
+    /// The TFHE-rs type of the default `integer_type` (`u16`).
     #[cfg_attr(feature = "openapi", schema(example = "FheUint16"))]
     pub integer_type: String,
+    /// The default type's plaintext modulus (2^16).
     pub plaintext_modulus: u64,
+    /// Every type a job can compute on (absent before HE Engine 0.5: `u16` only).
+    #[serde(default)]
+    pub integer_types: Vec<IntegerType>,
     pub operations: Vec<Operation>,
     pub max_ciphertext_bytes: u64,
+    /// Most encrypted inputs one job takes (a `sum`).
+    #[serde(default)]
+    pub max_inputs: usize,
+    /// Most input bytes one job takes, all inputs together.
+    #[serde(default)]
+    pub max_job_input_bytes: u64,
     pub max_server_key_bytes: u64,
     pub max_keys_per_user: i64,
+    /// Absent on servers before HE Engine 0.5, which take no proven inputs.
+    #[serde(default)]
+    pub proofs: Option<ProofParams>,
+}
+
+/// How to send zero-knowledge-proven inputs.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(ToSchema))]
+pub struct ProofParams {
+    /// Lower-case hex SHA-256 of the CRS served at `GET /api/v1/he/crs`.
+    pub crs_sha256: String,
+    /// Most plaintext bits one proven list may hold.
+    pub max_bits: usize,
+    pub max_list_bytes: u64,
+    pub max_public_key_bytes: u64,
+    /// Proofs are made with metadata `<metadata_prefix><key id>`.
+    #[cfg_attr(feature = "openapi", schema(example = "he-engine/proof/v1/"))]
+    pub metadata_prefix: String,
 }
 
 // ── Accounts ────────────────────────────────────────────────────────────────
@@ -132,6 +166,15 @@ pub struct ServerKeyInfo {
     pub sha256: String,
     pub size_bytes: i64,
     pub created_at: NaiveDateTime,
+    /// The key was made with the compact-public-key parameters, so it can take
+    /// proven inputs once its public key is uploaded. Keys from before HE Engine
+    /// 0.5 cannot.
+    #[serde(default)]
+    pub supports_proofs: bool,
+    /// The matching compact public key has been uploaded
+    /// (`PUT /api/v1/keys/{id}/public-key`).
+    #[serde(default)]
+    pub has_public_key: bool,
 }
 
 // ── Jobs ────────────────────────────────────────────────────────────────────
@@ -168,16 +211,32 @@ impl std::fmt::Display for JobStatus {
     }
 }
 
-/// `POST /api/v1/compute/jobs`: compute `operation(inputs[0], inputs[1])`.
+/// `POST /api/v1/compute/jobs`: compute `operation` on encrypted inputs.
+///
+/// The inputs are either `inputs` (one ciphertext each) or `proven_inputs` (one
+/// zero-knowledge-proven list holding all of them), never both. Binary operations
+/// take two inputs, or one input and a `scalar`; `sum` takes 2 to `max_inputs`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(ToSchema))]
 pub struct CreateJobRequest {
     /// One of the caller's registered server keys.
     pub key_id: String,
     pub operation: Operation,
-    /// Standard base64 of exactly two `safe_serialize`d `FheUint16` ciphertexts,
-    /// encrypted with the client key that belongs to `key_id`.
+    /// The inputs' type; `u16` if absent.
+    #[serde(default)]
+    pub integer_type: IntegerType,
+    /// Standard base64 of `safe_serialize`d ciphertexts of `integer_type` (e.g.
+    /// `FheUint16`), encrypted with the client key that belongs to `key_id`.
+    #[serde(default)]
     pub inputs: Vec<String>,
+    /// Standard base64 of one `safe_serialize`d `ProvenCompactCiphertextList`
+    /// encrypted under the key's public key, proven against the server's CRS with
+    /// metadata `he-engine/proof/v1/<key_id>`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proven_inputs: Option<String>,
+    /// A plaintext right-hand operand in decimal, e.g. `"-7"`. The server sees it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scalar: Option<String>,
 }
 
 /// A job as its owner sees it: metadata only, never ciphertexts.
@@ -188,6 +247,21 @@ pub struct JobSummary {
     pub id: String,
     pub status: JobStatus,
     pub operation: Operation,
+    // The defaults describe jobs from servers before HE Engine 0.5.
+    #[serde(default)]
+    pub integer_type: IntegerType,
+    /// The type to decrypt the result as: `bool` for comparisons.
+    #[serde(default = "default_result_type")]
+    pub result_type: ValueType,
+    /// Number of encrypted inputs.
+    #[serde(default = "default_input_count")]
+    pub input_count: i64,
+    /// The inputs were a zero-knowledge-proven list.
+    #[serde(default)]
+    pub proven: bool,
+    /// The plaintext right-hand operand, if the job has one.
+    #[serde(default)]
+    pub scalar: Option<String>,
     /// The server key the job is evaluated with; `None` once that key is deleted.
     pub key_id: Option<String>,
     /// Attempts started so far (internal errors are retried).
@@ -201,6 +275,14 @@ pub struct JobSummary {
     pub created_at: NaiveDateTime,
     pub started_at: Option<NaiveDateTime>,
     pub finished_at: Option<NaiveDateTime>,
+}
+
+fn default_result_type() -> ValueType {
+    ValueType::U16
+}
+
+fn default_input_count() -> i64 {
+    2
 }
 
 /// One page of `GET /api/v1/compute/jobs`, newest first.
@@ -219,7 +301,9 @@ mod tests {
     #[test]
     fn job_summaries_use_the_wire_names_clients_expect() {
         let json = serde_json::json!({
-            "id": "j", "status": "completed", "operation": "multiply", "key_id": null,
+            "id": "j", "status": "completed", "operation": "multiply",
+            "integer_type": "u16", "result_type": "u16", "input_count": 2,
+            "proven": false, "scalar": null, "key_id": null,
             "attempts": 1, "error_message": null, "input_bytes": 264000,
             "result_bytes": 132000, "created_at": "2026-10-27T10:00:00",
             "started_at": null, "finished_at": "2026-10-27T10:00:02"
@@ -231,6 +315,18 @@ mod tests {
         );
         assert!(job.status.is_finished());
         assert_eq!(serde_json::to_value(&job).unwrap(), json);
+    }
+
+    #[test]
+    fn job_requests_from_older_clients_default_to_u16_ciphertexts() {
+        let req: CreateJobRequest = serde_json::from_value(serde_json::json!({
+            "key_id": "k", "operation": "add", "inputs": ["YQ==", "Yg=="]
+        }))
+        .unwrap();
+        assert_eq!(req.integer_type, IntegerType::U16);
+        assert!(req.proven_inputs.is_none() && req.scalar.is_none());
+        let json = serde_json::to_value(&req).unwrap();
+        assert!(json.get("scalar").is_none() && json.get("proven_inputs").is_none());
     }
 
     #[test]

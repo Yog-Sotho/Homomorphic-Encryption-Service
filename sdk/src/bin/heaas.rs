@@ -2,15 +2,19 @@
 //!
 //! ```sh
 //! export HEAAS_URL=https://heaas.example.com HEAAS_EMAIL=you@example.com
-//! heaas keygen                      # heaas-client.key (secret, 0600) + heaas-server.key
+//! heaas keygen                      # heaas-client.key (secret, 0600), heaas-server.key, heaas-public.key
 //! heaas upload-key                  # prints the key id
-//! heaas run --key-id <id> --op multiply 300 300   # prints 24464
+//! heaas run --key-id <id> --op multiply 300 300               # prints 24464
+//! heaas run --key-id <id> --op lt --type i32 -- -5 3           # prints true
+//! heaas run --key-id <id> --op add --scalar 10 5               # 5 + 10 (10 sent in clear)
+//! heaas run --key-id <id> --op sum --type u8 --prove 1 2 3     # proven inputs
 //! ```
 //!
-//! Step by step: `encrypt`, `submit`, `wait`, `result`, `decrypt`.
+//! Step by step: `encrypt` (or `prove`), `submit`, `wait`, `result`, `decrypt`.
 
 use clap::{Parser, Subcommand};
-use heaas_sdk::{fhe, Client, Operation};
+use heaas_sdk::api::CreateJobRequest;
+use heaas_sdk::{encode, fhe, Client, IntegerType, Operation, PlainValue, ValueType};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
@@ -40,43 +44,79 @@ struct Cli {
     command: Command,
 }
 
+/// How a job's operands are given.
+#[derive(clap::Args)]
+struct Operands {
+    #[arg(long)]
+    key_id: String,
+    #[arg(long)]
+    op: Operation,
+    /// The inputs' type.
+    #[arg(long = "type", default_value = "u16")]
+    integer_type: IntegerType,
+    /// A plaintext right-hand operand (the server sees it).
+    #[arg(long, allow_hyphen_values = true)]
+    scalar: Option<String>,
+}
+
 #[derive(Subcommand)]
 enum Command {
-    /// Generate a key pair locally. Only the server key is ever uploaded.
+    /// Generate a key pair locally. Only the server and public keys are ever uploaded.
     Keygen {
         #[arg(long, default_value = "heaas-client.key")]
         client_key: PathBuf,
         #[arg(long, default_value = "heaas-server.key")]
         server_key: PathBuf,
+        #[arg(long, default_value = "heaas-public.key")]
+        public_key: PathBuf,
         /// Replace existing key files.
         #[arg(long)]
         force: bool,
     },
-    /// Register a compressed server key; prints its id.
+    /// Register a compressed server key (and its public key, if the file exists); prints its id.
     UploadKey {
         #[arg(long, default_value = "heaas-server.key")]
         server_key: PathBuf,
+        #[arg(long, default_value = "heaas-public.key")]
+        public_key: PathBuf,
     },
     /// List your registered server keys.
     Keys,
     /// Delete a registered server key.
     DeleteKey { key_id: String },
-    /// Encrypt a 16-bit unsigned integer into a ciphertext file.
+    /// Encrypt a value into a ciphertext file.
     Encrypt {
-        value: u16,
+        #[arg(allow_hyphen_values = true)]
+        value: String,
+        #[arg(long = "type", default_value = "u16")]
+        integer_type: IntegerType,
         #[arg(long, short)]
         out: PathBuf,
         #[arg(long, default_value = "heaas-client.key")]
         client_key: PathBuf,
     },
-    /// Queue `op(a, b)` on two ciphertext files; prints the job id.
-    Submit {
+    /// Encrypt values into one list with a proof that it is well formed, for `submit --proven`.
+    Prove {
         #[arg(long)]
         key_id: String,
-        #[arg(long)]
-        op: Operation,
-        a: PathBuf,
-        b: PathBuf,
+        #[arg(long = "type", default_value = "u16")]
+        integer_type: IntegerType,
+        #[arg(long, short)]
+        out: PathBuf,
+        /// The public key uploaded for `key_id`.
+        #[arg(long, default_value = "heaas-public.key")]
+        public_key: PathBuf,
+        #[arg(required = true, allow_hyphen_values = true)]
+        values: Vec<String>,
+    },
+    /// Queue a job on ciphertext files (or one proven list); prints the job id.
+    Submit {
+        #[command(flatten)]
+        operands: Operands,
+        /// A proven list from `heaas prove`, instead of ciphertext files.
+        #[arg(long, conflicts_with = "inputs")]
+        proven: Option<PathBuf>,
+        inputs: Vec<PathBuf>,
         /// Reuse to resubmit safely (the default is random).
         #[arg(long)]
         idempotency_key: Option<String>,
@@ -97,17 +137,23 @@ enum Command {
     /// Decrypt a ciphertext file; prints the value.
     Decrypt {
         ciphertext: PathBuf,
+        /// The ciphertext's type: a job's `result_type` (`bool` for comparisons).
+        #[arg(long = "type", default_value = "u16")]
+        value_type: ValueType,
         #[arg(long, default_value = "heaas-client.key")]
         client_key: PathBuf,
     },
-    /// Encrypt two values, compute `op(a, b)` on the server and decrypt the result.
+    /// Encrypt values, compute on the server and decrypt the result.
     Run {
+        #[command(flatten)]
+        operands: Operands,
+        /// Send the inputs as one proven list, made with the public key uploaded for the key.
         #[arg(long)]
-        key_id: String,
-        #[arg(long)]
-        op: Operation,
-        a: u16,
-        b: u16,
+        prove: bool,
+        #[arg(long, default_value = "heaas-public.key")]
+        public_key: PathBuf,
+        #[arg(required = true, allow_hyphen_values = true)]
+        values: Vec<String>,
         #[arg(long, default_value = "heaas-client.key")]
         client_key: PathBuf,
         /// Seconds.
@@ -171,29 +217,61 @@ fn print_json(value: &impl serde::Serialize) -> Outcome {
     Ok(())
 }
 
+fn parse_values(ty: IntegerType, values: &[String]) -> Result<Vec<i128>, String> {
+    values.iter().map(|v| ty.parse_value(v)).collect()
+}
+
+impl Operands {
+    fn request(&self, inputs: Vec<String>, proven_inputs: Option<String>) -> CreateJobRequest {
+        CreateJobRequest {
+            key_id: self.key_id.clone(),
+            operation: self.op,
+            integer_type: self.integer_type,
+            inputs,
+            proven_inputs,
+            scalar: self.scalar.clone(),
+        }
+    }
+}
+
 async fn run(cli: Cli) -> Outcome {
     match &cli.command {
         Command::Keygen {
             client_key,
             server_key,
+            public_key,
             force,
         } => {
-            refuse_overwrite(client_key, *force)?;
-            refuse_overwrite(server_key, *force)?;
+            for path in [client_key, server_key, public_key] {
+                refuse_overwrite(path, *force)?;
+            }
             eprintln!("Generating keys (this takes a while)…");
             let (secret, server) = fhe::generate_keys();
             fhe::save_client_key(client_key, &secret)?;
             fhe::write_private(server_key, &fhe::server_key_bytes(&server)?)?;
+            fhe::write_private(
+                public_key,
+                &fhe::public_key_bytes(&fhe::public_key(&secret))?,
+            )?;
             eprintln!(
-                "Secret key: {} (keep it; it cannot be recovered)\nServer key: {} (upload it with `heaas upload-key`)",
+                "Secret key: {} (keep it; it cannot be recovered)\nServer and public keys: {}, {} (upload them with `heaas upload-key`)",
                 client_key.display(),
-                server_key.display()
+                server_key.display(),
+                public_key.display()
             );
         }
-        Command::UploadKey { server_key } => {
+        Command::UploadKey {
+            server_key,
+            public_key,
+        } => {
             let client = signed_in(&cli).await?;
             client.check_compatible().await?;
             let info = client.upload_key(std::fs::read(server_key)?).await?;
+            if public_key.exists() && info.supports_proofs {
+                client
+                    .upload_public_key(&info.id, std::fs::read(public_key)?)
+                    .await?;
+            }
             println!("{}", info.id);
         }
         Command::Keys => {
@@ -204,24 +282,47 @@ async fn run(cli: Cli) -> Outcome {
         Command::DeleteKey { key_id } => signed_in(&cli).await?.delete_key(key_id).await?,
         Command::Encrypt {
             value,
+            integer_type,
             out,
             client_key,
         } => {
             let secret = fhe::load_client_key(client_key)?;
-            std::fs::write(out, fhe::encrypt(&secret, *value)?)?;
+            let value = integer_type.parse_value(value)?;
+            std::fs::write(out, fhe::encrypt_as(&secret, *integer_type, value)?)?;
+        }
+        Command::Prove {
+            key_id,
+            integer_type,
+            out,
+            public_key,
+            values,
+        } => {
+            let values = parse_values(*integer_type, values)?;
+            let public_key = fhe::public_key_from_bytes(&std::fs::read(public_key)?)?;
+            let crs = Client::new(&cli.url)?.crs().await?;
+            let list = fhe::prove(&public_key, &crs, key_id, *integer_type, &values)?;
+            std::fs::write(out, list)?;
         }
         Command::Submit {
-            key_id,
-            op,
-            a,
-            b,
+            operands,
+            proven,
+            inputs,
             idempotency_key,
         } => {
+            let request = match proven {
+                Some(path) => operands.request(Vec::new(), Some(encode(&std::fs::read(path)?))),
+                None => operands.request(
+                    inputs
+                        .iter()
+                        .map(|p| std::fs::read(p).map(|b| encode(&b)))
+                        .collect::<Result<_, _>>()?,
+                    None,
+                ),
+            };
             let client = signed_in(&cli).await?;
-            let (a, b) = (std::fs::read(a)?, std::fs::read(b)?);
             let job = match idempotency_key {
-                Some(key) => client.submit_idempotent(key_id, *op, &a, &b, key).await?,
-                None => client.submit(key_id, *op, &a, &b).await?,
+                Some(key) => client.submit_job_idempotent(&request, key).await?,
+                None => client.submit_job(&request).await?,
             };
             println!("{}", job.id);
         }
@@ -238,36 +339,63 @@ async fn run(cli: Cli) -> Outcome {
         }
         Command::Decrypt {
             ciphertext,
+            value_type,
             client_key,
         } => {
             let secret = fhe::load_client_key(client_key)?;
-            println!("{}", fhe::decrypt(&secret, &std::fs::read(ciphertext)?)?);
+            println!(
+                "{}",
+                fhe::decrypt_as(&secret, *value_type, &std::fs::read(ciphertext)?)?
+            );
         }
         Command::Run {
-            key_id,
-            op,
-            a,
-            b,
+            operands,
+            prove,
+            public_key,
+            values,
             client_key,
             timeout,
         } => {
+            let ty = operands.integer_type;
+            let values = parse_values(ty, values)?;
+            let scalar = operands
+                .scalar
+                .as_deref()
+                .map(|s| ty.parse_value(s))
+                .transpose()?;
+            operands.op.check_operands(values.len(), scalar.is_some())?;
             let secret = fhe::load_client_key(client_key)?;
             let client = signed_in(&cli).await?;
             client.check_compatible().await?;
-            let (ca, cb) = (fhe::encrypt(&secret, *a)?, fhe::encrypt(&secret, *b)?);
-            let result = client
-                .compute(key_id, *op, &ca, &cb, Duration::from_secs(*timeout))
+            let request = if *prove {
+                let public_key = fhe::public_key_from_bytes(&std::fs::read(public_key)?)?;
+                let crs = client.crs().await?;
+                let list = fhe::prove(&public_key, &crs, &operands.key_id, ty, &values)?;
+                operands.request(Vec::new(), Some(encode(&list)))
+            } else {
+                let inputs = values
+                    .iter()
+                    .map(|&v| fhe::encrypt_as(&secret, ty, v).map(|b| encode(&b)))
+                    .collect::<Result<_, _>>()?;
+                operands.request(inputs, None)
+            };
+            let (job, result) = client
+                .compute_job(&request, Duration::from_secs(*timeout))
                 .await?;
-            let value = fhe::decrypt(&secret, &result)?;
-            let expected = op.apply_plain(*a, *b);
+            let value = fhe::decrypt_as(&secret, job.result_type, &result)?;
+            let operands_plain: Vec<i128> = values.iter().copied().chain(scalar).collect();
+            let expected = operands.op.apply_plain(ty, &operands_plain);
             if value != expected {
                 return Err(format!(
-                    "decrypted {value}, but {op}({a}, {b}) is {expected}: the key id may not belong to {}",
+                    "decrypted {value}, but the expected result is {expected}: the key id may not belong to {}",
                     client_key.display()
                 )
                 .into());
             }
-            println!("{value}");
+            match value {
+                PlainValue::Bool(b) => println!("{b}"),
+                PlainValue::Int(v) => println!("{v}"),
+            }
         }
         Command::Jobs { limit, cursor } => {
             let page = signed_in(&cli)

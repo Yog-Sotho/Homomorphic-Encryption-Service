@@ -29,7 +29,7 @@ fn keys_are_made_locally_and_values_round_trip() {
     let d = dir.path();
 
     stdout(&heaas(d, &["keygen"]));
-    for file in ["heaas-client.key", "heaas-server.key"] {
+    for file in ["heaas-client.key", "heaas-server.key", "heaas-public.key"] {
         let meta = std::fs::metadata(d.join(file)).unwrap();
         assert!(meta.len() > 1000, "{file}");
         #[cfg(unix)]
@@ -46,6 +46,21 @@ fn keys_are_made_locally_and_values_round_trip() {
 
     stdout(&heaas(d, &["encrypt", "41", "--out", "a.ct"]));
     assert_eq!(stdout(&heaas(d, &["decrypt", "a.ct"])).trim(), "41");
+
+    // Other types, negative values included; a type mismatch is refused.
+    stdout(&heaas(
+        d,
+        &["encrypt", "--type", "i32", "-70000", "--out", "b.ct"],
+    ));
+    assert_eq!(
+        stdout(&heaas(d, &["decrypt", "--type", "i32", "b.ct"])).trim(),
+        "-70000"
+    );
+    assert!(!heaas(d, &["decrypt", "--type", "bool", "b.ct"])
+        .status
+        .success());
+    let too_big = heaas(d, &["encrypt", "--type", "u8", "256", "--out", "c.ct"]);
+    assert!(String::from_utf8_lossy(&too_big.stderr).contains("outside the u8 range"));
 
     // Garbage is refused, not decrypted to noise.
     std::fs::write(d.join("junk.ct"), b"not a ciphertext").unwrap();
@@ -66,4 +81,9 @@ fn commands_that_need_an_account_say_how_to_sign_in() {
         &["submit", "--key-id", "k", "--op", "divide", "a", "b"],
     );
     assert_eq!(bad_op.status.code(), Some(2), "clap usage error");
+
+    // The operand shape is checked before anything is encrypted or sent.
+    let one_operand = heaas(dir.path(), &["run", "--key-id", "k", "--op", "add", "1"]);
+    assert_eq!(one_operand.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&one_operand.stderr).contains("exactly 2"));
 }

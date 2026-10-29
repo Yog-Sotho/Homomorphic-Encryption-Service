@@ -6,6 +6,7 @@
 //! `processing` only apply while the job is still `processing`, so a job deleted
 //! or recovered meanwhile is left alone.
 
+use heaas_core::IntegerType;
 use sqlx::{FromRow, SqlitePool};
 
 /// A job a worker has claimed and must now finish.
@@ -15,9 +16,26 @@ pub struct ClaimedJob {
     /// `None` once the job's server key has been deleted.
     pub key_id: Option<String>,
     pub operation: String,
+    pub integer_type: IntegerType,
+    /// Encrypted inputs (held in one list file if `proven`).
+    pub input_count: i64,
+    pub proven: bool,
+    /// The plaintext right-hand operand, in decimal.
+    pub scalar: Option<String>,
     /// Including the attempt just started.
     pub attempts: i64,
     pub created_at: chrono::NaiveDateTime,
+}
+
+impl ClaimedJob {
+    /// How many input files the job store holds for this job.
+    pub fn stored_inputs(&self) -> usize {
+        if self.proven {
+            1
+        } else {
+            self.input_count.max(0) as usize
+        }
+    }
 }
 
 /// Claims the oldest runnable pending job, if any.
@@ -32,7 +50,8 @@ pub async fn claim_next(pool: &SqlitePool) -> sqlx::Result<Option<ClaimedJob>> {
              ORDER BY created_at, rowid
              LIMIT 1
          )
-         RETURNING id, key_id, operation, attempts, created_at",
+         RETURNING id, key_id, operation, integer_type, input_count, proven, scalar,
+                   attempts, created_at",
     )
     .fetch_optional(pool)
     .await

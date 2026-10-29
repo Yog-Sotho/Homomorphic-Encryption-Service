@@ -6,10 +6,11 @@ use heaas_core::api::{
     error_codes, AuthResponse, CreateJobRequest, Credentials, ErrorBody, HeParams, JobPage,
     JobStatus, JobSummary, ServerKeyInfo,
 };
-use heaas_core::params::{INTEGER_TYPE, TFHE_VERSION};
+use heaas_core::params::{DEFAULT_INTEGER_TYPE, TFHE_VERSION};
 use heaas_core::Operation;
 use reqwest::{header, Method, RequestBuilder, Response, Url};
 use serde::de::DeserializeOwned;
+use sha2::{Digest, Sha256};
 use std::sync::RwLock;
 use std::time::{Duration, Instant};
 
@@ -138,7 +139,7 @@ impl Client {
             .await
     }
 
-    /// Fails unless the server uses this SDK's TFHE-rs release and integer type,
+    /// Fails unless the server uses this SDK's TFHE-rs release and integer types,
     /// i.e. unless keys and ciphertexts made here will be accepted.
     pub async fn check_compatible(&self) -> Result<HeParams> {
         let params = self.params().await?;
@@ -148,13 +149,39 @@ impl Client {
                 params.tfhe_version
             )));
         }
-        if params.integer_type != INTEGER_TYPE {
+        if params.integer_type != DEFAULT_INTEGER_TYPE.tfhe_name() {
             return Err(Error::Incompatible(format!(
-                "the server computes on {}, this SDK on {INTEGER_TYPE}",
-                params.integer_type
+                "the server's default type is {}, this SDK's {}",
+                params.integer_type,
+                DEFAULT_INTEGER_TYPE.tfhe_name()
             )));
         }
         Ok(params)
+    }
+
+    /// The server's CRS for proven inputs (see [`crate::fhe::prove`]), checked
+    /// against the SHA-256 the server advertises in [`Client::params`].
+    pub async fn crs(&self) -> Result<tfhe::zk::CompactPkeCrs> {
+        let expected = self
+            .params()
+            .await?
+            .proofs
+            .ok_or_else(|| Error::Incompatible("the server takes no proven inputs".into()))?
+            .crs_sha256;
+        let bytes = self
+            .send(
+                self.request(Method::GET, &["he", "crs"])
+                    .timeout(UPLOAD_TIMEOUT),
+            )
+            .await?
+            .bytes()
+            .await?;
+        if format!("{:x}", Sha256::digest(&bytes)) != expected {
+            return Err(Error::Encoding(
+                "the CRS does not match the server's advertised hash".into(),
+            ));
+        }
+        crate::fhe::crs_from_bytes(&bytes)
     }
 
     /// Registers a compressed server key (see [`crate::fhe::server_key_bytes`]).
@@ -164,6 +191,21 @@ impl Client {
                 .timeout(UPLOAD_TIMEOUT)
                 .header(header::CONTENT_TYPE, "application/octet-stream")
                 .body(compressed_server_key),
+        )
+        .await
+    }
+
+    /// Attaches the key's compact public key (see [`crate::fhe::public_key_bytes`]),
+    /// so the server can check proofs of inputs for it.
+    pub async fn upload_public_key(
+        &self,
+        key_id: &str,
+        public_key: Vec<u8>,
+    ) -> Result<ServerKeyInfo> {
+        self.json(
+            self.request(Method::PUT, &["keys", key_id, "public-key"])
+                .header(header::CONTENT_TYPE, "application/octet-stream")
+                .body(public_key),
         )
         .await
     }
@@ -178,9 +220,10 @@ impl Client {
             .map(drop)
     }
 
-    /// Queues `operation(a, b)` on two serialized ciphertexts (see
+    /// Queues `operation(a, b)` on two serialized `u16` ciphertexts (see
     /// [`crate::fhe::encrypt`]). Transport failures and a full queue are retried
     /// with the same idempotency key, so the job is created (and charged) once.
+    /// [`Client::submit_job`] takes any job.
     pub async fn submit(
         &self,
         key_id: &str,
@@ -204,18 +247,30 @@ impl Client {
         b: &[u8],
         idempotency_key: &str,
     ) -> Result<JobSummary> {
-        let request = CreateJobRequest {
-            key_id: key_id.to_string(),
-            operation,
-            inputs: vec![STANDARD.encode(a), STANDARD.encode(b)],
-        };
+        self.submit_job_idempotent(&binary_request(key_id, operation, a, b), idempotency_key)
+            .await
+    }
+
+    /// Queues any job: other types, a scalar, a sum, proven inputs. Build
+    /// `inputs` with [`encode`]. Retried like [`Client::submit`].
+    pub async fn submit_job(&self, request: &CreateJobRequest) -> Result<JobSummary> {
+        let idempotency_key = uuid::Uuid::new_v4().to_string();
+        self.submit_job_idempotent(request, &idempotency_key).await
+    }
+
+    /// [`Client::submit_job`] with your own idempotency key.
+    pub async fn submit_job_idempotent(
+        &self,
+        request: &CreateJobRequest,
+        idempotency_key: &str,
+    ) -> Result<JobSummary> {
         let mut attempt = 1;
         loop {
             let sent = self
                 .json(
                     self.request(Method::POST, &["compute", "jobs"])
                         .header("Idempotency-Key", idempotency_key)
-                        .json(&request),
+                        .json(request),
                 )
                 .await;
             let wait = match &sent {
@@ -288,6 +343,19 @@ impl Client {
         self.result(&job.id).await
     }
 
+    /// Submits any job, waits and fetches the encrypted result. Decrypt it as the
+    /// returned job's `result_type` (see [`crate::fhe::decrypt_as`]).
+    pub async fn compute_job(
+        &self,
+        request: &CreateJobRequest,
+        timeout: Duration,
+    ) -> Result<(JobSummary, Vec<u8>)> {
+        let job = self.submit_job(request).await?;
+        let job = self.wait(&job.id, timeout).await?;
+        let result = self.result(&job.id).await?;
+        Ok((job, result))
+    }
+
     /// One page of jobs, newest first; pass `next_cursor` to get the next.
     pub async fn list_jobs(&self, cursor: Option<&str>, limit: Option<u32>) -> Result<JobPage> {
         let mut builder = self.request(Method::GET, &["compute", "jobs"]);
@@ -304,6 +372,22 @@ impl Client {
         self.send(self.request(Method::DELETE, &["compute", "jobs", job_id]))
             .await
             .map(drop)
+    }
+}
+
+/// Base64 for the `inputs` and `proven_inputs` of a [`CreateJobRequest`].
+pub fn encode(bytes: &[u8]) -> String {
+    STANDARD.encode(bytes)
+}
+
+fn binary_request(key_id: &str, operation: Operation, a: &[u8], b: &[u8]) -> CreateJobRequest {
+    CreateJobRequest {
+        key_id: key_id.to_string(),
+        operation,
+        integer_type: DEFAULT_INTEGER_TYPE,
+        inputs: vec![encode(a), encode(b)],
+        proven_inputs: None,
+        scalar: None,
     }
 }
 
