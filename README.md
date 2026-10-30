@@ -6,17 +6,19 @@
   <a href="https://yog-sotho.github.io/Homomorphic-Encryption-Service/"><strong>Documentation</strong></a> ·
   <a href="https://yog-sotho.github.io/Homomorphic-Encryption-Service/api-reference/"><strong>API reference</strong></a> ·
   <a href="https://github.com/Yog-Sotho/Homomorphic-Encryption-Service/releases"><strong>Releases</strong></a> ·
-  <a href="SUPPORT.md"><strong>Support</strong></a>
+  <a href="SUPPORT.md"><strong>Support</strong></a> ·
+  <a href="#support-the-project"><strong>Sponsor</strong></a>
 </p>
 
 <p align="center">
   <a href="https://github.com/Yog-Sotho/Homomorphic-Encryption-Service/actions/workflows/ci.yml"><img src="https://github.com/Yog-Sotho/Homomorphic-Encryption-Service/actions/workflows/ci.yml/badge.svg?branch=master" alt="CI"></a>
-  <a href="https://yog-sotho.github.io/Homomorphic-Encryption-Service/"><img src="https://github.com/Yog-Sotho/Homomorphic-Encryption-Service/actions/workflows/docs.yml/badge.svg?branch=master" alt="Docs"></a>
+  <a href="https://yog-sotho.github.io/Homomorphic-Encryption-Service/"><img src="https://img.shields.io/badge/docs-website-6366f1?logo=materialformkdocs&logoColor=white" alt="Documentation website"></a>
   <a href="https://github.com/Yog-Sotho/Homomorphic-Encryption-Service/releases/latest"><img src="https://img.shields.io/github/v/release/Yog-Sotho/Homomorphic-Encryption-Service?color=6366f1" alt="Latest release"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/licence-MIT-6366f1" alt="MIT licence"></a>
   <img src="https://img.shields.io/badge/TFHE--rs-1.8.2-6366f1" alt="TFHE-rs 1.8.2">
   <img src="https://img.shields.io/badge/API-OpenAPI%203.1-6366f1" alt="OpenAPI 3.1">
   <img src="https://img.shields.io/badge/status-pre--1.0-a855f7" alt="Status: pre-1.0">
+  <a href="https://github.com/sponsors/Yog-Sotho"><img src="https://img.shields.io/badge/Sponsor-%E2%9D%A4-ea4aaa?logo=githubsponsors&logoColor=white" alt="Sponsor on GitHub"></a>
 </p>
 
 The Homomorphic Encryption Engine (HE Engine) is a self-hosted server for computing on
@@ -126,6 +128,31 @@ it cannot prove that the server computed correctly;
 [How the HE Engine works](docs/how-it-works.md#what-the-server-can-and-cannot-learn)
 lists the limits. The latest code audit is in
 [`docs/project/codebase_audit.md`](docs/project/codebase_audit.md).
+
+## Author
+
+The HE Engine is written and maintained by **[Yog-Sotho](https://github.com/Yog-Sotho)**,
+who also builds [LLM Fine-Tuner](https://github.com/Yog-Sotho/LLM-fine-tuner).
+
+## Support the project
+
+The HE Engine is free and open source. If it is useful to you, you can support its
+development:
+
+- **GitHub Sponsors:** [github.com/sponsors/Yog-Sotho](https://github.com/sponsors/Yog-Sotho)
+- **Crypto tips:**
+
+  | Coin | Address |
+  |---|---|
+  | Bitcoin (BTC) | `yogsotho.blockchain` |
+  | Ethereum (ETH) | `yogsotho.blockchain` |
+  | Tron (TRX) | `TBSVzUsQcof9f84aZGbn3wPGVAg3j4ttPv` |
+
+  `yogsotho.blockchain` is an [Unstoppable Domains](https://unstoppabledomains.com/) name:
+  wallets that support it resolve it to the right address. Check the resolved
+  address before you send.
+
+A ⭐ on GitHub helps too.
 
 ## Licence
 

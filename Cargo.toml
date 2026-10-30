@@ -10,6 +10,7 @@ edition = "2021"
 rust-version = "1.91.1"
 publish = false
 license = "MIT"
+authors = ["Yog-Sotho"]
 repository = "https://github.com/Yog-Sotho/Homomorphic-Encryption-Service"
 homepage = "https://yog-sotho.github.io/Homomorphic-Encryption-Service/"
 

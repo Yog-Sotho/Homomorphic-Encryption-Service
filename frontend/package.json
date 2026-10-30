@@ -3,6 +3,7 @@
   "version": "0.5.0",
   "private": true,
   "license": "MIT",
+  "author": "Yog-Sotho (https://github.com/Yog-Sotho)",
   "scripts": {
     "dev": "vite dev",
     "build": "vite build",
