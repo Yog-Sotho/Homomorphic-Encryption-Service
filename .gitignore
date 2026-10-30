@@ -31,3 +31,5 @@ backups/
 # Coverage reports
 frontend/coverage/
 lcov.info
+docs/api/reference.html
+site/

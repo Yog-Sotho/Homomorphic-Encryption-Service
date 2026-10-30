@@ -7,11 +7,25 @@ Please report vulnerabilities privately through GitHub: on the repository's
 have private vulnerability reporting enabled under Settings → Code security.)
 Do not open a public issue.
 
-Include what you found, how to reproduce it, and what an attacker gains. You
-will get an acknowledgement and, once a fix is ready, credit in the changelog
-if you want it.
+Include what you found, how to reproduce it, and what an attacker gains. The
+maintainer aims to acknowledge a report within a week, agrees a disclosure date
+with you, and publishes a GitHub security advisory with the fix. You get credit in
+the advisory and the changelog if you want it.
 
-Only the latest release on `master` gets security fixes.
+## Supported versions
+
+The project is pre-1.0: only the latest release gets security fixes.
+
+| Version | Supported |
+|---|---|
+| Latest release (0.5.x) | Yes |
+| Earlier releases | No: upgrade |
+
+## Verifying a release
+
+Release binaries are signed keylessly with [Sigstore](https://www.sigstore.dev/) by
+the release workflow, and container images are signed with cosign and carry build
+provenance. [Each release's notes](https://github.com/Yog-Sotho/Homomorphic-Encryption-Service/releases) say how to verify them.
 
 ## What the HE Engine protects, and what it does not
 

@@ -1,0 +1,300 @@
+name: Release
+
+# Push a tag `vX.Y.Z` (matching `version` in Cargo.toml and frontend/package.json) to
+# publish a release:
+# - the `heaas` CLI for Linux (x86_64, arm64) and macOS (Apple silicon), and the
+#   `he-backend` server for Linux, as archives with a SHA256SUMS file, each signed
+#   keylessly with Sigstore using this workflow's GitHub OIDC identity;
+# - the OpenAPI document;
+# - container images ghcr.io/<owner>/he-engine-{backend,frontend}:{X.Y.Z,latest} for
+#   linux/amd64 and linux/arm64, signed with cosign and carrying build provenance;
+# - release notes taken from the CHANGELOG.md section for X.Y.Z.
+# The steps are in CONTRIBUTING.md ("Releases").
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  SIGSTORE: "sigstore==4.5.0"
+
+jobs:
+  check:
+    name: Check the version and notes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: The tag must match Cargo.toml and frontend/package.json
+        id: version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          cargo=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\([^"]*\)"$/\1/p' Cargo.toml)
+          npm=$(jq -r .version frontend/package.json)
+          test -n "$cargo" || { echo "::error::no [workspace.package] version in Cargo.toml"; exit 1; }
+          test "$TAG" = "v$cargo" || { echo "::error::tag $TAG does not match Cargo.toml $cargo"; exit 1; }
+          test "$npm" = "$cargo" || { echo "::error::frontend/package.json $npm does not match Cargo.toml $cargo"; exit 1; }
+          echo "version=$cargo" >> "$GITHUB_OUTPUT"
+      - name: Release notes from CHANGELOG.md
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          awk -v v="$VERSION" '
+            index($0, "## [" v "]") == 1 {on=1; next}
+            on && /^## \[/ {exit}
+            on {print}
+          ' CHANGELOG.md > notes.md
+          test -s notes.md || { echo "::error::no CHANGELOG.md section for $VERSION"; exit 1; }
+      - uses: actions/upload-artifact@v7
+        with:
+          name: notes
+          path: notes.md
+
+  binaries:
+    name: Build (${{ matrix.target }})
+    needs: check
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Ubuntu 22.04: binaries run on glibc 2.35 and later.
+          - { target: x86_64-unknown-linux-gnu, runner: ubuntu-22.04, server: true }
+          - { target: aarch64-unknown-linux-gnu, runner: ubuntu-22.04-arm, server: true }
+          - { target: aarch64-apple-darwin, runner: macos-14, server: false }
+    runs-on: ${{ matrix.runner }}
+    env:
+      VERSION: ${{ needs.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+      - name: Build
+        run: |
+          bins="--bin heaas"
+          if [ "${{ matrix.server }}" = "true" ]; then bins="$bins --bin he-backend"; fi
+          cargo build --release --locked $bins
+      - name: Package
+        shell: bash
+        run: |
+          mkdir -p dist
+          package() {
+            local name="$1-$VERSION-${{ matrix.target }}"
+            mkdir "$name"
+            cp "target/release/$1" LICENSE README.md CHANGELOG.md "$name/"
+            tar -czf "dist/$name.tar.gz" "$name"
+          }
+          package heaas
+          if [ "${{ matrix.server }}" = "true" ]; then package he-backend; fi
+          ls -l dist
+      - uses: actions/upload-artifact@v7
+        with:
+          name: binaries-${{ matrix.target }}
+          path: dist/
+          if-no-files-found: error
+
+  release:
+    name: Sign and publish the release
+    needs: [check, binaries]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write   # create the GitHub release
+      id-token: write   # Sigstore keyless signing
+    env:
+      VERSION: ${{ needs.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: binaries-*
+          path: dist
+          merge-multiple: true
+      - uses: actions/download-artifact@v8
+        with:
+          name: notes
+      - name: Add the OpenAPI document and checksums
+        run: |
+          cp docs/api/openapi.json "dist/he-engine-openapi-$VERSION.json"
+          (cd dist && sha256sum -- * > SHA256SUMS)
+          cat dist/SHA256SUMS
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Sign with Sigstore
+        run: |
+          python -m pip install --quiet "$SIGSTORE"
+          python -m sigstore sign dist/*
+      - name: Verify the signatures
+        env:
+          IDENTITY: https://github.com/${{ github.repository }}/.github/workflows/release.yml@${{ github.ref }}
+        run: |
+          for f in dist/*; do
+            case "$f" in *.sigstore.json) continue ;; esac
+            python -m sigstore verify github --cert-identity "$IDENTITY" "$f"
+          done
+      - name: Verification instructions
+        env:
+          REPO: ${{ github.repository }}
+          OWNER: ${{ github.repository_owner }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          owner=$(echo "$OWNER" | tr '[:upper:]' '[:lower:]')
+          cat >> notes.md <<NOTES
+
+          ## Downloads
+
+          - \`heaas-$VERSION-<target>.tar.gz\`: the command-line tool (Linux x86_64 and arm64, macOS on Apple silicon).
+          - \`he-backend-$VERSION-<target>.tar.gz\`: the server (Linux).
+          - Container images: \`ghcr.io/$owner/he-engine-backend:$VERSION\` and \`ghcr.io/$owner/he-engine-frontend:$VERSION\` (linux/amd64, linux/arm64).
+          - \`he-engine-openapi-$VERSION.json\`: the API description.
+
+          ## Verifying
+
+          Check a download against \`SHA256SUMS\` (\`sha256sum -c SHA256SUMS --ignore-missing\`), and its Sigstore signature:
+
+          \`\`\`sh
+          pip install sigstore
+          python -m sigstore verify github \\
+            --cert-identity "https://github.com/$REPO/.github/workflows/release.yml@refs/tags/$TAG" \\
+            heaas-$VERSION-x86_64-unknown-linux-gnu.tar.gz
+          \`\`\`
+
+          Container images are signed with cosign (keyless) and have build provenance:
+
+          \`\`\`sh
+          cosign verify ghcr.io/$owner/he-engine-backend:$VERSION \\
+            --certificate-identity "https://github.com/$REPO/.github/workflows/release.yml@refs/tags/$TAG" \\
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com
+          gh attestation verify oci://ghcr.io/$owner/he-engine-backend:$VERSION --repo $REPO
+          \`\`\`
+          NOTES
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          prerelease=""
+          # Release candidates (X.Y.Z-rc.N) are pre-releases; 0.x releases are not, so
+          # they show as the latest release.
+          case "$VERSION" in *-*) prerelease="--prerelease" ;; esac
+          gh release create "$TAG" dist/* --title "HE Engine $VERSION" \
+            --notes-file notes.md --verify-tag $prerelease
+
+  # Each image and architecture is built natively and pushed by digest;
+  # publish-images joins them into multi-arch images, signs them and attaches
+  # provenance.
+  images:
+    name: Image ${{ matrix.image }} (${{ matrix.arch }})
+    needs: check
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [backend, frontend]
+        arch: [amd64, arm64]
+        include:
+          - { arch: amd64, runner: ubuntu-24.04 }
+          - { arch: arm64, runner: ubuntu-24.04-arm }
+          - { image: backend, context: ".", description: "HE Engine server: computes on TFHE ciphertexts" }
+          - { image: frontend, context: frontend, description: "HE Engine web dashboard: in-browser TFHE encryption" }
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    env:
+      VERSION: ${{ needs.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/he-engine-${{ matrix.image }}" >> "$GITHUB_ENV"
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: ${{ matrix.context }}
+          platforms: linux/${{ matrix.arch }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.title=HE Engine ${{ matrix.image }}
+            org.opencontainers.image.description=${{ matrix.description }}
+            org.opencontainers.image.licenses=MIT
+            org.opencontainers.image.version=${{ env.VERSION }}
+          # Provenance is attached to the multi-arch image in publish-images.
+          provenance: false
+          sbom: false
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+      - name: Record the digest
+        run: |
+          mkdir -p digests
+          echo "${{ steps.build.outputs.digest }}" > "digests/${{ matrix.image }}-${{ matrix.arch }}"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: digest-${{ matrix.image }}-${{ matrix.arch }}
+          path: digests/
+          if-no-files-found: error
+
+  publish-images:
+    name: Publish image ${{ matrix.image }}
+    needs: [check, images]
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        image: [backend, frontend]
+    permissions:
+      contents: read
+      packages: write
+      id-token: write       # cosign keyless signing
+      attestations: write
+    env:
+      VERSION: ${{ needs.check.outputs.version }}
+    steps:
+      - run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/he-engine-${{ matrix.image }}" >> "$GITHUB_ENV"
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: digest-${{ matrix.image }}-*
+          path: digests
+          merge-multiple: true
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: sigstore/cosign-installer@v4.1.2
+      - name: Create the multi-arch image
+        id: index
+        run: |
+          docker buildx imagetools create -t "${IMAGE}:${VERSION}" -t "${IMAGE}:latest" \
+            "${IMAGE}@$(cat "digests/${{ matrix.image }}-amd64")" \
+            "${IMAGE}@$(cat "digests/${{ matrix.image }}-arm64")"
+          digest="$(docker buildx imagetools inspect "${IMAGE}:${VERSION}" --format '{{json .Manifest}}' | jq -r .digest)"
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+      - name: Sign the image (keyless)
+        run: cosign sign --yes "${IMAGE}@${{ steps.index.outputs.digest }}"
+      - name: Build provenance
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.index.outputs.digest }}
+          push-to-registry: true

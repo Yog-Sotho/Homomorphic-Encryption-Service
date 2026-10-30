@@ -2,7 +2,7 @@
 
 How to run the HE Engine on your own server: deployment, configuration, monitoring and
 backups. For development setup and the checks a change must pass, see
-[CONTRIBUTING.md](../CONTRIBUTING.md).
+[CONTRIBUTING.md](https://github.com/Yog-Sotho/Homomorphic-Encryption-Service/blob/master/CONTRIBUTING.md).
 
 ## Deployment
 

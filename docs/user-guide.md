@@ -10,7 +10,7 @@ instance; whoever runs it (the *operator*) will find setup in
 
 This guide covers the web dashboard and the API. For how the system works and what it
 does and does not protect, see [How the HE Engine works](how-it-works.md#what-the-server-can-and-cannot-learn)
-and [SECURITY.md](../SECURITY.md); the exact cryptographic parameters are in
+and [SECURITY.md](https://github.com/Yog-Sotho/Homomorphic-Encryption-Service/blob/master/SECURITY.md); the exact cryptographic parameters are in
 [`parameters.md`](parameters.md).
 
 ---

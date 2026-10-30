@@ -94,8 +94,13 @@ struct Conventions;
 
 impl Modify for Conventions {
     fn modify(&self, openapi: &mut utoipa::openapi::OpenApi) {
-        // The derive would emit an empty license: the project has none yet.
-        openapi.info.license = None;
+        // The SPDX identifier, which OpenAPI 3.1 prefers to a URL.
+        openapi.info.license = Some(
+            utoipa::openapi::info::LicenseBuilder::new()
+                .name("MIT")
+                .identifier(Some("MIT"))
+                .build(),
+        );
         let components = openapi.components.get_or_insert_with(Default::default);
         components.add_security_scheme(
             "bearer",

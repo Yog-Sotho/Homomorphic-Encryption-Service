@@ -3,7 +3,17 @@
 </p>
 
 <p align="center">
+  <a href="https://yog-sotho.github.io/Homomorphic-Encryption-Service/"><strong>Documentation</strong></a> ·
+  <a href="https://yog-sotho.github.io/Homomorphic-Encryption-Service/api-reference/"><strong>API reference</strong></a> ·
+  <a href="https://github.com/Yog-Sotho/Homomorphic-Encryption-Service/releases"><strong>Releases</strong></a> ·
+  <a href="SUPPORT.md"><strong>Support</strong></a>
+</p>
+
+<p align="center">
   <a href="https://github.com/Yog-Sotho/Homomorphic-Encryption-Service/actions/workflows/ci.yml"><img src="https://github.com/Yog-Sotho/Homomorphic-Encryption-Service/actions/workflows/ci.yml/badge.svg?branch=master" alt="CI"></a>
+  <a href="https://yog-sotho.github.io/Homomorphic-Encryption-Service/"><img src="https://github.com/Yog-Sotho/Homomorphic-Encryption-Service/actions/workflows/docs.yml/badge.svg?branch=master" alt="Docs"></a>
+  <a href="https://github.com/Yog-Sotho/Homomorphic-Encryption-Service/releases/latest"><img src="https://img.shields.io/github/v/release/Yog-Sotho/Homomorphic-Encryption-Service?color=6366f1" alt="Latest release"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/licence-MIT-6366f1" alt="MIT licence"></a>
   <img src="https://img.shields.io/badge/TFHE--rs-1.8.2-6366f1" alt="TFHE-rs 1.8.2">
   <img src="https://img.shields.io/badge/API-OpenAPI%203.1-6366f1" alt="OpenAPI 3.1">
   <img src="https://img.shields.io/badge/status-pre--1.0-a855f7" alt="Status: pre-1.0">
@@ -72,7 +82,12 @@ docker compose up -d --build
 The app is then available at `http://127.0.0.1:3000/heaas`. For HTTPS, configuration
 and backups, see [Self-hosting](docs/self-hosting.md).
 
-Your users can then also compute from a terminal:
+Prebuilt images are published with each [release](https://github.com/Yog-Sotho/Homomorphic-Encryption-Service/releases):
+`ghcr.io/yog-sotho/he-engine-backend` and `ghcr.io/yog-sotho/he-engine-frontend`.
+
+Your users can then also compute from a terminal with the `heaas` CLI (prebuilt
+for Linux and macOS on the [releases page](https://github.com/Yog-Sotho/Homomorphic-Encryption-Service/releases), or
+`cargo install --path sdk`):
 
 ```sh
 export HEAAS_URL=https://<instance> HEAAS_EMAIL=you@example.com
@@ -82,16 +97,26 @@ heaas run --key-id <id> --op multiply 300 300    # 24464 (300 × 300 mod 65536)
 
 ## Documentation
 
+Everything below is also on the documentation site, **[https://yog-sotho.github.io/Homomorphic-Encryption-Service](https://yog-sotho.github.io/Homomorphic-Encryption-Service/)**.
+
 | | |
 |---|---|
 | [User guide](docs/user-guide.md) | Using the dashboard, managing keys, troubleshooting |
 | [How the HE Engine works](docs/how-it-works.md) | Keys, architecture, privacy guarantees and limits |
 | [Using the API](docs/api.md) | HTTP API, Rust SDK and the `heaas` command-line tool |
+| [API reference](https://yog-sotho.github.io/Homomorphic-Encryption-Service/api-reference/) | Every endpoint and schema, generated from the code |
 | [Self-hosting](docs/self-hosting.md) | Deployment, configuration, monitoring, backups |
 | [Cryptographic parameters](docs/parameters.md) | The exact TFHE parameters, generated from the code |
-| [Security](SECURITY.md) | Threat model and how to report a vulnerability |
-| [Contributing](CONTRIBUTING.md) | Building, testing and the checks every change must pass |
 | [Changelog](CHANGELOG.md) | What changed in each release |
+
+## Community
+
+- **Questions and help:** [GitHub Discussions](https://github.com/Yog-Sotho/Homomorphic-Encryption-Service/discussions); see [SUPPORT.md](SUPPORT.md).
+- **Bugs and feature requests:** [open an issue](https://github.com/Yog-Sotho/Homomorphic-Encryption-Service/issues/new/choose).
+- **Contributing:** building, testing and the checks every change must pass are in
+  [CONTRIBUTING.md](CONTRIBUTING.md). Everyone follows the [code of conduct](CODE_OF_CONDUCT.md).
+- **Security:** report vulnerabilities privately; [SECURITY.md](SECURITY.md) has the
+  threat model and how to report.
 
 ## Project status
 
@@ -102,12 +127,11 @@ it cannot prove that the server computed correctly;
 lists the limits. The latest code audit is in
 [`docs/project/codebase_audit.md`](docs/project/codebase_audit.md).
 
-## Licensing
+## Licence
 
-This repository has no licence file yet. Until its owner adds one, no licence to
-use, copy or modify the code is granted.
+The HE Engine is released under the [MIT licence](LICENSE).
 
-TFHE-rs is distributed under BSD-3-Clause-Clear, which grants no patent rights.
-Zama states that TFHE-rs is free for development, research, prototyping and
-experimentation, and that **commercial use requires Zama's patent licence**. Obtain
-that licence before any commercial use.
+It depends on TFHE-rs, which is distributed under BSD-3-Clause-Clear and grants no
+patent rights. Zama states that TFHE-rs is free for development, research,
+prototyping and experimentation, and that **commercial use requires Zama's patent
+licence**. Obtain that licence before any commercial use of a deployment.
