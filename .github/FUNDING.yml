@@ -1,4 +1,3 @@
 # The "Sponsor" button on the repository page.
-github: [Yog-Sotho]
-custom:
-  - https://github.com/Yog-Sotho/Homomorphic-Encryption-Service#support-the-project
+github: Yog-Sotho
+custom: ["https://github.com/Yog-Sotho/Homomorphic-Encryption-Service#support-the-project"]
