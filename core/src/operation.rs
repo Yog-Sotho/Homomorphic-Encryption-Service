@@ -5,9 +5,11 @@ use serde::{Deserialize, Serialize};
 /// Homomorphic operations. Arithmetic wraps modulo 2^bits of the input type;
 /// comparisons return an encrypted boolean.
 ///
-/// Every operation except [`Sum`](Operation::Sum) takes two operands: two
-/// ciphertexts, or one ciphertext and a plaintext `scalar` as the right-hand side.
-/// `Sum` adds 2 to [`MAX_INPUTS`] ciphertexts.
+/// Every operation except [`Sum`](Operation::Sum) and
+/// [`Program`](Operation::Program) takes two operands: two ciphertexts, or one
+/// ciphertext and a plaintext `scalar` as the right-hand side. `Sum` adds 2 to
+/// [`MAX_INPUTS`] ciphertexts. `Program` runs the job's
+/// [`Program`](crate::program::Program) on 1 to [`MAX_INPUTS`] ciphertexts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 #[cfg_attr(feature = "sqlx", derive(sqlx::Type), sqlx(rename_all = "lowercase"))]
@@ -32,10 +34,29 @@ pub enum Operation {
     Ge,
     /// The wrapping sum of all inputs.
     Sum,
+    /// Several operations: the request's `program`.
+    Program,
 }
 
 impl Operation {
-    pub const ALL: [Operation; 12] = [
+    pub const ALL: [Operation; 13] = [
+        Operation::Add,
+        Operation::Subtract,
+        Operation::Multiply,
+        Operation::Min,
+        Operation::Max,
+        Operation::Eq,
+        Operation::Ne,
+        Operation::Lt,
+        Operation::Le,
+        Operation::Gt,
+        Operation::Ge,
+        Operation::Sum,
+        Operation::Program,
+    ];
+
+    /// Every operation but `Program`: those [`apply_plain`](Self::apply_plain) evaluates.
+    pub const BASIC: [Operation; 12] = [
         Operation::Add,
         Operation::Subtract,
         Operation::Multiply,
@@ -64,6 +85,7 @@ impl Operation {
             Operation::Gt => "gt",
             Operation::Ge => "ge",
             Operation::Sum => "sum",
+            Operation::Program => "program",
         }
     }
 
@@ -84,7 +106,9 @@ impl Operation {
         )
     }
 
-    /// The type of the encrypted result for inputs of type `input`.
+    /// The type of the encrypted result for inputs of type `input`. For a
+    /// program it depends on the program: see
+    /// [`CheckedProgram::result_type`](crate::program::CheckedProgram::result_type).
     pub fn result_type(self, input: IntegerType) -> ValueType {
         if self.is_comparison() {
             ValueType::Bool
@@ -97,6 +121,13 @@ impl Operation {
     /// right-hand side if `scalar`. The error is safe to show to the caller.
     pub fn check_operands(self, ciphertexts: usize, scalar: bool) -> Result<(), String> {
         match (self, ciphertexts, scalar) {
+            (Operation::Program, _, true) => {
+                Err("a program takes no scalar: put constants in its steps".into())
+            }
+            (Operation::Program, 1..=MAX_INPUTS, false) => Ok(()),
+            (Operation::Program, n, false) => Err(format!(
+                "a program takes 1 to {MAX_INPUTS} encrypted inputs, got {n}"
+            )),
             (Operation::Sum, _, true) => Err("sum does not take a scalar".into()),
             (Operation::Sum, 2..=MAX_INPUTS, false) => Ok(()),
             (Operation::Sum, n, false) => Err(format!(
@@ -112,8 +143,16 @@ impl Operation {
 
     /// The plaintext result the decrypted homomorphic result must equal.
     /// `operands` are in `ty`'s range (the scalar, if any, last); their number
-    /// must satisfy [`check_operands`](Self::check_operands).
+    /// must satisfy [`check_operands`](Self::check_operands). Programs are
+    /// evaluated by [`CheckedProgram::eval_plain`](crate::program::CheckedProgram::eval_plain).
+    ///
+    /// # Panics
+    /// On [`Operation::Program`].
     pub fn apply_plain(self, ty: IntegerType, operands: &[i128]) -> PlainValue {
+        assert!(
+            self != Operation::Program,
+            "programs are evaluated by CheckedProgram"
+        );
         if self == Operation::Sum {
             let sum = operands.iter().fold(0i128, |acc, &v| acc.wrapping_add(v));
             return PlainValue::Int(ty.wrap(sum));
@@ -134,7 +173,7 @@ impl Operation {
             Operation::Le => PlainValue::Bool(a <= b),
             Operation::Gt => PlainValue::Bool(a > b),
             Operation::Ge => PlainValue::Bool(a >= b),
-            Operation::Sum => unreachable!(),
+            Operation::Sum | Operation::Program => unreachable!(),
         }
     }
 }
@@ -260,6 +299,7 @@ mod tests {
                         Operation::Le => PlainValue::Bool(a <= b),
                         Operation::Gt => PlainValue::Bool(a > b),
                         Operation::Ge => PlainValue::Bool(a >= b),
+                        Operation::Program => unreachable!(),
                         Operation::Sum => PlainValue::Int(
                             v.iter().fold(0 as $t, |acc, &x| acc.wrapping_add(x)) as i128,
                         ),
@@ -280,7 +320,7 @@ mod tests {
 
         fn typed_operands() -> impl Strategy<Value = (Operation, IntegerType, Vec<i128>)> {
             (
-                proptest::sample::select(Operation::ALL.to_vec()),
+                proptest::sample::select(Operation::BASIC.to_vec()),
                 proptest::sample::select(IntegerType::ALL.to_vec()),
             )
                 .prop_flat_map(|(op, ty)| {

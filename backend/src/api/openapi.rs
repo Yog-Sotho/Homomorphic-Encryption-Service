@@ -55,6 +55,7 @@ use utoipa::{Modify, OpenApi};
         keys::delete_key,
         keys::upload_public_key,
         compute::submit_job,
+        compute::submit_batch,
         compute::list_jobs,
         compute::get_job_status,
         compute::get_job_result,

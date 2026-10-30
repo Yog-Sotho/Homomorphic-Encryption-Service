@@ -54,6 +54,14 @@ pub fn evaluator(keys: Arc<KeyStore>, crs: Arc<Crs>) -> Processor {
         } else {
             Inputs::Ciphertexts(&inputs)
         };
+        let program = match &job.program {
+            Some(program) => Some(
+                program
+                    .check(job.integer_type, job.input_count.max(0) as usize)
+                    .map_err(|e| EvalError::Internal(format!("stored program: {e}")))?,
+            ),
+            None => None,
+        };
         evaluate(
             &key,
             &Job {
@@ -61,6 +69,7 @@ pub fn evaluator(keys: Arc<KeyStore>, crs: Arc<Crs>) -> Processor {
                 integer_type: job.integer_type,
                 scalar,
                 inputs,
+                program: program.as_ref(),
             },
         )
     })

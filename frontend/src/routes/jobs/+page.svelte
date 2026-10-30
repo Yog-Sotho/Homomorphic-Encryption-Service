@@ -4,6 +4,7 @@
   import { compute, errorMessage, type JobSummary } from '#lib/api.js';
   import { fheSession } from '#lib/fhe/session.svelte.js';
   import { OPERATIONS } from '#lib/fhe/operations.js';
+  import { formatProgram } from '#lib/fhe/program.js';
 
   const PAGE_SIZE = 20;
 
@@ -48,11 +49,13 @@
     }
   }
 
-  /** E.g. "Less (i32, scalar 5, proven)". */
+  /** E.g. "Less (i32, scalar 5, proven)", or "(a + b) * 3 (u8, 2 inputs)". */
   function label(job: JobSummary): string {
-    const name = OPERATIONS.find((o) => o.id === job.operation)?.label ?? job.operation;
+    const name = job.program
+      ? formatProgram(job.program)
+      : (OPERATIONS.find((o) => o.id === job.operation)?.label ?? job.operation);
     const details: string[] = [job.integer_type];
-    if (job.operation === 'sum') details.push(`${job.input_count} inputs`);
+    if (job.operation === 'sum' || job.program) details.push(`${job.input_count} inputs`);
     if (job.scalar !== null) details.push(`scalar ${job.scalar}`);
     if (job.proven) details.push('proven');
     return `${name} (${details.join(', ')})`;

@@ -26,6 +26,13 @@
     type PlainValue
   } from '#lib/fhe/operations.js';
   import {
+    checkProgram,
+    evalProgram,
+    inputNames,
+    parseExpression,
+    programResultType
+  } from '#lib/fhe/program.js';
+  import {
     canProve,
     fheSession,
     loadKeyOverview,
@@ -50,6 +57,8 @@
   /** Value B goes to the server as a plain number. */
   let scalarB = $state(false);
   let sumValues = $state('1, 2, 3');
+  let expression = $state('(a + b) * 3 < c ? a : b');
+  let programValues = $state('5, 7, 100');
   let prove = $state(false);
   let step = $state<Step | null>(null);
   let result = $state<{
@@ -74,18 +83,34 @@
   const opInfo = $derived(OPERATIONS.find((o) => o.id === operation) ?? OPERATIONS[0]);
   const kind = $derived(operationKind(operation));
   const range = $derived(typeRange(integerType));
+  /** The compiled and checked expression, or why it is not valid. */
+  const compiled = $derived.by(() => {
+    if (kind !== 'program') return null;
+    try {
+      const { program, inputCount } = parseExpression(expression);
+      return { program, checked: checkProgram(program, integerType, inputCount), error: '' };
+    } catch (e) {
+      return { program: null, checked: null, error: (e as Error).message };
+    }
+  });
+  const listed = (text: string) => text.split(',').map((v) => v.trim());
   const operandTexts = $derived(
-    kind === 'sum' ? sumValues.split(',').map((v) => v.trim()) : [val1, val2]
+    kind === 'sum' ? listed(sumValues) : kind === 'program' ? listed(programValues) : [val1, val2]
   );
   const operands = $derived(operandTexts.map((t) => parseValue(integerType, t)));
   const valid = $derived(
     operands.every((v) => v !== null) &&
-      (kind !== 'sum' || (operands.length >= 2 && operands.length <= MAX_SUM_INPUTS))
+      (kind !== 'sum' || (operands.length >= 2 && operands.length <= MAX_SUM_INPUTS)) &&
+      (kind !== 'program' || operands.length === compiled?.checked?.inputCount)
   );
   const expected = $derived(
-    valid ? expectedResult(operation, integerType, operands as bigint[]) : null
+    !valid
+      ? null
+      : kind === 'program' && compiled?.checked
+        ? evalProgram(compiled.checked, operands as bigint[])
+        : expectedResult(operation, integerType, operands as bigint[])
   );
-  const usesScalar = $derived(scalarB && kind !== 'sum');
+  const usesScalar = $derived(scalarB && kind !== 'sum' && kind !== 'program');
 
   onMount(async () => {
     supported = fheSession.supported;
@@ -121,6 +146,7 @@
     const encrypted = usesScalar ? texts.slice(0, 1) : texts;
     const request: JobRequest = { key_id: keyId, operation, integer_type: integerType };
     if (usesScalar) request.scalar = texts[1];
+    if (kind === 'program' && compiled?.program) request.program = compiled.program;
     const proven = prove && proofsAvailable;
     computeError = '';
     result = null;
@@ -179,6 +205,8 @@
     val1 = randomValue();
     val2 = randomValue();
     sumValues = Array.from({ length: 4 }, randomValue).join(', ');
+    const count = compiled?.checked?.inputCount ?? 3;
+    programValues = Array.from({ length: count }, randomValue).join(', ');
   }
 
   function formatBytes(n: number): string {
@@ -294,7 +322,48 @@
           </p>
         </div>
 
-        {#if kind === 'sum'}
+        {#if kind === 'program'}
+          <div class="field-block">
+            <label for="expression">Expression</label>
+            <input
+              id="expression"
+              type="text"
+              spellcheck="false"
+              autocomplete="off"
+              bind:value={expression}
+              aria-describedby="expression-help"
+              aria-invalid={compiled?.error ? 'true' : undefined}
+              required
+            />
+            {#if compiled?.error}
+              <p class="field-error" role="status">{compiled.error}</p>
+            {:else if compiled?.checked}
+              <p class="field-hint" id="expression-help">
+                {compiled.checked.steps.length} step{compiled.checked.steps.length === 1 ? '' : 's'}
+                on {inputNames(compiled.checked.inputCount).join(', ')}; the result is
+                {programResultType(compiled.checked) === 'bool' ? 'true or false' : `a ${integerType}`}.
+              </p>
+            {/if}
+            <p class="field-hint syntax-hint">
+              Inputs a to p; + − * / % · & | ^ ! · &lt;&lt; &gt;&gt; (by a number) · == != &lt; &lt;= &gt; &gt;= ·
+              && || · c ? x : y · min max abs rotl rotr. Numbers in the expression are sent unencrypted.
+            </p>
+          </div>
+          <div class="inputs-row sum-row">
+            <div class="field-block">
+              <label for="program-values">
+                Values for {compiled?.checked ? inputNames(compiled.checked.inputCount).join(', ') : 'the inputs'},
+                separated by commas
+              </label>
+              <input id="program-values" type="text" inputmode="numeric" bind:value={programValues} required />
+            </div>
+            <div class="op-glyph" aria-hidden="true">=</div>
+            <div class="field-block expected-block">
+              <div class="label-like">Expected</div>
+              <div class="expected-val">{expected ?? '—'}</div>
+            </div>
+          </div>
+        {:else if kind === 'sum'}
           <div class="inputs-row sum-row">
             <div class="field-block">
               <label for="sum-values">Values, separated by commas (2 to {MAX_SUM_INPUTS})</label>
@@ -461,6 +530,9 @@
   }
   .check input { width: auto; margin: 0; }
   .check-hint { margin-top: -0.5rem; }
+  #expression { font-family: var(--font-mono); margin-bottom: 0.75rem; }
+  .field-error { color: var(--error); font-size: 0.775rem; margin: -0.5rem 0 1rem; }
+  .syntax-hint { margin-top: -0.5rem; }
 
   .op-tabs {
     display: inline-flex; flex-wrap: wrap; gap: 0.25rem;

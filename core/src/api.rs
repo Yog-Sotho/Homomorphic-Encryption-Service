@@ -2,6 +2,7 @@
 //!
 //! Timestamps are UTC without an offset (`2026-10-27T10:00:00`).
 
+use crate::program::Program;
 use crate::{IntegerType, Operation, ValueType};
 use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
@@ -102,6 +103,13 @@ pub struct HeParams {
     /// Most input bytes one job takes, all inputs together.
     #[serde(default)]
     pub max_job_input_bytes: u64,
+    /// Most jobs in one batch (`POST /api/v1/compute/jobs/batch`); a batch's
+    /// inputs together are limited like one job's.
+    #[serde(default)]
+    pub max_batch_jobs: usize,
+    /// Most steps in one program.
+    #[serde(default)]
+    pub max_program_steps: usize,
     pub max_server_key_bytes: u64,
     pub max_keys_per_user: i64,
     /// Absent on servers before HE Engine 0.5, which take no proven inputs.
@@ -237,6 +245,24 @@ pub struct CreateJobRequest {
     /// A plaintext right-hand operand in decimal, e.g. `"-7"`. The server sees it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scalar: Option<String>,
+    /// The steps to run, for `operation: "program"` (and only then).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub program: Option<Program>,
+}
+
+/// `POST /api/v1/compute/jobs/batch`: several jobs, queued together or not at all.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(ToSchema))]
+pub struct BatchJobsRequest {
+    /// 1 to `max_batch_jobs` jobs, each as for `POST /api/v1/compute/jobs`.
+    pub jobs: Vec<CreateJobRequest>,
+}
+
+/// The queued jobs of a batch, in request order.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(ToSchema))]
+pub struct BatchJobsResponse {
+    pub jobs: Vec<JobSummary>,
 }
 
 /// A job as its owner sees it: metadata only, never ciphertexts.
@@ -262,6 +288,10 @@ pub struct JobSummary {
     /// The plaintext right-hand operand, if the job has one.
     #[serde(default)]
     pub scalar: Option<String>,
+    /// The program, for `operation: "program"`.
+    #[serde(default)]
+    #[cfg_attr(feature = "sqlx", sqlx(json(nullable)))]
+    pub program: Option<Program>,
     /// The server key the job is evaluated with; `None` once that key is deleted.
     pub key_id: Option<String>,
     /// Attempts started so far (internal errors are retried).
@@ -303,7 +333,7 @@ mod tests {
         let json = serde_json::json!({
             "id": "j", "status": "completed", "operation": "multiply",
             "integer_type": "u16", "result_type": "u16", "input_count": 2,
-            "proven": false, "scalar": null, "key_id": null,
+            "proven": false, "scalar": null, "program": null, "key_id": null,
             "attempts": 1, "error_message": null, "input_bytes": 264000,
             "result_bytes": 132000, "created_at": "2026-10-27T10:00:00",
             "started_at": null, "finished_at": "2026-10-27T10:00:02"

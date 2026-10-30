@@ -11,7 +11,7 @@
 use crate::config::Config;
 use crate::crypto::eval::proven_input_count;
 use crate::crypto::params::{
-    MAX_CIPHERTEXT_BYTES, MAX_INPUTS, MAX_JOB_INPUT_BYTES, MAX_PROVEN_LIST_BYTES,
+    MAX_BATCH_JOBS, MAX_CIPHERTEXT_BYTES, MAX_INPUTS, MAX_JOB_INPUT_BYTES, MAX_PROVEN_LIST_BYTES,
 };
 use crate::crypto::proofs::Crs;
 use crate::errors::AppError;
@@ -20,7 +20,10 @@ use crate::jobs::worker::JobNotifier;
 use crate::middleware::quota::{consume_compute_quota, refund_compute_quota, QuotaCharge};
 use actix_web::{http::header, web, HttpRequest, HttpResponse, Responder};
 use base64::{engine::general_purpose, Engine as _};
-use heaas_core::api::{CreateJobRequest, JobPage, JobStatus, JobSummary};
+use heaas_core::api::{
+    BatchJobsRequest, BatchJobsResponse, CreateJobRequest, JobPage, JobStatus, JobSummary,
+};
+use heaas_core::Operation;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use sqlx::SqlitePool;
@@ -43,7 +46,7 @@ const IDEMPOTENCY_KEY: &str = "Idempotency-Key";
 const MAX_IDEMPOTENCY_KEY_LEN: usize = 255;
 
 const SUMMARY_COLUMNS: &str = "id, status, operation, integer_type, result_type, input_count, \
-     proven, scalar, key_id, attempts, error_message, input_bytes, result_bytes, created_at, \
+     proven, scalar, program, key_id, attempts, error_message, input_bytes, result_bytes, created_at, \
      started_at, finished_at";
 
 /// How long a client should wait before retrying a submission refused for load.
@@ -102,6 +105,9 @@ struct Checked {
     proven: bool,
     /// Normalized decimal scalar.
     scalar: Option<String>,
+    result_type: heaas_core::ValueType,
+    /// The program as JSON, for `operation = 'program'`.
+    program_json: Option<String>,
 }
 
 /// Checks everything about a submission that does not need the caller's key:
@@ -144,11 +150,34 @@ async fn check_request(req: &CreateJobRequest, crs: &web::Data<Crs>) -> Result<C
     req.operation
         .check_operands(input_count, scalar.is_some())
         .map_err(AppError::bad_request)?;
+    let (result_type, program_json) = match (req.operation, &req.program) {
+        (Operation::Program, Some(program)) => {
+            let checked = program
+                .check(ty, input_count)
+                .map_err(|e| AppError::bad_request(format!("Invalid program: {e}")))?;
+            let json = serde_json::to_string(program)
+                .map_err(|e| AppError::internal(format!("encoding the program: {e}")))?;
+            (checked.result_type(), Some(json))
+        }
+        (Operation::Program, None) => {
+            return Err(AppError::bad_request(
+                "operation \"program\" needs a program",
+            ))
+        }
+        (op, Some(_)) => {
+            return Err(AppError::bad_request(format!(
+                "Only operation \"program\" takes a program, not {op}"
+            )))
+        }
+        (op, None) => (op.result_type(ty), None),
+    };
     Ok(Checked {
         files,
         input_count,
         proven,
         scalar,
+        result_type,
+        program_json,
     })
 }
 
@@ -206,156 +235,29 @@ fn accepted(job: JobSummary, replayed: bool) -> HttpResponse {
     response.json(job)
 }
 
-/// Answers a submission whose idempotency key was already used: the original
-/// job if the request is the same, 422 if it is not.
-async fn replay(
+/// A submission that passed every check that needs no writes.
+struct Prepared {
+    request: CreateJobRequest,
+    checked: Checked,
+    fingerprint: String,
+    idempotency_key: Option<String>,
+}
+
+/// Checks a submission (shape, inputs, the caller's key) and fingerprints it.
+async fn prepare(
     pool: &SqlitePool,
+    crs: &web::Data<Crs>,
     user_id: &str,
-    key: &str,
-    fingerprint: &str,
-) -> Result<Option<HttpResponse>, AppError> {
-    #[derive(sqlx::FromRow)]
-    struct Earlier {
-        id: String,
-        request_sha256: Option<String>,
-    }
-    let earlier: Option<Earlier> = sqlx::query_as(
-        "SELECT id, request_sha256 FROM jobs WHERE user_id = ? AND idempotency_key = ?",
-    )
-    .bind(user_id)
-    .bind(key)
-    .fetch_optional(pool)
-    .await?;
-    let Some(earlier) = earlier else {
-        return Ok(None);
-    };
-    if earlier.request_sha256.as_deref() != Some(fingerprint) {
-        return Err(AppError::unprocessable(format!(
-            "This {IDEMPOTENCY_KEY} was already used for a different request"
-        )));
-    }
-    let job = fetch_summary(pool, &earlier.id, user_id)
-        .await?
-        .ok_or_else(|| AppError::internal("idempotent job vanished"))?;
-    Ok(Some(accepted(job, true)))
-}
-
-/// Why a job could not be queued.
-enum Refusal {
-    UserLimit(i64),
-    QueueFull,
-    DuplicateKey,
-    Database(sqlx::Error),
-}
-
-/// A validated submission, ready to be queued.
-struct NewJob<'a> {
-    id: &'a str,
-    user_id: &'a str,
-    request: &'a CreateJobRequest,
-    checked: &'a Checked,
-    input_bytes: usize,
-    idempotency_key: Option<&'a str>,
-    fingerprint: &'a str,
-}
-
-/// Inserts the job unless the user or the whole queue is at capacity. The
-/// capacity checks and the insert are one statement, so they cannot race.
-async fn enqueue(pool: &SqlitePool, config: &Config, job: &NewJob<'_>) -> Result<(), Refusal> {
-    let inserted: Option<(String,)> = sqlx::query_as(
-        "INSERT INTO jobs (id, user_id, status, input_data_b64, operation, integer_type,
-                           result_type, input_count, proven, scalar, key_id,
-                           input_bytes, idempotency_key, request_sha256)
-         SELECT ?, ?, 'pending', '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-         WHERE (SELECT COUNT(*) FROM jobs WHERE status IN ('pending', 'processing')) < ?
-           AND (SELECT COUNT(*) FROM jobs
-                WHERE user_id = ? AND status IN ('pending', 'processing')) < ?
-         RETURNING id",
-    )
-    .bind(job.id)
-    .bind(job.user_id)
-    .bind(job.request.operation.as_str())
-    .bind(job.request.integer_type)
-    .bind(job.request.operation.result_type(job.request.integer_type))
-    .bind(job.checked.input_count as i64)
-    .bind(job.checked.proven)
-    .bind(&job.checked.scalar)
-    .bind(&job.request.key_id)
-    .bind(job.input_bytes as i64)
-    .bind(job.idempotency_key)
-    .bind(job.fingerprint)
-    .bind(config.max_queued_jobs)
-    .bind(job.user_id)
-    .bind(config.max_active_jobs_per_user)
-    .fetch_optional(pool)
-    .await
-    .map_err(|e| match e {
-        sqlx::Error::Database(ref db) if db.is_unique_violation() => Refusal::DuplicateKey,
-        e => Refusal::Database(e),
-    })?;
-    if inserted.is_some() {
-        return Ok(());
-    }
-
-    let (active,): (i64,) = sqlx::query_as(
-        "SELECT COUNT(*) FROM jobs WHERE user_id = ? AND status IN ('pending', 'processing')",
-    )
-    .bind(job.user_id)
-    .fetch_one(pool)
-    .await
-    .map_err(Refusal::Database)?;
-    Err(if active >= config.max_active_jobs_per_user {
-        Refusal::UserLimit(active)
-    } else {
-        Refusal::QueueFull
-    })
-}
-
-/// Undoes the side effects of a submission that was not queued.
-async fn abandon(
-    pool: &SqlitePool,
-    jobs: &web::Data<JobStore>,
-    user_id: &str,
-    charge: &QuotaCharge,
-    job_id: String,
-) {
-    refund_compute_quota(pool, user_id, charge).await;
-    let jobs = jobs.clone();
-    let _ = web::block(move || jobs.remove_logged(&job_id)).await;
-}
-
-/// `POST /api/v1/compute/jobs` — queue `operation` on the encrypted inputs.
-///
-/// Honours an `Idempotency-Key` header: resending the same request with the same
-/// key returns the original job (with `Idempotent-Replayed: true`) instead of
-/// queuing and charging a second one.
-#[utoipa::path(post, path = "/compute/jobs", tag = "jobs", security(("bearer" = [])), request_body = heaas_core::api::CreateJobRequest, params(("Idempotency-Key" = Option<String>, Header, description = "1-255 visible ASCII characters. A retry with the same key and body returns the original job instead of queuing (and charging) another.")), responses((status = 202, description = "Queued (or, for a replayed idempotency key, the original job)", body = heaas_core::api::JobSummary, headers(("Location" = String, description = "The job"), ("Idempotent-Replayed" = bool, description = "`true` when this is the original job of a reused key"))), (status = 400, description = "Wrong number or shape of inputs, bad base64, a malformed proven list, a scalar out of range, or a bad Idempotency-Key", body = heaas_core::api::ErrorBody), (status = 404, description = "No such server key", body = heaas_core::api::ErrorBody), (status = 413, description = "Body too large", body = heaas_core::api::ErrorBody), (status = 422, description = "Unknown operation or type; proven inputs for a key without proof support or public key; or the Idempotency-Key was used for a different request", body = heaas_core::api::ErrorBody), (status = 429, description = "Daily quota used up, or too many jobs waiting; see `Retry-After`", body = heaas_core::api::ErrorBody), (status = 503, description = "The queue is full; see `Retry-After`", body = heaas_core::api::ErrorBody)))]
-pub async fn submit_job(
-    pool: web::Data<SqlitePool>,
-    config: web::Data<Arc<Config>>,
-    jobs: web::Data<JobStore>,
-    notifier: web::Data<JobNotifier>,
-    http: HttpRequest,
-    req: web::Json<CreateJobRequest>,
-    user_id: web::ReqData<String>,
-) -> Result<HttpResponse, AppError> {
-    let req = req.into_inner();
-    let user_id = user_id.into_inner();
-    let pool = pool.get_ref();
-    let idempotency_key = idempotency_key(&http)?;
-    // From the app data rather than as an extractor: handlers stay under
-    // clippy's argument limit.
-    let crs = http
-        .app_data::<web::Data<Crs>>()
-        .ok_or_else(|| AppError::internal("the proof CRS is not configured"))?;
-    let checked = check_request(&req, crs).await?;
-
+    request: CreateJobRequest,
+    idempotency_key: Option<String>,
+) -> Result<Prepared, AppError> {
+    let checked = check_request(&request, crs).await?;
     let key: Option<(bool, bool)> = sqlx::query_as(
         "SELECT supports_proofs, public_key_sha256 IS NOT NULL FROM server_keys
          WHERE id = ? AND user_id = ?",
     )
-    .bind(&req.key_id)
-    .bind(&user_id)
+    .bind(&request.key_id)
+    .bind(user_id)
     .fetch_optional(pool)
     .await?;
     let Some((supports_proofs, has_public_key)) = key else {
@@ -372,59 +274,238 @@ pub async fn submit_job(
             "Upload this key's public key (PUT /api/v1/keys/{id}/public-key) before sending proven inputs",
         ));
     }
-
     let fingerprint = request_fingerprint(
         &[
-            &req.key_id,
-            req.operation.as_str(),
-            req.integer_type.as_str(),
+            &request.key_id,
+            request.operation.as_str(),
+            request.integer_type.as_str(),
             if checked.proven {
                 "proven"
             } else {
                 "ciphertexts"
             },
             checked.scalar.as_deref().unwrap_or(""),
+            checked.program_json.as_deref().unwrap_or(""),
         ],
         &checked.files,
     );
-    if let Some(key) = &idempotency_key {
-        if let Some(response) = replay(pool, &user_id, key, &fingerprint).await? {
-            return Ok(response);
+    Ok(Prepared {
+        request,
+        checked,
+        fingerprint,
+        idempotency_key,
+    })
+}
+
+/// The jobs earlier submitted with these submissions' idempotency keys: all of
+/// them if every key was used for the same request, none if no key was used,
+/// and 422 otherwise.
+async fn replay(
+    pool: &SqlitePool,
+    user_id: &str,
+    prepared: &[Prepared],
+) -> Result<Option<Vec<JobSummary>>, AppError> {
+    #[derive(sqlx::FromRow)]
+    struct Earlier {
+        id: String,
+        request_sha256: Option<String>,
+    }
+    let mut found = Vec::new();
+    for p in prepared {
+        let Some(key) = &p.idempotency_key else {
+            return Ok(None);
+        };
+        let earlier: Option<Earlier> = sqlx::query_as(
+            "SELECT id, request_sha256 FROM jobs WHERE user_id = ? AND idempotency_key = ?",
+        )
+        .bind(user_id)
+        .bind(key)
+        .fetch_optional(pool)
+        .await?;
+        found.push(earlier.map(|e| (e, &p.fingerprint)));
+    }
+    if found.iter().all(Option::is_none) {
+        return Ok(None);
+    }
+    let mut jobs = Vec::with_capacity(found.len());
+    for entry in found {
+        match entry {
+            Some((earlier, fingerprint))
+                if earlier.request_sha256.as_deref() == Some(fingerprint.as_str()) =>
+            {
+                jobs.push(
+                    fetch_summary(pool, &earlier.id, user_id)
+                        .await?
+                        .ok_or_else(|| AppError::internal("idempotent job vanished"))?,
+                );
+            }
+            _ => {
+                return Err(AppError::unprocessable(format!(
+                    "This {IDEMPOTENCY_KEY} was already used for a different request"
+                )))
+            }
         }
+    }
+    Ok(Some(jobs))
+}
+
+/// Why a job could not be queued.
+enum Refusal {
+    UserLimit(i64),
+    QueueFull,
+    DuplicateKey,
+    Database(sqlx::Error),
+}
+
+/// Inserts one job unless the user or the whole queue is at capacity. The
+/// capacity checks and the insert are one statement, so they cannot race; in a
+/// transaction, each insert counts the ones before it.
+async fn enqueue(
+    conn: &mut sqlx::SqliteConnection,
+    config: &Config,
+    id: &str,
+    user_id: &str,
+    p: &Prepared,
+) -> Result<(), Refusal> {
+    let input_bytes: usize = p.checked.files.iter().map(Vec::len).sum();
+    let inserted: Option<(String,)> = sqlx::query_as(
+        "INSERT INTO jobs (id, user_id, status, input_data_b64, operation, integer_type,
+                           result_type, input_count, proven, scalar, program, key_id,
+                           input_bytes, idempotency_key, request_sha256)
+         SELECT ?, ?, 'pending', '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+         WHERE (SELECT COUNT(*) FROM jobs WHERE status IN ('pending', 'processing')) < ?
+           AND (SELECT COUNT(*) FROM jobs
+                WHERE user_id = ? AND status IN ('pending', 'processing')) < ?
+         RETURNING id",
+    )
+    .bind(id)
+    .bind(user_id)
+    .bind(p.request.operation.as_str())
+    .bind(p.request.integer_type)
+    .bind(p.checked.result_type)
+    .bind(p.checked.input_count as i64)
+    .bind(p.checked.proven)
+    .bind(&p.checked.scalar)
+    .bind(&p.checked.program_json)
+    .bind(&p.request.key_id)
+    .bind(input_bytes as i64)
+    .bind(&p.idempotency_key)
+    .bind(&p.fingerprint)
+    .bind(config.max_queued_jobs)
+    .bind(user_id)
+    .bind(config.max_active_jobs_per_user)
+    .fetch_optional(&mut *conn)
+    .await
+    .map_err(|e| match e {
+        sqlx::Error::Database(ref db) if db.is_unique_violation() => Refusal::DuplicateKey,
+        e => Refusal::Database(e),
+    })?;
+    if inserted.is_some() {
+        return Ok(());
+    }
+
+    let (active,): (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM jobs WHERE user_id = ? AND status IN ('pending', 'processing')",
+    )
+    .bind(user_id)
+    .fetch_one(&mut *conn)
+    .await
+    .map_err(Refusal::Database)?;
+    Err(if active >= config.max_active_jobs_per_user {
+        Refusal::UserLimit(active)
+    } else {
+        Refusal::QueueFull
+    })
+}
+
+/// Inserts every job in one transaction: all are queued, or none.
+async fn enqueue_all(
+    pool: &SqlitePool,
+    config: &Config,
+    user_id: &str,
+    ids: &[String],
+    prepared: &[Prepared],
+) -> Result<(), Refusal> {
+    let mut tx = pool.begin().await.map_err(Refusal::Database)?;
+    for (id, p) in ids.iter().zip(prepared) {
+        enqueue(&mut tx, config, id, user_id, p).await?;
+    }
+    tx.commit().await.map_err(Refusal::Database)
+}
+
+/// Undoes the side effects of submissions that were not queued.
+async fn abandon(
+    pool: &SqlitePool,
+    jobs: &web::Data<JobStore>,
+    user_id: &str,
+    charge: &QuotaCharge,
+    job_ids: Vec<String>,
+) {
+    refund_compute_quota(pool, user_id, charge).await;
+    let jobs = jobs.clone();
+    let _ = web::block(move || job_ids.iter().for_each(|id| jobs.remove_logged(id))).await;
+}
+
+/// Charges, stores and queues the submissions, all of them or none. Returns
+/// the jobs and whether they are earlier ones replayed for reused
+/// idempotency keys.
+async fn submit_all(
+    pool: &SqlitePool,
+    config: &Config,
+    jobs: &web::Data<JobStore>,
+    notifier: &JobNotifier,
+    user_id: &str,
+    prepared: Vec<Prepared>,
+) -> Result<(Vec<JobSummary>, bool), AppError> {
+    if let Some(earlier) = replay(pool, user_id, &prepared).await? {
+        return Ok((earlier, true));
     }
 
     // Only accepted submissions are charged; polling and listing are free.
-    let charge = consume_compute_quota(pool, &user_id, config.daily_compute_quota).await?;
+    let charge =
+        consume_compute_quota(pool, user_id, config.daily_compute_quota, prepared.len()).await?;
 
-    let job_id = Uuid::new_v4().to_string();
-    let input_bytes = checked.files.iter().map(Vec::len).sum();
+    let ids: Vec<String> = prepared
+        .iter()
+        .map(|_| Uuid::new_v4().to_string())
+        .collect();
     let stored = {
-        let (jobs, job_id, files) = (jobs.clone(), job_id.clone(), checked.files.clone());
-        web::block(move || jobs.write_inputs(&job_id, &files)).await
+        let store = jobs.clone();
+        let files: Vec<(String, Vec<Vec<u8>>)> = ids
+            .iter()
+            .cloned()
+            .zip(prepared.iter().map(|p| p.checked.files.clone()))
+            .collect();
+        web::block(move || {
+            files
+                .iter()
+                .try_for_each(|(id, files)| store.write_inputs(id, files))
+        })
+        .await
     };
     if !matches!(stored, Ok(Ok(()))) {
-        abandon(pool, &jobs, &user_id, &charge, job_id).await;
+        abandon(pool, jobs, user_id, &charge, ids).await;
         return Err(AppError::service_unavailable(
             "Could not store the job; please retry",
             RETRY_FULL_QUEUE_SECS,
         ));
     }
 
-    let new_job = NewJob {
-        id: &job_id,
-        user_id: &user_id,
-        request: &req,
-        checked: &checked,
-        input_bytes,
-        idempotency_key: idempotency_key.as_deref(),
-        fingerprint: &fingerprint,
-    };
-    let queued = enqueue(pool, &config, &new_job).await;
-    if let Err(refusal) = queued {
-        abandon(pool, &jobs, &user_id, &charge, job_id).await;
+    if let Err(refusal) = enqueue_all(pool, config, user_id, &ids, &prepared).await {
+        abandon(pool, jobs, user_id, &charge, ids).await;
         return match refusal {
             Refusal::UserLimit(active) => Err(AppError::too_many_requests(
-                format!("You have {active} jobs waiting or running. Wait for some to finish."),
+                format!(
+                    "You have {active} jobs waiting or running{}. Wait for some to finish.",
+                    if prepared.len() > 1 {
+                        format!(
+                            ", and the limit leaves no room for these {}",
+                            prepared.len()
+                        )
+                    } else {
+                        String::new()
+                    }
+                ),
                 Some(RETRY_USER_LIMIT_SECS),
             )),
             Refusal::QueueFull => Err(AppError::service_unavailable(
@@ -432,21 +513,120 @@ pub async fn submit_job(
                 RETRY_FULL_QUEUE_SECS,
             )),
             // A concurrent request with the same key won the race.
-            Refusal::DuplicateKey => {
-                let key = idempotency_key.as_deref().unwrap_or_default();
-                replay(pool, &user_id, key, &fingerprint)
-                    .await?
-                    .ok_or_else(|| AppError::internal("duplicate idempotency key not found"))
-            }
+            Refusal::DuplicateKey => replay(pool, user_id, &prepared)
+                .await?
+                .map(|earlier| (earlier, true))
+                .ok_or_else(|| AppError::internal("duplicate idempotency key not found")),
             Refusal::Database(e) => Err(e.into()),
         };
     }
 
-    notifier.job_queued();
-    let job = fetch_summary(pool, &job_id, &user_id)
-        .await?
-        .ok_or_else(|| AppError::internal("queued job vanished"))?;
-    Ok(accepted(job, false))
+    let mut summaries = Vec::with_capacity(ids.len());
+    for id in &ids {
+        notifier.job_queued();
+        summaries.push(
+            fetch_summary(pool, id, user_id)
+                .await?
+                .ok_or_else(|| AppError::internal("queued job vanished"))?,
+        );
+    }
+    Ok((summaries, false))
+}
+
+fn crs_of(http: &HttpRequest) -> Result<&web::Data<Crs>, AppError> {
+    // From the app data rather than as an extractor: handlers stay under
+    // clippy's argument limit.
+    http.app_data::<web::Data<Crs>>()
+        .ok_or_else(|| AppError::internal("the proof CRS is not configured"))
+}
+
+/// `POST /api/v1/compute/jobs` — queue `operation` on the encrypted inputs.
+///
+/// Honours an `Idempotency-Key` header: resending the same request with the same
+/// key returns the original job (with `Idempotent-Replayed: true`) instead of
+/// queuing and charging a second one.
+#[utoipa::path(post, path = "/compute/jobs", tag = "jobs", security(("bearer" = [])), request_body = heaas_core::api::CreateJobRequest, params(("Idempotency-Key" = Option<String>, Header, description = "1-255 visible ASCII characters. A retry with the same key and body returns the original job instead of queuing (and charging) another.")), responses((status = 202, description = "Queued (or, for a replayed idempotency key, the original job)", body = heaas_core::api::JobSummary, headers(("Location" = String, description = "The job"), ("Idempotent-Replayed" = bool, description = "`true` when this is the original job of a reused key"))), (status = 400, description = "Wrong number or shape of inputs, bad base64, a malformed proven list, a scalar out of range, an invalid program, or a bad Idempotency-Key", body = heaas_core::api::ErrorBody), (status = 404, description = "No such server key", body = heaas_core::api::ErrorBody), (status = 413, description = "Body too large", body = heaas_core::api::ErrorBody), (status = 422, description = "Unknown operation or type; proven inputs for a key without proof support or public key; or the Idempotency-Key was used for a different request", body = heaas_core::api::ErrorBody), (status = 429, description = "Daily quota used up, or too many jobs waiting; see `Retry-After`", body = heaas_core::api::ErrorBody), (status = 503, description = "The queue is full; see `Retry-After`", body = heaas_core::api::ErrorBody)))]
+pub async fn submit_job(
+    pool: web::Data<SqlitePool>,
+    config: web::Data<Arc<Config>>,
+    jobs: web::Data<JobStore>,
+    notifier: web::Data<JobNotifier>,
+    http: HttpRequest,
+    req: web::Json<CreateJobRequest>,
+    user_id: web::ReqData<String>,
+) -> Result<HttpResponse, AppError> {
+    let user_id = user_id.into_inner();
+    let pool = pool.get_ref();
+    let key = idempotency_key(&http)?;
+    let prepared = prepare(pool, crs_of(&http)?, &user_id, req.into_inner(), key).await?;
+    let (mut queued, replayed) =
+        submit_all(pool, &config, &jobs, &notifier, &user_id, vec![prepared]).await?;
+    let job = queued
+        .pop()
+        .ok_or_else(|| AppError::internal("no job queued"))?;
+    Ok(accepted(job, replayed))
+}
+
+/// `POST /api/v1/compute/jobs/batch` — queue several jobs at once, all or none.
+///
+/// With an `Idempotency-Key`, job *i* is keyed `<key>/<i>`: resending the batch
+/// returns the original jobs.
+#[utoipa::path(post, path = "/compute/jobs/batch", tag = "jobs", security(("bearer" = [])), request_body = heaas_core::api::BatchJobsRequest, params(("Idempotency-Key" = Option<String>, Header, description = "1-255 visible ASCII characters, for the whole batch. A retry with the same key and body returns the original jobs.")), responses((status = 202, description = "Every job queued (or, for a replayed idempotency key, the original jobs), in request order", body = heaas_core::api::BatchJobsResponse, headers(("Idempotent-Replayed" = bool, description = "`true` when these are the original jobs of a reused key"))), (status = 400, description = "An empty or oversized batch, or any job that would be refused on its own (the message names it)", body = heaas_core::api::ErrorBody), (status = 404, description = "A job names no server key of yours", body = heaas_core::api::ErrorBody), (status = 413, description = "Body too large: all inputs together are limited like one job's", body = heaas_core::api::ErrorBody), (status = 422, description = "As for one job", body = heaas_core::api::ErrorBody), (status = 429, description = "Not enough daily quota or active-job room for every job; nothing is queued", body = heaas_core::api::ErrorBody), (status = 503, description = "The queue is full; see `Retry-After`", body = heaas_core::api::ErrorBody)))]
+pub async fn submit_batch(
+    pool: web::Data<SqlitePool>,
+    config: web::Data<Arc<Config>>,
+    jobs: web::Data<JobStore>,
+    notifier: web::Data<JobNotifier>,
+    http: HttpRequest,
+    req: web::Json<BatchJobsRequest>,
+    user_id: web::ReqData<String>,
+) -> Result<HttpResponse, AppError> {
+    let user_id = user_id.into_inner();
+    let pool = pool.get_ref();
+    let requests = req.into_inner().jobs;
+    if requests.is_empty() || requests.len() > MAX_BATCH_JOBS {
+        return Err(AppError::bad_request(format!(
+            "A batch has 1 to {MAX_BATCH_JOBS} jobs, not {}",
+            requests.len()
+        )));
+    }
+    let key = idempotency_key(&http)?;
+    let crs = crs_of(&http)?;
+    let mut prepared = Vec::with_capacity(requests.len());
+    for (i, request) in requests.into_iter().enumerate() {
+        let job_key = key.as_ref().map(|k| format!("{k}/{i}"));
+        let p = prepare(pool, crs, &user_id, request, job_key)
+            .await
+            .map_err(|e| e.prefixed(&format!("Job {}: ", i + 1)))?;
+        prepared.push(p);
+    }
+    // Each job's fingerprint covers the whole batch, so a key reused for a
+    // different batch (even one sharing some jobs) is refused.
+    let whole: Vec<Vec<u8>> = prepared
+        .iter()
+        .map(|p| p.fingerprint.clone().into_bytes())
+        .collect();
+    let batch = request_fingerprint(&["batch"], &whole);
+    for (i, p) in prepared.iter_mut().enumerate() {
+        p.fingerprint = format!("{batch}:{i}");
+    }
+    let total: usize = prepared
+        .iter()
+        .flat_map(|p| &p.checked.files)
+        .map(Vec::len)
+        .sum();
+    if total as u64 > MAX_JOB_INPUT_BYTES {
+        return Err(AppError::bad_request(format!(
+            "The inputs of a batch are limited to {MAX_JOB_INPUT_BYTES} bytes together"
+        )));
+    }
+    let (queued, replayed) =
+        submit_all(pool, &config, &jobs, &notifier, &user_id, prepared).await?;
+    let mut response = HttpResponse::Accepted();
+    if replayed {
+        response.insert_header(("Idempotent-Replayed", "true"));
+    }
+    Ok(response.json(BatchJobsResponse { jobs: queued }))
 }
 
 /// `GET /api/v1/compute/jobs/{id}`
@@ -683,6 +863,7 @@ mod tests {
             input_count: 2,
             proven: false,
             scalar: None,
+            program: None,
             key_id: None,
             attempts: 1,
             error_message: None,

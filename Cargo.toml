@@ -24,7 +24,7 @@ reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-feature
 sha2 = "0.10"
 base64 = "0.23"
 thiserror = "2"
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls", "sqlite", "chrono", "uuid", "macros", "migrate"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls", "sqlite", "chrono", "uuid", "macros", "migrate", "json"] }
 utoipa = { version = "6", features = ["chrono", "uuid"] }
 wiremock = "0.6"
 clap = { version = "4.6", features = ["derive", "env"] }

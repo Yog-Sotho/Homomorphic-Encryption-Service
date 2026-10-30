@@ -86,4 +86,34 @@ fn commands_that_need_an_account_say_how_to_sign_in() {
     let one_operand = heaas(dir.path(), &["run", "--key-id", "k", "--op", "add", "1"]);
     assert_eq!(one_operand.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&one_operand.stderr).contains("exactly 2"));
+
+    // Expressions are compiled and type-checked locally too.
+    let run_expr = |expr: &str, values: &[&str]| {
+        let mut args = vec!["run", "--key-id", "k", "--type", "u8", "--expr", expr];
+        args.extend_from_slice(values);
+        heaas(dir.path(), &args)
+    };
+    let wrong_count = run_expr("a + b", &["1"]);
+    assert!(String::from_utf8_lossy(&wrong_count.stderr).contains("reads 2 input"));
+    let bad_constant = run_expr("a + 256", &["1"]);
+    assert!(String::from_utf8_lossy(&bad_constant.stderr).contains("outside the u8 range"));
+    let syntax = run_expr("a +", &["1"]);
+    assert!(String::from_utf8_lossy(&syntax.stderr).contains("ends too early"));
+    let both = heaas(
+        dir.path(),
+        &[
+            "run", "--key-id", "k", "--op", "add", "--expr", "a + b", "1", "2",
+        ],
+    );
+    assert_eq!(
+        both.status.code(),
+        Some(2),
+        "--op and --expr exclude each other"
+    );
+    let neither = heaas(dir.path(), &["run", "--key-id", "k", "1", "2"]);
+    assert_eq!(
+        neither.status.code(),
+        Some(2),
+        "one of --op and --expr is needed"
+    );
 }

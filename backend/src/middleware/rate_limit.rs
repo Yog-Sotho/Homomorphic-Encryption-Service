@@ -156,8 +156,10 @@ impl RateLimits {
     }
 }
 
-/// `from_fn` middleware limiting every request in its scope per client IP.
-pub async fn limit_auth_requests(
+/// `from_fn` middleware limiting every request in its scope per client IP: the
+/// `/auth` scope and the CRS download share one budget
+/// (`RATE_LIMIT_AUTH_PER_MINUTE`).
+pub async fn limit_per_client_ip(
     req: ServiceRequest,
     next: Next<impl MessageBody + 'static>,
 ) -> Result<ServiceResponse<BoxBody>, Error> {

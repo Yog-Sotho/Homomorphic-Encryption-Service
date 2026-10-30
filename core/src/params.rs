@@ -32,8 +32,15 @@ pub const DEFAULT_INTEGER_TYPE: IntegerType = IntegerType::U16;
 /// length prefix cannot force unbounded allocations.
 pub const MAX_CIPHERTEXT_BYTES: u64 = 1 << 20;
 
-/// Most encrypted inputs one job takes (a `sum`).
+/// Most encrypted inputs one job takes (a `sum` or a program).
 pub const MAX_INPUTS: usize = 16;
+
+/// Most steps in one program.
+pub const MAX_PROGRAM_STEPS: usize = 64;
+
+/// Most jobs in one batch submission. All their inputs together are limited
+/// like one job's ([`MAX_JOB_INPUT_BYTES`]).
+pub const MAX_BATCH_JOBS: usize = 16;
 
 /// Most input bytes one job takes: [`MAX_INPUTS`] `FheUint64`s fit.
 pub const MAX_JOB_INPUT_BYTES: u64 = 9 << 20;
@@ -205,7 +212,8 @@ pub fn parameter_sheet() -> String {
             "Size limits",
             format!(
                 "ciphertext ≤ {MAX_CIPHERTEXT_BYTES} B, inputs per job ≤ {MAX_INPUTS} \
-                 (≤ {MAX_JOB_INPUT_BYTES} B), proven list ≤ {MAX_PROVEN_LIST_BYTES} B, \
+                 (≤ {MAX_JOB_INPUT_BYTES} B), program steps ≤ {MAX_PROGRAM_STEPS}, \
+                 jobs per batch ≤ {MAX_BATCH_JOBS}, proven list ≤ {MAX_PROVEN_LIST_BYTES} B, \
                  public key ≤ {MAX_PUBLIC_KEY_BYTES} B, client key ≤ {MAX_CLIENT_KEY_BYTES} B, \
                  compressed server key ≤ {MAX_SERVER_KEY_BYTES} B (servers may accept less)"
             ),

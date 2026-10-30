@@ -74,6 +74,37 @@ impl AppError {
         AppError::Internal(msg.into())
     }
 
+    /// The same error with `prefix` before its message, e.g. "Job 2: ".
+    /// Internal errors are unchanged (their details are never shown).
+    pub fn prefixed(self, prefix: &str) -> Self {
+        let p = |m: String| format!("{prefix}{m}");
+        match self {
+            AppError::Unauthorized(m) => AppError::Unauthorized(p(m)),
+            AppError::Forbidden(m) => AppError::Forbidden(p(m)),
+            AppError::NotFound(m) => AppError::NotFound(p(m)),
+            AppError::BadRequest(m) => AppError::BadRequest(p(m)),
+            AppError::Conflict(m) => AppError::Conflict(p(m)),
+            AppError::PayloadTooLarge(m) => AppError::PayloadTooLarge(p(m)),
+            AppError::UnsupportedMediaType(m) => AppError::UnsupportedMediaType(p(m)),
+            AppError::Unprocessable(m) => AppError::Unprocessable(p(m)),
+            AppError::TooManyRequests {
+                message,
+                retry_after,
+            } => AppError::TooManyRequests {
+                message: p(message),
+                retry_after,
+            },
+            AppError::ServiceUnavailable {
+                message,
+                retry_after,
+            } => AppError::ServiceUnavailable {
+                message: p(message),
+                retry_after,
+            },
+            internal @ AppError::Internal(_) => internal,
+        }
+    }
+
     /// The envelope's machine-readable `code`.
     pub fn code(&self) -> &'static str {
         match self {

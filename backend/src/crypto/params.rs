@@ -27,6 +27,8 @@ pub async fn get_params(config: web::Data<Arc<Config>>, crs: web::Data<Crs>) -> 
         max_ciphertext_bytes: MAX_CIPHERTEXT_BYTES,
         max_inputs: MAX_INPUTS,
         max_job_input_bytes: MAX_JOB_INPUT_BYTES,
+        max_batch_jobs: MAX_BATCH_JOBS,
+        max_program_steps: MAX_PROGRAM_STEPS,
         max_server_key_bytes: config.max_server_key_bytes,
         max_keys_per_user: config.max_keys_per_user,
         proofs: Some(ProofParams {

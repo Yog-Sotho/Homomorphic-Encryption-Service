@@ -881,7 +881,7 @@
             }
           },
           "400": {
-            "description": "Wrong number or shape of inputs, bad base64, a malformed proven list, a scalar out of range, or a bad Idempotency-Key",
+            "description": "Wrong number or shape of inputs, bad base64, a malformed proven list, a scalar out of range, an invalid program, or a bad Idempotency-Key",
             "content": {
               "application/json": {
                 "schema": {
@@ -925,6 +925,131 @@
           },
           "429": {
             "description": "Daily quota used up, or too many jobs waiting; see `Retry-After`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The queue is full; see `Retry-After`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/compute/jobs/batch": {
+      "post": {
+        "tags": [
+          "jobs"
+        ],
+        "summary": "`POST /api/v1/compute/jobs/batch` — queue several jobs at once, all or none.",
+        "description": "With an `Idempotency-Key`, job *i* is keyed `<key>/<i>`: resending the batch\nreturns the original jobs.",
+        "operationId": "submit_batch",
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "1-255 visible ASCII characters, for the whole batch. A retry with the same key and body returns the original jobs.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BatchJobsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Every job queued (or, for a replayed idempotency key, the original jobs), in request order",
+            "headers": {
+              "Idempotent-Replayed": {
+                "schema": {
+                  "type": "boolean"
+                },
+                "description": "`true` when these are the original jobs of a reused key"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BatchJobsResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "An empty or oversized batch, or any job that would be refused on its own (the message names it)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "description": "A job names no server key of yours",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Body too large: all inputs together are limited like one job's",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "As for one job",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Not enough daily quota or active-job room for every job; nothing is queued",
             "content": {
               "application/json": {
                 "schema": {
@@ -1674,6 +1799,52 @@
   },
   "components": {
     "schemas": {
+      "Arg": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "The job's encrypted input with this index (0-based).",
+            "required": [
+              "input"
+            ],
+            "properties": {
+              "input": {
+                "type": "integer",
+                "description": "The job's encrypted input with this index (0-based).",
+                "minimum": 0
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "The result of an earlier step (0-based).",
+            "required": [
+              "step"
+            ],
+            "properties": {
+              "step": {
+                "type": "integer",
+                "description": "The result of an earlier step (0-based).",
+                "minimum": 0
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "A plaintext constant in decimal, e.g. `\"-3\"`. The server sees it.",
+            "required": [
+              "const"
+            ],
+            "properties": {
+              "const": {
+                "type": "string",
+                "description": "A plaintext constant in decimal, e.g. `\"-3\"`. The server sees it."
+              }
+            }
+          }
+        ],
+        "description": "An argument of a step."
+      },
       "AuthResponse": {
         "type": "object",
         "description": "A signed-in session. The refresh token is not here: it is set as the\n`HttpOnly` cookie `heaas_refresh` (path `/api/v1/auth`).",
@@ -1694,6 +1865,37 @@
           },
           "user": {
             "$ref": "#/components/schemas/UserPublic"
+          }
+        }
+      },
+      "BatchJobsRequest": {
+        "type": "object",
+        "description": "`POST /api/v1/compute/jobs/batch`: several jobs, queued together or not at all.",
+        "required": [
+          "jobs"
+        ],
+        "properties": {
+          "jobs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CreateJobRequest"
+            },
+            "description": "1 to `max_batch_jobs` jobs, each as for `POST /api/v1/compute/jobs`."
+          }
+        }
+      },
+      "BatchJobsResponse": {
+        "type": "object",
+        "description": "The queued jobs of a batch, in request order.",
+        "required": [
+          "jobs"
+        ],
+        "properties": {
+          "jobs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/JobSummary"
+            }
           }
         }
       },
@@ -1769,6 +1971,17 @@
           },
           "operation": {
             "$ref": "#/components/schemas/Operation"
+          },
+          "program": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Program",
+                "description": "The steps to run, for `operation: \"program\"` (and only then)."
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "proven_inputs": {
             "type": [
@@ -1921,6 +2134,11 @@
             "type": "string",
             "example": "TFHE-rs"
           },
+          "max_batch_jobs": {
+            "type": "integer",
+            "description": "Most jobs in one batch (`POST /api/v1/compute/jobs/batch`); a batch's\ninputs together are limited like one job's.",
+            "minimum": 0
+          },
           "max_ciphertext_bytes": {
             "type": "integer",
             "format": "int64",
@@ -1940,6 +2158,11 @@
           "max_keys_per_user": {
             "type": "integer",
             "format": "int64"
+          },
+          "max_program_steps": {
+            "type": "integer",
+            "description": "Most steps in one program.",
+            "minimum": 0
           },
           "max_server_key_bytes": {
             "type": "integer",
@@ -2105,6 +2328,17 @@
           "operation": {
             "$ref": "#/components/schemas/Operation"
           },
+          "program": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Program",
+                "description": "The program, for `operation: \"program\"`."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "proven": {
             "type": "boolean",
             "description": "The inputs were a zero-knowledge-proven list."
@@ -2209,7 +2443,7 @@
       },
       "Operation": {
         "type": "string",
-        "description": "Homomorphic operations. Arithmetic wraps modulo 2^bits of the input type;\ncomparisons return an encrypted boolean.\n\nEvery operation except [`Sum`](Operation::Sum) takes two operands: two\nciphertexts, or one ciphertext and a plaintext `scalar` as the right-hand side.\n`Sum` adds 2 to [`MAX_INPUTS`] ciphertexts.",
+        "description": "Homomorphic operations. Arithmetic wraps modulo 2^bits of the input type;\ncomparisons return an encrypted boolean.\n\nEvery operation except [`Sum`](Operation::Sum) and\n[`Program`](Operation::Program) takes two operands: two ciphertexts, or one\nciphertext and a plaintext `scalar` as the right-hand side. `Sum` adds 2 to\n[`MAX_INPUTS`] ciphertexts. `Program` runs the job's\n[`Program`](crate::program::Program) on 1 to [`MAX_INPUTS`] ciphertexts.",
         "enum": [
           "add",
           "subtract",
@@ -2222,7 +2456,53 @@
           "le",
           "gt",
           "ge",
-          "sum"
+          "sum",
+          "program"
+        ]
+      },
+      "Program": {
+        "type": "object",
+        "description": "Steps evaluated in order; the last one is the result.",
+        "required": [
+          "steps"
+        ],
+        "properties": {
+          "steps": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Step"
+            }
+          }
+        }
+      },
+      "ProgramOp": {
+        "type": "string",
+        "description": "What a step computes. Arithmetic wraps modulo 2^bits of the program's type.",
+        "enum": [
+          "add",
+          "subtract",
+          "multiply",
+          "divide",
+          "remainder",
+          "min",
+          "max",
+          "eq",
+          "ne",
+          "lt",
+          "le",
+          "gt",
+          "ge",
+          "and",
+          "or",
+          "xor",
+          "not",
+          "neg",
+          "abs",
+          "shl",
+          "shr",
+          "rotl",
+          "rotr",
+          "select"
         ]
       },
       "ProofParams": {
@@ -2340,6 +2620,24 @@
           "supports_proofs": {
             "type": "boolean",
             "description": "The key was made with the compact-public-key parameters, so it can take\nproven inputs once its public key is uploaded. Keys from before HE Engine\n0.5 cannot."
+          }
+        }
+      },
+      "Step": {
+        "type": "object",
+        "required": [
+          "op",
+          "args"
+        ],
+        "properties": {
+          "args": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Arg"
+            }
+          },
+          "op": {
+            "$ref": "#/components/schemas/ProgramOp"
           }
         }
       },

@@ -22,6 +22,9 @@ pub struct ClaimedJob {
     pub proven: bool,
     /// The plaintext right-hand operand, in decimal.
     pub scalar: Option<String>,
+    /// For `operation = 'program'`: the steps, as submitted (and checked).
+    #[sqlx(json(nullable))]
+    pub program: Option<heaas_core::program::Program>,
     /// Including the attempt just started.
     pub attempts: i64,
     pub created_at: chrono::NaiveDateTime,
@@ -51,7 +54,7 @@ pub async fn claim_next(pool: &SqlitePool) -> sqlx::Result<Option<ClaimedJob>> {
              LIMIT 1
          )
          RETURNING id, key_id, operation, integer_type, input_count, proven, scalar,
-                   attempts, created_at",
+                   program, attempts, created_at",
     )
     .fetch_optional(pool)
     .await
