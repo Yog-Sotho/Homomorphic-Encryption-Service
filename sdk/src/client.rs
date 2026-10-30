@@ -355,13 +355,38 @@ impl Client {
         }
     }
 
-    /// The encrypted result of a completed job (decrypt it with
+    /// The (first) encrypted result of a completed job (decrypt it with
     /// [`crate::fhe::decrypt`]).
     pub async fn result(&self, job_id: &str) -> Result<Vec<u8>> {
-        let response = self
-            .send(self.request(Method::GET, &["compute", "jobs", job_id, "result"]))
-            .await?;
+        self.result_output(job_id, 0).await
+    }
+
+    /// Encrypted result `output` (0-based) of a completed job: for a program
+    /// with several outputs, decrypt it as `result_types[output]`.
+    pub async fn result_output(&self, job_id: &str, output: usize) -> Result<Vec<u8>> {
+        let mut builder = self.request(Method::GET, &["compute", "jobs", job_id, "result"]);
+        if output != 0 {
+            builder = builder.query(&[("output", output)]);
+        }
+        let response = self.send(builder).await?;
         Ok(response.bytes().await?.to_vec())
+    }
+
+    /// Every encrypted result of a completed job, in order: one ciphertext per
+    /// [`JobSummary::output_types`] entry, or, if the job has
+    /// `compressed_results`, the one compressed list (see
+    /// [`crate::fhe::decrypt_compressed`]).
+    pub async fn results(&self, job: &JobSummary) -> Result<Vec<Vec<u8>>> {
+        let count = if job.compressed_results {
+            1
+        } else {
+            job.output_types().len()
+        };
+        let mut results = Vec::with_capacity(count);
+        for output in 0..count {
+            results.push(self.result_output(&job.id, output).await?);
+        }
+        Ok(results)
     }
 
     /// Submits, waits and fetches the encrypted result.
@@ -378,8 +403,9 @@ impl Client {
         self.result(&job.id).await
     }
 
-    /// Submits any job, waits and fetches the encrypted result. Decrypt it as the
-    /// returned job's `result_type` (see [`crate::fhe::decrypt_as`]).
+    /// Submits any job, waits and fetches the (first) encrypted result. Decrypt
+    /// it as the returned job's `result_type` (see [`crate::fhe::decrypt_as`]);
+    /// [`Client::results`] fetches every result.
     pub async fn compute_job(
         &self,
         request: &CreateJobRequest,
@@ -424,6 +450,7 @@ fn binary_request(key_id: &str, operation: Operation, a: &[u8], b: &[u8]) -> Cre
         proven_inputs: None,
         scalar: None,
         program: None,
+        compress_results: false,
     }
 }
 

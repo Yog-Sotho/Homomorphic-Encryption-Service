@@ -2,15 +2,16 @@
 //!
 //! A [`Program`] is a list of [`Step`]s. Each step applies a [`ProgramOp`] to
 //! arguments that are job inputs, results of earlier steps, or plaintext
-//! constants; the last step is the job's result. Every intermediate value stays
-//! encrypted on the server. [`Program::check`] type-checks a program for an
-//! integer type and an input count, and [`CheckedProgram::eval_plain`] gives the
-//! plaintext result the decrypted homomorphic one must equal.
+//! constants. The job's results are the steps named in `outputs` (by default
+//! the last one). Every intermediate value stays encrypted on the server.
+//! [`Program::check`] type-checks a program for an integer type and an input
+//! count, and [`CheckedProgram::eval_plain`] gives the plaintext results the
+//! decrypted homomorphic ones must equal.
 //!
 //! [`parse_expression`](crate::parse_expression) compiles a small expression
 //! syntax (`(a + b) * 3 < c ? a : b`) into a program.
 
-use crate::params::{MAX_INPUTS, MAX_PROGRAM_STEPS};
+use crate::params::{MAX_INPUTS, MAX_PROGRAM_OUTPUTS, MAX_PROGRAM_STEPS, MAX_TABLE_ENTRIES};
 use crate::types::{IntegerType, PlainValue, ValueType};
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -69,10 +70,14 @@ pub enum ProgramOp {
     Rotr,
     /// `select(condition, if_true, if_false)`: an encrypted if-then-else.
     Select,
+    /// `lookup(x, default)` with the step's `table`: the value the table gives
+    /// for `x`, or the constant `default` if `x` is not one of its keys. Keys and
+    /// values are constants of the program's type.
+    Lookup,
 }
 
 impl ProgramOp {
-    pub const ALL: [ProgramOp; 24] = [
+    pub const ALL: [ProgramOp; 25] = [
         ProgramOp::Add,
         ProgramOp::Subtract,
         ProgramOp::Multiply,
@@ -97,6 +102,7 @@ impl ProgramOp {
         ProgramOp::Rotl,
         ProgramOp::Rotr,
         ProgramOp::Select,
+        ProgramOp::Lookup,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -125,6 +131,7 @@ impl ProgramOp {
             ProgramOp::Rotl => "rotl",
             ProgramOp::Rotr => "rotr",
             ProgramOp::Select => "select",
+            ProgramOp::Lookup => "lookup",
         }
     }
 
@@ -147,18 +154,55 @@ impl fmt::Display for ProgramOp {
     }
 }
 
+/// One entry of a lookup table: `key` maps to `value` (decimal constants).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct TableEntry {
+    pub key: String,
+    pub value: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct Step {
     pub op: ProgramOp,
     pub args: Vec<Arg>,
+    /// For `lookup` only: 1 to `max_table_entries` entries with distinct keys.
+    /// The server sees the table.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub table: Option<Vec<TableEntry>>,
 }
 
-/// Steps evaluated in order; the last one is the result.
+impl Step {
+    /// A step without a table (every operation but `lookup`).
+    pub fn new(op: ProgramOp, args: Vec<Arg>) -> Self {
+        Step {
+            op,
+            args,
+            table: None,
+        }
+    }
+}
+
+/// Steps evaluated in order.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct Program {
     pub steps: Vec<Step>,
+    /// The steps (0-based) whose values are the job's results, in order: 1 to
+    /// `max_program_outputs` of them. Absent: the last step alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outputs: Option<Vec<usize>>,
+}
+
+impl Program {
+    /// A program whose result is its last step.
+    pub fn new(steps: Vec<Step>) -> Self {
+        Program {
+            steps,
+            outputs: None,
+        }
+    }
 }
 
 /// What a value in a program is.
@@ -188,15 +232,20 @@ pub struct CheckedStep {
     pub op: ProgramOp,
     pub args: Vec<Operand>,
     pub kind: Kind,
+    /// For `lookup`: the table's (key, value) pairs, keys distinct; else empty.
+    pub table: Vec<(i128, i128)>,
 }
 
 /// A program that passed [`Program::check`]: references point backwards,
-/// constants are parsed and in range, and every step is well typed.
+/// constants are parsed and in range, every step is well typed, and the
+/// outputs name steps.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CheckedProgram {
     pub integer_type: IntegerType,
     pub input_count: usize,
     pub steps: Vec<CheckedStep>,
+    /// The steps whose values are the results, in order (at least one).
+    pub outputs: Vec<usize>,
 }
 
 impl Program {
@@ -241,18 +290,65 @@ impl Program {
             };
             let kinds: Vec<Option<Kind>> = args.iter().map(kind_of).collect();
             let kind = step_kind(step.op, ty, &args, &kinds).map_err(fail)?;
+            let table = check_table(step, ty).map_err(fail)?;
             steps.push(CheckedStep {
                 op: step.op,
                 args,
                 kind,
+                table,
             });
         }
+        let outputs = match &self.outputs {
+            None => vec![steps.len() - 1],
+            Some(outputs) => {
+                if outputs.is_empty() || outputs.len() > MAX_PROGRAM_OUTPUTS {
+                    return Err(format!(
+                        "A program has 1 to {MAX_PROGRAM_OUTPUTS} outputs, not {}",
+                        outputs.len()
+                    ));
+                }
+                if let Some(bad) = outputs.iter().find(|&&o| o >= steps.len()) {
+                    return Err(format!(
+                        "Output step {} does not exist (the program has {} steps)",
+                        bad + 1,
+                        steps.len()
+                    ));
+                }
+                outputs.clone()
+            }
+        };
         Ok(CheckedProgram {
             integer_type: ty,
             input_count,
             steps,
+            outputs,
         })
     }
+}
+
+/// The parsed table of a `lookup` step; other steps must not have one.
+fn check_table(step: &Step, ty: IntegerType) -> Result<Vec<(i128, i128)>, String> {
+    let entries = match (step.op, &step.table) {
+        (ProgramOp::Lookup, Some(entries)) => entries,
+        (ProgramOp::Lookup, None) => return Err("needs a table".into()),
+        (_, Some(_)) => return Err("only lookup takes a table".into()),
+        (_, None) => return Ok(Vec::new()),
+    };
+    if entries.is_empty() || entries.len() > MAX_TABLE_ENTRIES {
+        return Err(format!(
+            "a table has 1 to {MAX_TABLE_ENTRIES} entries, not {}",
+            entries.len()
+        ));
+    }
+    let mut table: Vec<(i128, i128)> = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let key = ty.parse_value(&entry.key)?;
+        if table.iter().any(|(k, _)| *k == key) {
+            return Err(format!("the table has the key {key} twice"));
+        }
+        table.push((key, ty.parse_value(&entry.value)?));
+    }
+    Ok(table)
 }
 
 /// The kind of a step's result, or why its arguments do not fit.
@@ -286,6 +382,15 @@ fn step_kind(
                 return Err(format!("needs a signed type, not {ty}"));
             }
             Ok(Int)
+        }
+        ProgramOp::Lookup => {
+            if first != Int {
+                return Err("needs an integer".into());
+            }
+            match args[1] {
+                Operand::Const(_) => Ok(Int),
+                Operand::Value(_) => Err("the default must be a constant".into()),
+            }
         }
         ProgramOp::Select => {
             if first != Bool {
@@ -328,16 +433,24 @@ fn step_kind(
 }
 
 impl CheckedProgram {
-    /// The type to decrypt the result as.
-    pub fn result_type(&self) -> ValueType {
-        match self.steps.last().map(|s| s.kind) {
-            Some(Kind::Bool) => ValueType::Bool,
-            _ => self.integer_type.into(),
-        }
+    /// The types to decrypt the results as, one per output.
+    pub fn result_types(&self) -> Vec<ValueType> {
+        self.outputs
+            .iter()
+            .map(|&o| match self.steps[o].kind {
+                Kind::Bool => ValueType::Bool,
+                Kind::Int => self.integer_type.into(),
+            })
+            .collect()
     }
 
-    /// The plaintext result, for `inputs` in the type's range.
-    pub fn eval_plain(&self, inputs: &[i128]) -> PlainValue {
+    /// The type of the first result.
+    pub fn result_type(&self) -> ValueType {
+        self.result_types()[0]
+    }
+
+    /// The plaintext results, one per output, for `inputs` in the type's range.
+    pub fn eval_plain(&self, inputs: &[i128]) -> Vec<PlainValue> {
         assert_eq!(inputs.len(), self.input_count, "wrong number of inputs");
         let ty = self.integer_type;
         let mut values: Vec<PlainValue> = Vec::with_capacity(self.steps.len());
@@ -348,9 +461,15 @@ impl CheckedProgram {
                 Operand::Const(c) => PlainValue::Int(*c),
             };
             let args: Vec<PlainValue> = step.args.iter().map(get).collect();
-            values.push(apply_plain(step.op, ty, &args));
+            values.push(if step.op == ProgramOp::Lookup {
+                let (x, default) = (int(args[0]), int(args[1]));
+                let found = step.table.iter().find(|(k, _)| *k == x);
+                PlainValue::Int(found.map_or(default, |(_, v)| *v))
+            } else {
+                apply_plain(step.op, ty, &args)
+            });
         }
-        *values.last().expect("a checked program has steps")
+        self.outputs.iter().map(|&o| values[o]).collect()
     }
 }
 
@@ -428,6 +547,7 @@ fn apply_plain(op: ProgramOp, ty: IntegerType, args: &[PlainValue]) -> PlainValu
             Int(ty.wrap(rotated as i128))
         }
         ProgramOp::Select => unreachable!("select takes a boolean condition"),
+        ProgramOp::Lookup => unreachable!("lookups read their step's table"),
     }
 }
 
@@ -437,7 +557,7 @@ mod tests {
     use IntegerType::*;
 
     fn step(op: ProgramOp, args: Vec<Arg>) -> Step {
-        Step { op, args }
+        Step::new(op, args)
     }
 
     fn c(v: &str) -> Arg {
@@ -446,23 +566,21 @@ mod tests {
 
     #[test]
     fn programs_are_type_checked_with_useful_errors() {
-        let good = Program {
-            steps: vec![
-                step(ProgramOp::Add, vec![Arg::Input(0), Arg::Input(1)]),
-                step(ProgramOp::Lt, vec![Arg::Step(0), c("100")]),
-                step(
-                    ProgramOp::Select,
-                    vec![Arg::Step(1), Arg::Input(0), Arg::Step(0)],
-                ),
-            ],
-        };
+        let good = Program::new(vec![
+            step(ProgramOp::Add, vec![Arg::Input(0), Arg::Input(1)]),
+            step(ProgramOp::Lt, vec![Arg::Step(0), c("100")]),
+            step(
+                ProgramOp::Select,
+                vec![Arg::Step(1), Arg::Input(0), Arg::Step(0)],
+            ),
+        ]);
         let checked = good.check(U8, 2).unwrap();
         assert_eq!(checked.result_type(), ValueType::U8);
-        assert_eq!(checked.eval_plain(&[30, 40]), PlainValue::Int(30));
-        assert_eq!(checked.eval_plain(&[90, 40]), PlainValue::Int(130));
+        assert_eq!(checked.eval_plain(&[30, 40]), [PlainValue::Int(30)]);
+        assert_eq!(checked.eval_plain(&[90, 40]), [PlainValue::Int(130)]);
 
         let bad = |steps: Vec<Step>, inputs: usize, ty: IntegerType| {
-            Program { steps }.check(ty, inputs).unwrap_err()
+            Program::new(steps).check(ty, inputs).unwrap_err()
         };
         assert!(bad(vec![], 1, U8).contains("1 to"));
         assert!(bad(
@@ -532,10 +650,10 @@ mod tests {
 
     fn eval(op: ProgramOp, ty: IntegerType, args: &[i128]) -> i128 {
         let steps = vec![step(op, (0..args.len()).map(Arg::Input).collect())];
-        match (Program { steps })
+        match Program::new(steps)
             .check(ty, args.len())
             .unwrap()
-            .eval_plain(args)
+            .eval_plain(args)[0]
         {
             PlainValue::Int(v) => v,
             PlainValue::Bool(b) => b as i128,
@@ -566,7 +684,7 @@ mod tests {
         let x = 0b1011_0101;
         let shift = |op, n: u32| {
             let steps = vec![step(op, vec![Arg::Input(0), c(&n.to_string())])];
-            match (Program { steps }).check(U8, 1).unwrap().eval_plain(&[x]) {
+            match Program::new(steps).check(U8, 1).unwrap().eval_plain(&[x])[0] {
                 PlainValue::Int(v) => v,
                 other => panic!("{other:?}"),
             }
@@ -579,8 +697,8 @@ mod tests {
         assert_eq!(shift(ProgramOp::Rotl, 0), x);
         let steps = vec![step(ProgramOp::Shr, vec![Arg::Input(0), c("7")])];
         assert_eq!(
-            (Program { steps }).check(I8, 1).unwrap().eval_plain(&[-75]),
-            PlainValue::Int(-1)
+            Program::new(steps).check(I8, 1).unwrap().eval_plain(&[-75]),
+            [PlainValue::Int(-1)]
         );
         assert_eq!(eval(ProgramOp::And, U8, &[0b1100, 0b1010]), 8);
         assert_eq!(eval(ProgramOp::Not, U8, &[0b1100]), 243);
@@ -590,17 +708,124 @@ mod tests {
         assert_eq!(eval(ProgramOp::Abs, I16, &[-300]), 300);
     }
 
+    fn table(pairs: &[(&str, &str)]) -> Option<Vec<TableEntry>> {
+        Some(
+            pairs
+                .iter()
+                .map(|(k, v)| TableEntry {
+                    key: k.to_string(),
+                    value: v.to_string(),
+                })
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn lookups_map_keys_to_values_with_a_default() {
+        let lookup = |ty, pairs: &[(&str, &str)], default: &str| {
+            Program::new(vec![Step {
+                op: ProgramOp::Lookup,
+                args: vec![Arg::Input(0), c(default)],
+                table: table(pairs),
+            }])
+            .check(ty, 1)
+        };
+        let squares = lookup(U8, &[("0", "0"), ("1", "1"), ("2", "4"), ("3", "9")], "255").unwrap();
+        assert_eq!(squares.eval_plain(&[2]), [PlainValue::Int(4)]);
+        assert_eq!(squares.eval_plain(&[7]), [PlainValue::Int(255)]);
+        let signed = lookup(I8, &[("-1", "100"), ("-128", "-1")], "0").unwrap();
+        assert_eq!(signed.eval_plain(&[-128]), [PlainValue::Int(-1)]);
+        assert_eq!(signed.eval_plain(&[1]), [PlainValue::Int(0)]);
+
+        assert!(lookup(U8, &[], "0")
+            .unwrap_err()
+            .contains("1 to 256 entries"));
+        assert!(lookup(U8, &[("1", "2"), ("1", "3")], "0")
+            .unwrap_err()
+            .contains("key 1 twice"));
+        assert!(lookup(U8, &[("256", "0")], "0")
+            .unwrap_err()
+            .contains("outside"));
+        assert!(lookup(U8, &[("1", "-1")], "0")
+            .unwrap_err()
+            .contains("outside"));
+        let many: Vec<(String, String)> = (0..257).map(|i| (i.to_string(), "0".into())).collect();
+        let many: Vec<(&str, &str)> = many.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        assert!(lookup(U16, &many, "0").unwrap_err().contains("not 257"));
+
+        let bad = |step: Step| Program::new(vec![step]).check(U8, 2).unwrap_err();
+        assert!(
+            bad(Step::new(ProgramOp::Lookup, vec![Arg::Input(0), c("0")]))
+                .contains("needs a table")
+        );
+        assert!(bad(Step {
+            op: ProgramOp::Add,
+            args: vec![Arg::Input(0), Arg::Input(1)],
+            table: table(&[("1", "1")]),
+        })
+        .contains("only lookup"));
+        assert!(bad(Step {
+            op: ProgramOp::Lookup,
+            args: vec![Arg::Input(0), Arg::Input(1)],
+            table: table(&[("1", "1")]),
+        })
+        .contains("default must be a constant"));
+    }
+
+    #[test]
+    fn programs_can_return_several_results() {
+        let mut program = Program::new(vec![
+            step(ProgramOp::Add, vec![Arg::Input(0), Arg::Input(1)]),
+            step(ProgramOp::Lt, vec![Arg::Input(0), Arg::Input(1)]),
+            step(ProgramOp::Multiply, vec![Arg::Step(0), c("2")]),
+        ]);
+        program.outputs = Some(vec![2, 1, 0]);
+        let checked = program.check(U8, 2).unwrap();
+        assert_eq!(
+            checked.result_types(),
+            [ValueType::U8, ValueType::Bool, ValueType::U8]
+        );
+        assert_eq!(
+            checked.eval_plain(&[3, 4]),
+            [
+                PlainValue::Int(14),
+                PlainValue::Bool(true),
+                PlainValue::Int(7)
+            ]
+        );
+
+        let with = |outputs: Vec<usize>| {
+            let mut p = program.clone();
+            p.outputs = Some(outputs);
+            p.check(U8, 2)
+        };
+        assert!(with(vec![]).unwrap_err().contains("1 to 16 outputs"));
+        assert!(with(vec![0; 17]).unwrap_err().contains("not 17"));
+        assert!(with(vec![3]).unwrap_err().contains("Output step 4"));
+        assert_eq!(with(vec![0, 0]).unwrap().outputs, [0, 0]);
+    }
+
     #[test]
     fn programs_round_trip_as_json() {
         let json = serde_json::json!({"steps": [
             {"op": "multiply", "args": [{"input": 0}, {"const": "-3"}]},
             {"op": "ge", "args": [{"step": 0}, {"input": 1}]}
         ]});
+        let with_table = serde_json::json!({"steps": [
+            {"op": "lookup", "args": [{"input": 0}, {"const": "0"}],
+             "table": [{"key": "1", "value": "-5"}]}
+        ], "outputs": [0, 0]});
+        let program: Program = serde_json::from_value(with_table.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&program).unwrap(), with_table);
+        assert_eq!(
+            program.check(I8, 1).unwrap().eval_plain(&[1]),
+            [PlainValue::Int(-5), PlainValue::Int(-5)]
+        );
         let program: Program = serde_json::from_value(json.clone()).unwrap();
         assert_eq!(serde_json::to_value(&program).unwrap(), json);
         let checked = program.check(I32, 2).unwrap();
         assert_eq!(checked.result_type(), ValueType::Bool);
-        assert_eq!(checked.eval_plain(&[5, -15]), PlainValue::Bool(true));
+        assert_eq!(checked.eval_plain(&[5, -15]), [PlainValue::Bool(true)]);
     }
 
     mod properties {
@@ -675,9 +900,9 @@ mod tests {
                 // The second operand encrypted, or (where allowed) a constant.
                 let args = if shifts { vec![Arg::Input(0), Arg::Const(b.to_string())] } else { vec![Arg::Input(0), Arg::Input(1)] };
                 let inputs = if shifts { vec![a] } else { vec![a, b] };
-                let program = Program { steps: vec![Step { op, args }] };
+                let program = Program::new(vec![Step::new(op, args)]);
                 let got = program.check(ty, inputs.len()).unwrap().eval_plain(&inputs);
-                prop_assert_eq!(got, PlainValue::Int(native(op, ty, a, b)));
+                prop_assert_eq!(got, vec![PlainValue::Int(native(op, ty, a, b))]);
             }
         }
     }

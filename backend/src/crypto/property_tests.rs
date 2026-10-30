@@ -14,7 +14,7 @@ use crate::crypto::keys::test_support::{
 use crate::crypto::keys::{validate_compressed_key, validate_public_key};
 use crate::crypto::params::proof_metadata;
 use crate::crypto::proofs::test_support::crs;
-use heaas_core::program::{Arg, Kind, Program, ProgramOp, Step};
+use heaas_core::program::{Arg, Kind, Program, ProgramOp, Step, TableEntry};
 use heaas_core::{IntegerType, Operation};
 use heaas_sdk::fhe;
 use proptest::prelude::*;
@@ -76,17 +76,28 @@ fn check_job(
         scalar: scalar_value,
         inputs: Inputs::Ciphertexts(&inputs),
         program: None,
+        compress: false,
     };
-    let out = evaluate(&user_server_key(), &job).map_err(|e| TestCaseError::fail(e.to_string()))?;
+    let out = evaluate1(&job)?;
     let decrypted = fhe::decrypt_as(ck, op.result_type(ty), &out)
         .map_err(|e| TestCaseError::fail(e.to_string()))?;
     prop_assert_eq!(decrypted, op.apply_plain(ty, operands));
     Ok(())
 }
 
-/// A random well-typed program on `inputs` inputs of type `ty`, driven by
-/// `choices` (four per step).
-fn random_program(ty: IntegerType, inputs: usize, choices: &[u32]) -> Program {
+/// Evaluates a job that has one result.
+fn evaluate1(job: &Job) -> Result<Vec<u8>, TestCaseError> {
+    let mut results =
+        evaluate(&user_server_key(), job).map_err(|e| TestCaseError::fail(e.to_string()))?;
+    prop_assert_eq!(results.len(), 1);
+    Ok(results.remove(0))
+}
+
+/// A random well-typed program on the inputs `values` of type `ty`, driven by
+/// `choices` (four per step). Lookups sometimes have an input's value as a
+/// key, so both of their branches are taken; some programs have two outputs.
+fn random_program(ty: IntegerType, values: &[i128], choices: &[u32]) -> Program {
+    let inputs = values.len();
     let mut steps: Vec<Step> = Vec::new();
     let mut kinds: Vec<Kind> = Vec::new();
     for c in choices.as_chunks::<4>().0 {
@@ -104,7 +115,31 @@ fn random_program(ty: IntegerType, inputs: usize, choices: &[u32]) -> Program {
             .collect();
         let int = |n: u32| ints[n as usize % ints.len()].clone();
         let constant = |n: u32| ty.wrap(n as i128 - (1 << 31)).to_string();
-        let (op, args, kind) = match c[0] % 9 {
+        let mut table = None;
+        let (op, args, kind) = match c[0] % 10 {
+            9 => {
+                let input = c[2] as usize % inputs;
+                let mut keys: Vec<i128> = (0..1 + c[1] as i128 % 4)
+                    .map(|j| ty.wrap(c[3] as i128 + j * 7919))
+                    .collect();
+                if c[1] % 2 == 0 {
+                    keys[0] = values[input];
+                }
+                table = Some(
+                    keys.iter()
+                        .enumerate()
+                        .map(|(j, k)| TableEntry {
+                            key: k.to_string(),
+                            value: constant(c[3] ^ (j as u32 + 1)),
+                        })
+                        .collect(),
+                );
+                (
+                    ProgramOp::Lookup,
+                    vec![Arg::Input(input), Arg::Const(constant(c[3]))],
+                    Kind::Int,
+                )
+            }
             0..=2 => {
                 const ARITHMETIC: [ProgramOp; 10] = [
                     ProgramOp::Add,
@@ -196,15 +231,18 @@ fn random_program(ty: IntegerType, inputs: usize, choices: &[u32]) -> Program {
             }
             _ => (ProgramOp::Add, vec![int(c[2]), int(c[3])], Kind::Int),
         };
-        steps.push(Step { op, args });
+        steps.push(Step { op, args, table });
         kinds.push(kind);
     }
-    Program { steps }
+    let outputs = choices[0]
+        .is_multiple_of(3)
+        .then(|| vec![steps.len() - 1, choices[1] as usize % steps.len()]);
+    Program { steps, outputs }
 }
 
 /// Runs a random program homomorphically and against the oracle.
 fn check_program(ty: IntegerType, values: &[i128], choices: &[u32]) -> Result<(), TestCaseError> {
-    let program = random_program(ty, values.len(), choices);
+    let program = random_program(ty, values, choices);
     let checked = program
         .check(ty, values.len())
         .map_err(|e| TestCaseError::fail(format!("generated an invalid program: {e}")))?;
@@ -219,9 +257,15 @@ fn check_program(ty: IntegerType, values: &[i128], choices: &[u32]) -> Result<()
         scalar: None,
         inputs: Inputs::Ciphertexts(&inputs),
         program: Some(&checked),
+        compress: false,
     };
-    let out = evaluate(&user_server_key(), &job).map_err(|e| TestCaseError::fail(e.to_string()))?;
-    let decrypted = fhe::decrypt_as(ck, checked.result_type(), &out)
+    let outputs =
+        evaluate(&user_server_key(), &job).map_err(|e| TestCaseError::fail(e.to_string()))?;
+    let decrypted = outputs
+        .iter()
+        .zip(checked.result_types())
+        .map(|(bytes, ty)| fhe::decrypt_as(ck, ty, bytes))
+        .collect::<Result<Vec<_>, _>>()
         .map_err(|e| TestCaseError::fail(e.to_string()))?;
     prop_assert_eq!(decrypted, checked.eval_plain(values), "{:?}", program);
     Ok(())
@@ -252,7 +296,7 @@ fn flip(bytes: &[u8], position: usize, mask: u8) -> Vec<u8> {
 
 /// Untrusted bytes are refused as the caller's fault or accepted, never a
 /// panic or an internal error.
-fn caller_error_or_ok(result: Result<Vec<u8>, EvalError>) -> Result<(), TestCaseError> {
+fn caller_error_or_ok(result: Result<Vec<Vec<u8>>, EvalError>) -> Result<(), TestCaseError> {
     match result {
         Ok(_) | Err(EvalError::InvalidInput(_)) => Ok(()),
         Err(EvalError::Internal(e)) => Err(TestCaseError::fail(format!("internal error: {e}"))),
@@ -281,7 +325,7 @@ proptest! {
     ) {
         let good = fhe::encrypt_as(client_key(), ty, 1).unwrap();
         let inputs = [garbage, good];
-        let job = Job { operation: Operation::Add, integer_type: ty, scalar: None, inputs: Inputs::Ciphertexts(&inputs), program: None };
+        let job = Job { operation: Operation::Add, integer_type: ty, scalar: None, inputs: Inputs::Ciphertexts(&inputs), program: None, compress: false };
         prop_assert!(matches!(evaluate(&user_server_key(), &job), Err(EvalError::InvalidInput(_))));
     }
 
@@ -289,7 +333,7 @@ proptest! {
     fn corrupted_ciphertexts_never_crash_the_evaluator(position in any::<usize>(), mask in any::<u8>()) {
         let good = fhe::encrypt_as(client_key(), IntegerType::U8, 7).unwrap();
         let inputs = [flip(&good, position, mask), good];
-        let job = Job { operation: Operation::Add, integer_type: IntegerType::U8, scalar: None, inputs: Inputs::Ciphertexts(&inputs), program: None };
+        let job = Job { operation: Operation::Add, integer_type: IntegerType::U8, scalar: None, inputs: Inputs::Ciphertexts(&inputs), program: None, compress: false };
         caller_error_or_ok(evaluate(&user_server_key(), &job))?;
     }
 
@@ -305,6 +349,7 @@ proptest! {
                 integer_type: IntegerType::U8,
                 scalar: None,
                 program: None,
+        compress: false,
                 inputs: Inputs::Proven {
                     list: &corrupted,
                     proof: ProofContext { crs: &crs.crs, public_key: public_key(), metadata: &metadata },
@@ -317,7 +362,7 @@ proptest! {
                 Err(EvalError::InvalidInput(_)) => {}
                 Err(EvalError::Internal(e)) => return Err(TestCaseError::fail(e)),
                 Ok(out) => prop_assert_eq!(
-                    fhe::decrypt_as(client_key(), heaas_core::ValueType::U8, &out).unwrap(),
+                    fhe::decrypt_as(client_key(), heaas_core::ValueType::U8, &out[0]).unwrap(),
                     heaas_core::PlainValue::Int(7)
                 ),
             }
@@ -386,12 +431,13 @@ proptest! {
             integer_type: ty,
             scalar: None,
             program: None,
+        compress: false,
             inputs: Inputs::Proven {
                 list: &list,
                 proof: ProofContext { crs: &crs.crs, public_key: public_key(), metadata: &metadata },
             },
         };
-        let out = evaluate(&user_server_key(), &job).map_err(|e| TestCaseError::fail(e.to_string()))?;
+        let out = evaluate1(&job)?;
         let decrypted = fhe::decrypt_as(client_key(), op.result_type(ty), &out).unwrap();
         prop_assert_eq!(decrypted, op.apply_plain(ty, &operands));
     }

@@ -75,7 +75,14 @@ equal**, whose result is an encrypted *true* or *false*; and **Sum**, which adds
 an expression such as `(a + b) * 3 < c ? a : b` and the values for its inputs (`a`,
 `b`, `c`, …, separated by commas). The dashboard checks the expression as you type
 and shows the expected result; the server evaluates every step without decrypting
-anything. Numbers written in the expression are sent unencrypted.
+anything. Numbers written in the expression are sent unencrypted. Two more things
+an expression can do:
+- **Lookup tables.** `lookup(a, [1, 4, 9, 16])` gives the entry at position `a`
+  (counting from 0), and `lookup(a, [-1: 10, 5: 50], 0)` the value for key `a`, or
+  the last argument (0 if left out) when `a` is not in the table. The server sees
+  the table but not which entry was used.
+- **Several results.** Separate expressions with commas, e.g. `min(a, b), max(a, b)`;
+  the results are shown in the same order.
 
 **Unencrypted operands.** *Send B unencrypted* sends value B as a plain number. That
 is faster, but the server sees B (never A, nor the result).

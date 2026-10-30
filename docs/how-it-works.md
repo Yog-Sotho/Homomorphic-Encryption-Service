@@ -54,15 +54,17 @@ everything except proven inputs.
 | Comparisons | `eq`, `ne`, `lt`, `le`, `gt`, `ge`: the result is an encrypted boolean |
 | Sums | `sum` of 2 to 16 encrypted inputs |
 | Plain operands | any operation but `sum` can take its right-hand side as a plain number (a *scalar*): faster, but the server sees that number |
-| Programs | several operations in one job, written as an expression such as `(a + b) * 3 < c ? a : b`: see below |
+| Programs | several operations in one job, written as an expression such as `(a + b) * 3 < c ? a : b`, with lookup tables and several results: see below |
 | Batches | up to 16 jobs in one request, queued together or not at all |
+| Compressed results | keys made with the SDK's `--compression` get every result of a job back as one list of about 2 KB, instead of 130–530 KB per value |
 
 ## Programs
 
 A program runs up to 64 steps on up to 16 encrypted inputs in one job; every
-intermediate value stays encrypted on the server, and only the last step's result
-comes back. The dashboard and the CLI take an expression and compile it into steps;
-the API takes the steps (see [Using the API](api.md#programs)).
+intermediate value stays encrypted on the server, and only its results come back:
+the last step's, or up to 16 the program names (`a + b, a < b` has two). The
+dashboard and the CLI take an expression and compile it into steps; the API takes
+the steps (see [Using the API](api.md#programs)).
 
 | In expressions | |
 |---|---|
@@ -72,6 +74,8 @@ the API takes the steps (see [Using the API](api.md#programs)).
 | Comparisons | `== != < <= > >=`, giving a boolean; `&& ||` (and `& | ^ !`) combine booleans |
 | Choice | `c ? x : y`, an encrypted if-then-else: the server computes both branches and cannot tell which one was taken |
 | Functions | `min(x, y)`, `max(x, y)`, `abs(x)` (signed types) |
+| Lookup tables | `lookup(x, [1, 4, 9, 16])` gives the entry at position `x` (from 0), `lookup(x, [-1: 10, 5: 50], 0)` the value for key `x`; keys not in the table give the default (the third argument, 0 if absent). Up to 256 entries: a whole `u8` table fits. The server learns the table but not which entry was used |
+| Several results | expressions separated by commas, e.g. `min(a, b), max(a, b)` |
 | Constants | whole numbers in the type's range; they are sent unencrypted, so the server sees them |
 
 Division by an encrypted zero does not fail (the server cannot tell it is zero): it
@@ -79,7 +83,25 @@ gives the type's maximum for unsigned types, and −1 (or 1 for a negative divid
 for signed ones, with the dividend as the remainder; `MIN / −1` wraps to `MIN`. These
 are TFHE-rs's results, and the dashboard's expected value follows them. Division by
 the constant 0 is refused. Every step costs about as much as a single job of that
-operation, so a long program on 64-bit values can take minutes.
+operation, so a long program on 64-bit values can take minutes. A lookup costs
+about one equality test per entry (TFHE-rs's `match_value_or`; signed values are
+looked up by their bits), so large tables on wide types are slow.
+
+## Compressed results
+
+A result is one ciphertext of 130 KB (`u16`) to 530 KB (`u64`). Keys made with
+`heaas keygen --compression` (or `fhe::generate_compressing_keys`) also hold
+TFHE-rs's compression keys (`COMP_PARAM_MESSAGE_2_CARRY_2_KS_PBS_TUNIFORM_2M128`).
+A job sent with `compress_results` then returns all its results packed into one
+`CompressedCiphertextList`, measured at about 1.9 KB for one `u16` or `u64` and
+2.0 KB for four `u16`s. The costs:
+- the compressed server key is about 106 MB instead of 60 MB;
+- unpacking the list needs the server key on the client, which decompresses it
+  (about a second and ~180 MB of memory);
+- TFHE-rs 1.8.2's browser build can neither make such keys nor unpack such lists,
+  so this is for the SDK and CLI only.
+
+General-purpose compression does not help: gzip saves 0.5% of a ciphertext.
 
 ## Proven inputs
 
@@ -183,7 +205,8 @@ Know these limits too:
   never a token, which the page exchanges with `POST /api/v1/auth/exchange`.
 - **Rate limits** are keyed on the client IP (the rightmost `X-Forwarded-For` hop not
   added by a `TRUSTED_PROXIES` address, so clients cannot choose their own) and on
-  the target email address for sign-in attempts and outgoing email.
+  the target email address for sign-in attempts and outgoing email; signed-in
+  requests are also limited per account.
 - **Sensitive changes.** Changing or resetting the password signs out every session.
   Deleting an account needs its password, or, for Google/GitHub-only accounts, a
   sign-in within the last 5 minutes.

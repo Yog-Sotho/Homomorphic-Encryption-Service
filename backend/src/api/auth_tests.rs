@@ -379,6 +379,7 @@ const GENEROUS: RateLimitSettings = RateLimitSettings {
     logins_per_email: 10_000,
     emails_per_ip_per_hour: 10_000,
     emails_per_address_per_hour: 10_000,
+    user_per_minute: 10_000,
 };
 
 #[actix_web::test]

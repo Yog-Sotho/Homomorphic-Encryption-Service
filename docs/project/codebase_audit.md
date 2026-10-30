@@ -1,12 +1,13 @@
 # Codebase Audit Report
 
-**Date:** 2026-10-29
-**Project:** Homomorphic Encryption Engine (HE Engine; workspace 0.4.0 + Phases 8 and 9: `he-backend`, `heaas-core`, `heaas-sdk`; `he-frontend` 0.4.0)
+**Date:** 2026-10-30
+**Project:** Homomorphic Encryption Engine (HE Engine; workspace 0.4.0 + Phases 8 to 10: `he-backend`, `heaas-core`, `heaas-sdk`; `he-frontend` 0.4.0)
 **Language / Framework:** Rust 2021, MSRV 1.91.1 (actix-web 4.18, sqlx 0.8 / SQLite, TFHE-rs 1.8.2, utoipa 6, tracing, prometheus 0.14) · SvelteKit 3.1 / Svelte 5 / Vite 8 (TypeScript, strict), TFHE-rs 1.8.2 WebAssembly
 **Project Type:** Web Service with a worker pool (all 9 dimensions applicable)
 **Audit Mode:** Domain-aware (`backend/`, `core/`, `sdk/`, `frontend/`, deployment files)
 **Previous audits:** 2026-10-25 (overall 4.0, SOTA 3), 2026-10-28 (overall 9.0, reported
-as 8.9 by an arithmetic slip; SOTA 7), 2026-10-29 after Phase 8 (overall 9.1, SOTA 8)
+as 8.9 by an arithmetic slip; SOTA 7), 2026-10-29 after Phase 8 (overall 9.1, SOTA 8),
+2026-10-29 after Phase 9 (overall 9.1, SOTA 9)
 
 Every finding below was checked against the source, tool output or the vendored
 crate source; scores are based on that evidence, not on documentation.
@@ -15,29 +16,37 @@ crate source; scores are based on that evidence, not on documentation.
 
 ## Executive Summary
 
-This re-audit follows Phase 9, which added the last feature the SOTA rating was
-waiting on: several operations in one job.
+This re-audit follows Phase 10, which made programs richer and closed three of
+the LOW findings.
 
-- **Programs:** a job can run up to 64 steps on up to 16 encrypted inputs, every
-  intermediate value encrypted. Steps cover arithmetic, truncating division and
-  remainder (with TFHE-rs's results for an encrypted zero divisor, measured and
-  pinned by tests), bitwise and logical operations, shifts and rotations, negation,
-  absolute value, comparisons and an encrypted if-then-else.
-- **Expressions:** `(a + b) * 3 < c ? a : b` compiles into a program in Rust
-  (`heaas-core`, used by the server, SDK and CLI) and in the browser. Both
-  compilers pass one shared file of 64 test cases, so they cannot drift apart.
-- **Batches:** up to 16 jobs in one request, queued in one transaction or not at
-  all. A batch the quota cannot cover is refused without using up what is left.
-- **Tests:** property tests generate random well-typed programs and compare their
-  homomorphic results with the plaintext oracle; the oracle itself is checked
-  against native Rust integers. Coverage: Rust 91.2% of lines, frontend library
-  92.2%.
-- **Previous LOW findings closed:** the integer-type dispatch table now lives once
-  in `heaas-core` (`with_fhe_type!`), and the CRS download is rate-limited.
+- **Lookup tables:** a `lookup` step maps an encrypted value through a plaintext
+  table of up to 256 entries with a default, using TFHE-rs's `match_value_or`.
+  Signed values are looked up by their two's-complement bits, through the unsigned
+  type of the same width. Tests decrypt lookups on signed and unsigned types,
+  including a table whose result is known without the input (it comes back
+  re-encrypted).
+- **Several results:** a program names up to 16 output steps. Each result is stored
+  and served on its own (`GET …/result?output=N`), and jobs report `result_types`.
+  The dashboard, jobs page, SDK and CLI handle them, and both expression compilers
+  (`a + b, lookup(a, [1, 4, 9])`) pass the shared file of test cases, now 93.
+- **Compressed results:** keys made with TFHE-rs's compression parameters return all
+  of a job's results as one `CompressedCiphertextList`. Measured here: 1.9 KB for one
+  `u16` or `u64` (from 132 KB and 528 KB), 2.0 KB for four `u16`s. Such a server key
+  is 106 MB instead of 60 MB. TFHE-rs 1.8.2's browser build has no compressed lists
+  and no compression configuration (checked in `js_on_wasm_api`), so this is for the
+  SDK and CLI; gzip saves 0.5% of a ciphertext, so HTTP compression would not help.
+- **LOW findings closed:**
+  - `style-src` no longer allows `'unsafe-inline'`. Only SvelteKit's route announcer
+    style is allowed, pinned by hash, and the e2e tests fail on any CSP violation.
+  - Signed-in routes are rate-limited per account.
+  - Concurrent cache misses decompress a key once, with a test.
+- **Tests:** random programs in the property tests now include lookups (sometimes
+  keyed on an input's value, so both branches run) and programs with two outputs.
 
-Every finding is LOW or INFO. The SOTA rating rises to 9.
+Every finding is LOW or INFO. The SOTA rating stays at 9: GPU evaluation and
+inputs from other parties are still missing.
 
-## Overall Score: 9.1 / 10  (average of the nine dimensions; no caps apply: no CRITICAL findings)
+## Overall Score: 9.2 / 10  (average of the nine dimensions; no caps apply: no CRITICAL findings)
 
 | Dimension | Score | Priority | Status |
 |---|---|---|---|
@@ -48,10 +57,10 @@ Every finding is LOW or INFO. The SOTA rating rises to 9.
 | Dependencies | 9/10 | MEDIUM | PASS |
 | Dead Code | 9/10 | LOW | PASS |
 | Observability | 9/10 | MEDIUM | PASS |
-| Concurrency | 9/10 | HIGH | PASS |
+| Concurrency | 10/10 | HIGH | PASS |
 | Lifecycle | 9/10 | MEDIUM | PASS |
 
-**SOTA rating: 9 / 10** (previously 8). The yardstick is the same as before:
+**SOTA rating: 9 / 10** (unchanged). The yardstick is the same as before:
 state-of-the-art FHE services and tooling such as Zama's TFHE-rs, Concrete and
 fhEVM tooling, and OpenFHE-based services.
 
@@ -59,9 +68,11 @@ At that bar:
 - client-held keys, with compressed evaluation keys only on the server;
 - conformance-checked inputs and results, and carry-propagating operations;
 - zero-knowledge-proven inputs (TFHE-rs compact PKE proofs), bound to the key;
-- programs: multi-step circuits with encrypted control flow (`select`), division,
-  bitwise operations and shifts on eight integer types, written in an expression
-  syntax that compiles identically in Rust and in the browser;
+- programs: multi-step circuits with encrypted control flow (`select`), lookup
+  tables, division, bitwise operations and shifts on eight integer types, with
+  several results, written in an expression syntax that compiles identically in
+  Rust and in the browser;
+- results compressed into one TFHE-rs list (SDK keys with compression keys);
 - batch submission, durable and idempotent, with OpenAPI;
 - a parameter set pinned to TFHE-rs defaults (≥ 128-bit security, p_fail ≤ 2⁻¹²⁸
   per Zama) plus Zama's dedicated compact-public-key parameters, published as a
@@ -75,8 +86,8 @@ Still missing for 10:
 - **Inputs from other parties.** Only a key's owner submits jobs; proven inputs from
   third parties encrypting under the owner's public key (surveys, aggregation),
   the case proofs are designed for, are not offered.
-- **Richer programs.** One output per program, no programmable lookup tables
-  (TFHE-rs `match_value`/`map`), and no compression of results for transport.
+- **Compressed results in the browser.** They need a TFHE-rs browser build with
+  compressed ciphertext lists; 1.8.2 has none.
 
 Verifiable computation is out of reach of TFHE itself and is documented as a
 limitation, not counted against the rating.
@@ -142,9 +153,7 @@ git-ignored), `cargo deny` (advisories, bans, licences, sources: ok).
 
 | Severity | Location | Issue | Recommendation |
 |---|---|---|---|
-| LOW | `frontend/vite.config.ts:46` | `style-src` allows `'unsafe-inline'`. Scripts are hash-pinned; styles are not. Impact is limited to CSS injection, which the app has no sink for. | Move to style hashes (SvelteKit `csp.mode: 'hash'` covers `<style>`) once Svelte no longer needs inline `style` attributes. |
 | LOW | `backend/src/crypto/proofs.rs` | The server generates the CRS itself, so its operator is trusted not to keep a trapdoor. This is documented (`docs/how-it-works.md#proven-inputs`, `SECURITY.md`). | Accept; or load a CRS from a public ceremony when one is available. |
-| LOW | `backend/src/middleware/rate_limit.rs` | Only `/api/v1/auth` is rate-limited per IP. Authenticated reads (`GET /keys`, `/compute/jobs`) rely on authentication alone. Writes are bounded by the key cap, active-job cap and daily quota. | Add a per-user limiter on the authenticated scope. |
 | LOW | `backend/src/middleware/rate_limit.rs` (per-email login limit) | An attacker can spend a victim's per-email sign-in budget and block their password sign-in for up to 15 minutes. This is the usual trade-off of per-account limits. | Accept, or exempt requests carrying a valid refresh cookie. |
 | INFO | `backend/src/middleware/jwt.rs` | Access tokens stay valid for up to `ACCESS_TOKEN_TTL_SECS` (900 s) after sign-out or a password change. This is by design and documented. | None. |
 
@@ -186,17 +195,17 @@ No findings.
   jobs, scalars, sums and proven inputs; wiremock OAuth and SDK tests; CLI binary
   tests; an SDK run against a live server with proofs, a program and a batch.
   `#[ignore]`d heavy property tests run in `.github/workflows/heavy.yml`.
-- TypeScript: 109 Vitest (64 of them the shared program vectors), 13 Playwright
+- TypeScript: 138 Vitest (93 of them the shared program vectors), 13 Playwright
   (including axe WCAG 2.2 AA scans), and 1 full-stack test that proves inputs in the
-  browser and runs a program on the real server.
+  browser and runs a program with a lookup and two results on the real server.
 - Coverage, measured in CI with floors: Rust 91.2% of lines workspace-wide
-  (`cargo llvm-cov`, floor 88%); frontend library code 92.2% (`vitest --coverage`,
+  (`cargo llvm-cov`, floor 88%); frontend library code 93.0% (`vitest --coverage`,
   floor 88%; pages and the worker are covered by the Playwright suites).
 - No TODO, FIXME or HACK markers.
 
 | Severity | Location | Issue | Recommendation |
 |---|---|---|---|
-| LOW | `backend/src/main.rs` (38% of lines), `sdk/src/bin/heaas.rs` (42%) | Startup wiring and the networked CLI commands are exercised only by the full-stack and Docker jobs, which coverage does not measure. | Drive the CLI's networked commands against the live test server, as the SDK test does. |
+| LOW | `backend/src/main.rs` (38% of lines), `sdk/src/bin/heaas.rs` (44%) | Startup wiring and the networked CLI commands are exercised only by the full-stack and Docker jobs, which coverage does not measure. | Drive the CLI's networked commands against the live test server, as the SDK test does. |
 
 ### Dependencies [9/10]
 
@@ -222,7 +231,7 @@ compiler reports no dead code.
 
 | Severity | Location | Issue | Recommendation |
 |---|---|---|---|
-| LOW | `jobs.input_data_b64`, `jobs.result_b64`, `compute.rs` legacy read path | Columns kept for rows from before ciphertexts moved to disk. New rows write `''` and `NULL`. | Drop both in a migration once old jobs have passed `JOB_RETENTION_DAYS`. |
+| LOW | `jobs.input_data_b64`, `jobs.result_b64`, `compute.rs` legacy read path | Columns kept for rows from before ciphertexts moved to disk (0.4.0, 2026-10-28). New rows write `''` and `NULL`. Not dropped in Phase 10: the default `JOB_RETENTION_DAYS` (7) has not passed since that release, so a deployment may still hold such rows. | Drop both in a migration after 2026-11-04. |
 | INFO | `backend/src/api/mod.rs` (`/api` alias) | The deprecated unversioned API is intentional and marked with `Deprecation` and `Link` headers. | Remove in a later major version. |
 
 ### Observability [9/10]
@@ -240,7 +249,7 @@ compiler reports no dead code.
 | LOW | `backend/src/telemetry.rs` | Spans are logged, not exported. There is no OpenTelemetry trace export. | Add an optional OTLP exporter if the deployment has a collector. |
 | LOW | `frontend` | Browser-side errors (e.g. a failed WASM load) are shown to the user but not reported anywhere. | Optional client error reporting endpoint. |
 
-### Concurrency [9/10]
+### Concurrency [10/10]
 
 - Quota charging, key-count limits, job capacity and job claiming each run as
   one SQL statement (`INSERT … SELECT … WHERE`, `UPDATE … RETURNING`).
@@ -252,9 +261,11 @@ compiler reports no dead code.
 - Idempotency keys make submissions safe to retry; the SDK relies on this.
 - Background tasks log their own errors.
 
-| Severity | Location | Issue | Recommendation |
-|---|---|---|---|
-| LOW | `backend/src/crypto/keys.rs` (`KeyStore::load`) | Two jobs missing the cache for the same key both decompress it (~0.5 s and ~180 MB each). The cache stays correct; the work is duplicated. | Single-flight the decompression per key id. |
+- Key decompression is single-flight per key id (`KeyStore::load`): jobs that miss
+  the cache for the same key at once wait for one decompression and share it
+  (`concurrent_cache_misses_decompress_a_key_once`).
+
+No findings.
 
 ### Lifecycle [9/10]
 
@@ -300,10 +311,10 @@ None. The patterns found duplicated in the previous audit now live once:
 1. [SOTA] An optional GPU backend (TFHE-rs `gpu` feature) for evaluation.
 2. [SOTA] Contributions from other parties: shareable submission links that accept
    proven inputs under a key owner's public key, for aggregation.
-3. [SOTA] Programs with several outputs and lookup tables; compressed results.
-4. [LOW] A per-user limit on the authenticated scope; single-flight key
-   decompression; drop the legacy job columns; style hashes in the CSP; the CLI's
-   networked commands under coverage.
+3. [SOTA] Compressed results in the browser, once a TFHE-rs browser build has
+   compressed ciphertext lists.
+4. [LOW] Drop the legacy job columns after 2026-11-04; put the CLI's networked
+   commands under coverage.
 
 ---
 

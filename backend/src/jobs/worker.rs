@@ -21,9 +21,10 @@ use tracing::Instrument;
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
 const JANITOR_INTERVAL: Duration = Duration::from_secs(3600);
 
-/// Computes a job's result from its inputs. CPU-bound; runs on a blocking thread.
+/// Computes a job's results (one file each) from its inputs. CPU-bound; runs on
+/// a blocking thread.
 pub type Processor =
-    Arc<dyn Fn(&ClaimedJob, Vec<Vec<u8>>) -> Result<Vec<u8>, EvalError> + Send + Sync>;
+    Arc<dyn Fn(&ClaimedJob, Vec<Vec<u8>>) -> Result<Vec<Vec<u8>>, EvalError> + Send + Sync>;
 
 /// Wakes a worker when a job is queued.
 #[derive(Clone, Default)]
@@ -179,7 +180,7 @@ async fn work(ctx: Context, mut stop: watch::Receiver<bool>) {
 
 /// How an attempt ended.
 enum Outcome {
-    Done(Vec<u8>),
+    Done(Vec<Vec<u8>>),
     /// Final; the message is shown to the job's owner.
     Rejected(String),
     /// Possibly transient; retried while attempts remain.
@@ -200,9 +201,9 @@ async fn run(ctx: &Context, job: ClaimedJob) {
 
     // `finished`: the job reached a final state, so its inputs can go.
     let (recorded, finished, label) = match outcome {
-        Outcome::Done(result) => match ctx.store.write_result(id, &result) {
+        Outcome::Done(results) => match ctx.store.write_results(id, &results) {
             Ok(()) => (
-                queue::complete(&ctx.pool, id, result.len()).await,
+                queue::complete(&ctx.pool, id, results.iter().map(Vec::len).sum()).await,
                 true,
                 "completed",
             ),
@@ -387,7 +388,7 @@ mod tests {
     }
 
     fn concat() -> Processor {
-        Arc::new(|_, inputs| Ok(inputs.concat()))
+        Arc::new(|_, inputs| Ok(vec![inputs.concat()]))
     }
 
     #[tokio::test]
@@ -402,7 +403,7 @@ mod tests {
         workers.notifier().job_queued();
 
         assert_eq!(h.wait_until_finished(&id).await.0, "completed");
-        assert_eq!(h.store.read_result(&id).unwrap(), b"ab");
+        assert_eq!(h.store.read_result(&id, 0).unwrap(), b"ab");
         assert!(h.store.read_inputs(&id, 2).is_err());
         assert!(completed() > before);
         workers.shutdown(Duration::from_secs(5)).await;
@@ -438,7 +439,7 @@ mod tests {
             if counted.fetch_add(1, Ordering::SeqCst) < 2 {
                 Err(EvalError::Internal("transient".into()))
             } else {
-                Ok(inputs.concat())
+                Ok(vec![inputs.concat()])
             }
         });
         let workers = h.start(processor, Duration::from_secs(10)).await;
@@ -464,7 +465,7 @@ mod tests {
         let h = Harness::new().await;
         let slow: Processor = Arc::new(|_, _| {
             std::thread::sleep(Duration::from_millis(400));
-            Ok(vec![1])
+            Ok(vec![vec![1]])
         });
         let workers = h.start(slow, Duration::from_millis(50)).await;
         let id = h.queue().await;
@@ -473,7 +474,10 @@ mod tests {
         assert_eq!(status, "failed");
         assert!(message.unwrap().starts_with("Timed out"));
         workers.shutdown(Duration::from_secs(5)).await;
-        assert!(h.store.read_result(&id).is_err(), "late result discarded");
+        assert!(
+            h.store.read_result(&id, 0).is_err(),
+            "late result discarded"
+        );
     }
 
     #[tokio::test]
@@ -511,7 +515,7 @@ mod tests {
         let h = Harness::new().await;
         let slow: Processor = Arc::new(|_, inputs| {
             std::thread::sleep(Duration::from_millis(200));
-            Ok(inputs.concat())
+            Ok(vec![inputs.concat()])
         });
         let workers = h.start(slow, Duration::from_secs(10)).await;
         let id = h.queue().await;

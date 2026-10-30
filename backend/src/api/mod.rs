@@ -100,6 +100,8 @@ fn api_scope(prefix: &str, config: &Config) -> actix_web::Scope {
         )
         .service(
             web::scope("/user")
+                // Outermost last: the token is checked, then the account's budget.
+                .wrap(from_fn(middleware::rate_limit::limit_per_user))
                 .wrap(from_fn(middleware::jwt::jwt_validator))
                 .route("/me", web::get().to(user::get_me))
                 .route("/password", web::put().to(user::change_password))
@@ -107,6 +109,8 @@ fn api_scope(prefix: &str, config: &Config) -> actix_web::Scope {
         )
         .service(
             web::scope("/keys")
+                // Outermost last: the token is checked, then the account's budget.
+                .wrap(from_fn(middleware::rate_limit::limit_per_user))
                 .wrap(from_fn(middleware::jwt::jwt_validator))
                 .service(
                     web::resource("")
@@ -125,6 +129,8 @@ fn api_scope(prefix: &str, config: &Config) -> actix_web::Scope {
         )
         .service(
             web::scope("/compute")
+                // Outermost last: the token is checked, then the account's budget.
+                .wrap(from_fn(middleware::rate_limit::limit_per_user))
                 .wrap(from_fn(middleware::jwt::jwt_validator))
                 .service(
                     web::resource("/jobs")

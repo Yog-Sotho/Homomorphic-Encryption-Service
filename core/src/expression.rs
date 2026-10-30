@@ -6,12 +6,16 @@
 //!   `|`, `^`, `&`, `<< >>`, `+ -`, `* / %`, then the unary `-` and `!` (also `~`).
 //!   `&`, `|`, `^` and `!` are bitwise on integers and logical on booleans;
 //!   `&&` and `||` are the same as `&` and `|` with a looser precedence.
-//! - Functions: `min(x, y)`, `max(x, y)`, `abs(x)`, `rotl(x, n)`, `rotr(x, n)`.
+//! - Functions: `min(x, y)`, `max(x, y)`, `abs(x)`, `rotl(x, n)`, `rotr(x, n)`,
+//!   and `lookup(x, table)` or `lookup(x, table, default)`: a table is
+//!   `[v0, v1, …]` (keys 0, 1, …) or `[k: v, …]`, all constants; `default`
+//!   (a constant, 0 if absent) is the value for keys not in the table.
+//! - Several expressions separated by commas are several results.
 //!
 //! The browser has its own parser (`frontend/src/lib/fhe/program.ts`); both are
 //! checked against the cases in `core/tests/program_vectors.json`.
 
-use crate::program::{Arg, Program, ProgramOp, Step};
+use crate::program::{Arg, Program, ProgramOp, Step, TableEntry};
 
 const MAX_EXPRESSION_LEN: usize = 4096;
 const MAX_DEPTH: usize = 64;
@@ -33,9 +37,9 @@ enum Token {
 }
 
 fn tokenize(text: &str) -> Result<Vec<(usize, Token)>, String> {
-    const OPS: [&str; 24] = [
+    const OPS: [&str; 26] = [
         "<<", ">>", "<=", ">=", "==", "!=", "&&", "||", "+", "-", "*", "/", "%", "&", "|", "^",
-        "!", "~", "<", ">", "?", ":", "(", ")",
+        "!", "~", "<", ">", "?", ":", "(", ")", "[", "]",
     ];
     let chars: Vec<char> = text.chars().collect();
     let mut tokens = Vec::new();
@@ -81,6 +85,8 @@ enum Expr {
     Binary(&'static str, Box<Expr>, Box<Expr>),
     Ternary(Box<Expr>, Box<Expr>, Box<Expr>),
     Call(String, Vec<Expr>),
+    /// A lookup table literal: entries with an explicit key, or none.
+    Table(Vec<(Option<Expr>, Expr)>),
 }
 
 struct Parser {
@@ -240,6 +246,28 @@ impl Parser {
                 self.expect(")")?;
                 Ok(expr)
             }
+            Some((_, Token::Op("["))) => {
+                self.pos += 1;
+                self.nest()?;
+                let mut entries = Vec::new();
+                if !self.eat("]") {
+                    loop {
+                        // `binary`, not `ternary`: the `:` belongs to the entry.
+                        let first = self.binary(0)?;
+                        entries.push(if self.eat(":") {
+                            (Some(first), self.binary(0)?)
+                        } else {
+                            (None, first)
+                        });
+                        if self.eat("]") {
+                            break;
+                        }
+                        self.expect(",")?;
+                    }
+                }
+                self.depth -= 1;
+                Ok(Expr::Table(entries))
+            }
             Some(_) => Err(format!("Unexpected symbol at position {position}")),
             None => Err("The expression ends too early".to_string()),
         }
@@ -253,7 +281,7 @@ struct Lowering {
 
 impl Lowering {
     fn emit(&mut self, op: ProgramOp, args: Vec<Arg>) -> Arg {
-        self.steps.push(Step { op, args });
+        self.steps.push(Step::new(op, args));
         Arg::Step(self.steps.len() - 1)
     }
 
@@ -289,6 +317,10 @@ impl Lowering {
                 let (a, b) = (self.lower(a)?, self.lower(b)?);
                 self.binary(op, a, b)?
             }
+            Expr::Table(_) => {
+                return Err("A table [...] can only be the second argument of lookup()".into())
+            }
+            Expr::Call(name, args) if name == "lookup" => self.lookup(args)?,
             Expr::Call(name, args) => {
                 let lowered = args
                     .iter()
@@ -310,7 +342,7 @@ impl Lowering {
                     ("abs", n) => return Err(format!("abs() takes 1 argument, not {n}")),
                     _ => {
                         return Err(format!(
-                            "Unknown function {name}(): use min, max, abs, rotl or rotr"
+                            "Unknown function {name}(): use min, max, abs, rotl, rotr or lookup"
                         ))
                     }
                 };
@@ -320,6 +352,55 @@ impl Lowering {
                 self.emit(op, lowered)
             }
         })
+    }
+
+    /// A constant, for table entries and defaults.
+    fn constant(&mut self, expr: &Expr, what: &str) -> Result<String, String> {
+        match self.lower(expr)? {
+            Arg::Const(c) => Ok(c),
+            _ => Err(format!("{what} must be a constant")),
+        }
+    }
+
+    /// `lookup(x, [table])` or `lookup(x, [table], default)`.
+    fn lookup(&mut self, args: &[Expr]) -> Result<Arg, String> {
+        let (x, entries, default) = match args {
+            [x, Expr::Table(entries)] => (x, entries, None),
+            [x, Expr::Table(entries), default] => (x, entries, Some(default)),
+            [_, _] | [_, _, _] => {
+                return Err("The second argument of lookup() must be a table [...]".into())
+            }
+            _ => {
+                return Err(format!(
+                    "lookup() takes 2 or 3 arguments, not {}",
+                    args.len()
+                ))
+            }
+        };
+        let keyed = entries.iter().filter(|(k, _)| k.is_some()).count();
+        if keyed != 0 && keyed != entries.len() {
+            return Err("A table gives a key for every entry (k: v) or for none".into());
+        }
+        let mut table = Vec::with_capacity(entries.len());
+        for (i, (key, value)) in entries.iter().enumerate() {
+            let key = match key {
+                Some(key) => self.constant(key, "A table key")?,
+                None => i.to_string(),
+            };
+            let value = self.constant(value, "A table value")?;
+            table.push(TableEntry { key, value });
+        }
+        let default = match default {
+            Some(d) => self.constant(d, "The default of lookup()")?,
+            None => "0".to_string(),
+        };
+        let x = self.value(x, "The first argument of lookup()")?;
+        self.steps.push(Step {
+            op: ProgramOp::Lookup,
+            args: vec![x, Arg::Const(default)],
+            table: Some(table),
+        });
+        Ok(Arg::Step(self.steps.len() - 1))
     }
 
     /// `a op b`, with a constant on the left moved to the right where the
@@ -425,7 +506,10 @@ pub fn parse_expression(text: &str) -> Result<Compiled, String> {
         depth: 0,
         text_len: text.chars().count(),
     };
-    let expr = parser.ternary()?;
+    let mut results = vec![parser.ternary()?];
+    while parser.eat(",") {
+        results.push(parser.ternary()?);
+    }
     if parser.pos != parser.tokens.len() {
         return Err(format!(
             "Unexpected symbol at position {}",
@@ -436,17 +520,33 @@ pub fn parse_expression(text: &str) -> Result<Compiled, String> {
         steps: Vec::new(),
         input_count: 0,
     };
-    match lowering.lower(&expr)? {
-        Arg::Const(_) => return Err("The expression must use at least one input (a to p)".into()),
-        // A bare input: the identity, as `x + 0`.
-        input @ Arg::Input(_) => {
-            lowering.emit(ProgramOp::Add, vec![input, Arg::Const("0".into())]);
+    let mut outputs = Vec::with_capacity(results.len());
+    for (i, result) in results.iter().enumerate() {
+        let step = match lowering.lower(result)? {
+            Arg::Const(_) if results.len() == 1 => {
+                return Err("The expression must use at least one input (a to p)".into())
+            }
+            Arg::Const(_) => {
+                return Err(format!(
+                    "Result {} must use at least one input (a to p)",
+                    i + 1
+                ))
+            }
+            // A bare input: the identity, as `x + 0`.
+            input @ Arg::Input(_) => {
+                lowering.emit(ProgramOp::Add, vec![input, Arg::Const("0".into())])
+            }
+            step => step,
+        };
+        if let Arg::Step(s) = step {
+            outputs.push(s);
         }
-        Arg::Step(_) => {}
     }
+    let outputs = (outputs.len() > 1).then_some(outputs);
     Ok(Compiled {
         program: Program {
             steps: lowering.steps,
+            outputs,
         },
         input_count: lowering.input_count,
     })
@@ -488,12 +588,16 @@ mod tests {
                 Ok(checked.eval_plain(&inputs))
             });
             match (outcome, &v.result, &v.error) {
-                (Ok(value), Some(expected), None) => {
-                    let got = match value {
-                        PlainValue::Bool(b) => b.to_string(),
-                        PlainValue::Int(i) => i.to_string(),
-                    };
-                    assert_eq!(&got, expected, "{}", v.expr);
+                (Ok(values), Some(expected), None) => {
+                    let got: Vec<String> = values
+                        .iter()
+                        .map(|value| match value {
+                            PlainValue::Bool(b) => b.to_string(),
+                            PlainValue::Int(i) => i.to_string(),
+                        })
+                        .collect();
+                    // Several results are written "r1, r2".
+                    assert_eq!(&got.join(", "), expected, "{}", v.expr);
                 }
                 (Err(e), None, Some(expected)) => {
                     assert!(
@@ -512,10 +616,10 @@ mod tests {
         let steps = |text: &str| parse_expression(text).unwrap().program.steps;
         assert_eq!(
             steps("3 < a"),
-            vec![Step {
-                op: ProgramOp::Gt,
-                args: vec![Arg::Input(0), Arg::Const("3".into())]
-            }]
+            vec![Step::new(
+                ProgramOp::Gt,
+                vec![Arg::Input(0), Arg::Const("3".into())]
+            )]
         );
         assert_eq!(steps("10 - a").len(), 2);
         assert_eq!(parse_expression("a").unwrap().program.steps.len(), 1);

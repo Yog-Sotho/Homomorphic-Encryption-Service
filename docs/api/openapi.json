@@ -1191,7 +1191,7 @@
         "tags": [
           "jobs"
         ],
-        "summary": "`GET /api/v1/compute/jobs/{id}/result` — the encrypted result as\n`application/octet-stream`: a `safe_serialize`d ciphertext of the job's\n`result_type` (`FheBool` for comparisons).",
+        "summary": "`GET /api/v1/compute/jobs/{id}/result` — an encrypted result as\n`application/octet-stream`: a `safe_serialize`d ciphertext of the type in\n`result_types[output]` (`FheBool` for comparisons), or, for a job with\n`compressed_results`, one `CompressedCiphertextList` of every result.",
         "operationId": "get_job_result",
         "parameters": [
           {
@@ -1202,11 +1202,21 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "output",
+            "in": "query",
+            "description": "Which result (0-based; default 0), for a program with several outputs.\nA compressed job has one list holding them all: output 0.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
           }
         ],
         "responses": {
           "200": {
-            "description": "The encrypted result: a `safe_serialize`d ciphertext of the job's `result_type` (e.g. `FheUint16`, or `FheBool` for comparisons)",
+            "description": "The encrypted result: a `safe_serialize`d ciphertext of the type `result_types[output]` names (e.g. `FheUint16`, or `FheBool` for comparisons), or a `CompressedCiphertextList` of every result if the job has `compressed_results`",
             "content": {
               "application/octet-stream": {
                 "schema": {
@@ -1220,7 +1230,7 @@
             "$ref": "#/components/responses/Unauthorized"
           },
           "404": {
-            "description": "No such job",
+            "description": "No such job, or no such output",
             "content": {
               "application/json": {
                 "schema": {
@@ -1954,6 +1964,10 @@
           "operation"
         ],
         "properties": {
+          "compress_results": {
+            "type": "boolean",
+            "description": "Return the results as one TFHE-rs `CompressedCiphertextList` (~2 KB)\ninstead of one ciphertext each. Needs a key that `supports_compression`."
+          },
           "inputs": {
             "type": "array",
             "items": {
@@ -2159,6 +2173,11 @@
             "type": "integer",
             "format": "int64"
           },
+          "max_program_outputs": {
+            "type": "integer",
+            "description": "Most results one program returns.",
+            "minimum": 0
+          },
           "max_program_steps": {
             "type": "integer",
             "description": "Most steps in one program.",
@@ -2167,6 +2186,11 @@
           "max_server_key_bytes": {
             "type": "integer",
             "format": "int64",
+            "minimum": 0
+          },
+          "max_table_entries": {
+            "type": "integer",
+            "description": "Most entries in one lookup table.",
             "minimum": 0
           },
           "operations": {
@@ -2281,6 +2305,10 @@
             "format": "int64",
             "description": "Attempts started so far (internal errors are retried)."
           },
+          "compressed_results": {
+            "type": "boolean",
+            "description": "The results are one compressed list (`GET …/result` returns it whole)."
+          },
           "created_at": {
             "type": "string",
             "format": "date-time"
@@ -2349,11 +2377,18 @@
               "null"
             ],
             "format": "int64",
-            "description": "Size of the encrypted result (`GET /api/v1/compute/jobs/{id}/result`)."
+            "description": "Size of the encrypted results together\n(`GET /api/v1/compute/jobs/{id}/result?output=N`)."
           },
           "result_type": {
             "$ref": "#/components/schemas/ValueType",
-            "description": "The type to decrypt the result as: `bool` for comparisons."
+            "description": "The type to decrypt the (first) result as: `bool` for comparisons."
+          },
+          "result_types": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ValueType"
+            },
+            "description": "The type of every result, in order: one for operations, one per output\nfor programs. Empty from servers before HE Engine 0.6 (read `result_type`)."
           },
           "scalar": {
             "type": [
@@ -2462,11 +2497,22 @@
       },
       "Program": {
         "type": "object",
-        "description": "Steps evaluated in order; the last one is the result.",
+        "description": "Steps evaluated in order.",
         "required": [
           "steps"
         ],
         "properties": {
+          "outputs": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "description": "The steps (0-based) whose values are the job's results, in order: 1 to\n`max_program_outputs` of them. Absent: the last step alone."
+          },
           "steps": {
             "type": "array",
             "items": {
@@ -2502,7 +2548,8 @@
           "shr",
           "rotl",
           "rotr",
-          "select"
+          "select",
+          "lookup"
         ]
       },
       "ProofParams": {
@@ -2617,6 +2664,10 @@
             "type": "integer",
             "format": "int64"
           },
+          "supports_compression": {
+            "type": "boolean",
+            "description": "The key holds compression keys (it was made with the SDK's compressing\nconfiguration), so jobs can ask for `compress_results`."
+          },
           "supports_proofs": {
             "type": "boolean",
             "description": "The key was made with the compact-public-key parameters, so it can take\nproven inputs once its public key is uploaded. Keys from before HE Engine\n0.5 cannot."
@@ -2638,6 +2689,32 @@
           },
           "op": {
             "$ref": "#/components/schemas/ProgramOp"
+          },
+          "table": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/TableEntry"
+            },
+            "description": "For `lookup` only: 1 to `max_table_entries` entries with distinct keys.\nThe server sees the table."
+          }
+        }
+      },
+      "TableEntry": {
+        "type": "object",
+        "description": "One entry of a lookup table: `key` maps to `value` (decimal constants).",
+        "required": [
+          "key",
+          "value"
+        ],
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
           }
         }
       },

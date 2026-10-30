@@ -67,6 +67,27 @@ fn keys_are_made_locally_and_values_round_trip() {
     let junk = heaas(d, &["decrypt", "junk.ct"]);
     assert_eq!(junk.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&junk.stderr).starts_with("heaas: "));
+
+    // Several types are for compressed lists only, and `run --compress` needs
+    // the server key file to unpack the results.
+    let several = heaas(d, &["decrypt", "--type", "u16,bool", "a.ct"]);
+    assert!(String::from_utf8_lossy(&several.stderr).contains("several only with --compressed"));
+    let missing = heaas(
+        d,
+        &[
+            "run",
+            "--key-id",
+            "k",
+            "--op",
+            "add",
+            "--compress",
+            "--server-key",
+            "none.key",
+            "1",
+            "2",
+        ],
+    );
+    assert!(String::from_utf8_lossy(&missing.stderr).contains("need the server key"));
 }
 
 #[test]

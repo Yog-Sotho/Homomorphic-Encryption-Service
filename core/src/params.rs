@@ -4,14 +4,17 @@
 //! also what the browser uses), so the server can verify uploaded keys and
 //! ciphertexts against it. It is TFHE-rs's default configuration plus Zama's
 //! dedicated compact-public-key parameters, which let clients send
-//! zero-knowledge-proven inputs.
+//! zero-knowledge-proven inputs. Keys made with [`compressing_tfhe_config`]
+//! (the SDK, on request) also hold compression keys, so the server can return
+//! results as a compressed list.
 
 use crate::types::IntegerType;
 use tfhe::core_crypto::commons::math::random::DynamicDistribution;
 use tfhe::integer::ciphertext::IntegerProvenCompactCiphertextListConformanceParams;
 use tfhe::prelude::ParameterSetConformant;
 use tfhe::shortint::parameters::{
-    ClassicPBSParameters, CompactPublicKeyEncryptionParameters, ShortintKeySwitchingParameters,
+    ClassicPBSParameters, CompactPublicKeyEncryptionParameters, CompressionParameters,
+    ShortintKeySwitchingParameters, COMP_PARAM_MESSAGE_2_CARRY_2_KS_PBS_TUNIFORM_2M128,
     PARAM_KEYSWITCH_MESSAGE_2_CARRY_2_KS_PBS_TUNIFORM_2M128,
     PARAM_MESSAGE_2_CARRY_2_KS_PBS_TUNIFORM_2M128,
     PARAM_PKE_MESSAGE_2_CARRY_2_KS_PBS_TUNIFORM_2M128,
@@ -38,12 +41,22 @@ pub const MAX_INPUTS: usize = 16;
 /// Most steps in one program.
 pub const MAX_PROGRAM_STEPS: usize = 64;
 
+/// Most results one program returns.
+pub const MAX_PROGRAM_OUTPUTS: usize = 16;
+
+/// Most entries in one lookup table (all of a `u8`'s values fit).
+pub const MAX_TABLE_ENTRIES: usize = 256;
+
 /// Most jobs in one batch submission. All their inputs together are limited
 /// like one job's ([`MAX_JOB_INPUT_BYTES`]).
 pub const MAX_BATCH_JOBS: usize = 16;
 
 /// Most input bytes one job takes: [`MAX_INPUTS`] `FheUint64`s fit.
 pub const MAX_JOB_INPUT_BYTES: u64 = 9 << 20;
+
+/// Upper bound for a job's results as one compressed list (~2 KB for a few
+/// values; [`MAX_PROGRAM_OUTPUTS`] `FheUint64`s fit).
+pub const MAX_COMPRESSED_RESULT_BYTES: u64 = 1 << 20;
 
 /// Upper bound for a serialized client (secret) key (~48 KB).
 pub const MAX_CLIENT_KEY_BYTES: u64 = 1 << 26;
@@ -85,10 +98,26 @@ pub const CASTING_PARAMETERS: ShortintKeySwitchingParameters =
     PARAM_KEYSWITCH_MESSAGE_2_CARRY_2_KS_PBS_TUNIFORM_2M128;
 pub const CASTING_PARAMETERS_NAME: &str = "PARAM_KEYSWITCH_MESSAGE_2_CARRY_2_KS_PBS_TUNIFORM_2M128";
 
+/// Packing results into a compressed list, and unpacking them.
+pub const COMPRESSION_PARAMETERS: CompressionParameters =
+    COMP_PARAM_MESSAGE_2_CARRY_2_KS_PBS_TUNIFORM_2M128;
+pub const COMPRESSION_PARAMETERS_NAME: &str = "COMP_PARAM_MESSAGE_2_CARRY_2_KS_PBS_TUNIFORM_2M128";
+
 /// The configuration keys are generated with.
 pub fn tfhe_config() -> Config {
     ConfigBuilder::default()
         .use_dedicated_compact_public_key_parameters((PUBLIC_KEY_PARAMETERS, CASTING_PARAMETERS))
+        .build()
+}
+
+/// [`tfhe_config`] with compression keys: results can come back compressed
+/// (~2 KB instead of 130–530 KB per value), but the compressed server key is
+/// ~106 MB instead of ~60 MB, and unpacking needs the server key on the client.
+/// TFHE-rs's browser build cannot make such keys.
+pub fn compressing_tfhe_config() -> Config {
+    ConfigBuilder::default()
+        .use_dedicated_compact_public_key_parameters((PUBLIC_KEY_PARAMETERS, CASTING_PARAMETERS))
+        .enable_compression(COMPRESSION_PARAMETERS)
         .build()
 }
 
@@ -100,6 +129,10 @@ pub fn legacy_tfhe_config() -> Config {
 
 pub fn server_key_conformance() -> ServerKeyConformance {
     ServerKeyConformance::from(tfhe_config())
+}
+
+pub fn compressing_server_key_conformance() -> ServerKeyConformance {
+    ServerKeyConformance::from(compressing_tfhe_config())
 }
 
 pub fn legacy_server_key_conformance() -> ServerKeyConformance {
@@ -135,6 +168,21 @@ fn noise(distribution: DynamicDistribution<u64>) -> String {
             format!("TUniform, bound 2^{}", t.bound_log2())
         }
         DynamicDistribution::Gaussian(g) => format!("Gaussian, σ = {:e}", g.std),
+    }
+}
+
+fn compression_row() -> String {
+    match COMPRESSION_PARAMETERS {
+        CompressionParameters::Classic(c) => format!(
+            "`{COMPRESSION_PARAMETERS_NAME}` (optional, keys from `compressing_tfhe_config`): \
+             {} LWE per GLWE, stored on {} bits, packing key switch base log {} level {}, {}",
+            c.lwe_per_glwe.0,
+            c.storage_log_modulus.0,
+            c.packing_ks_base_log.0,
+            c.packing_ks_level.0,
+            noise(c.packing_ks_key_noise_distribution)
+        ),
+        CompressionParameters::MultiBit(_) => format!("`{COMPRESSION_PARAMETERS_NAME}`"),
     }
 }
 
@@ -208,11 +256,13 @@ pub fn parameter_sheet() -> String {
                 pk.zk_scheme
             ),
         ),
+        ("Result compression", compression_row()),
         (
             "Size limits",
             format!(
                 "ciphertext ≤ {MAX_CIPHERTEXT_BYTES} B, inputs per job ≤ {MAX_INPUTS} \
-                 (≤ {MAX_JOB_INPUT_BYTES} B), program steps ≤ {MAX_PROGRAM_STEPS}, \
+                 (≤ {MAX_JOB_INPUT_BYTES} B), program steps ≤ {MAX_PROGRAM_STEPS} \
+                 (≤ {MAX_PROGRAM_OUTPUTS} results, lookup tables ≤ {MAX_TABLE_ENTRIES} entries), \
                  jobs per batch ≤ {MAX_BATCH_JOBS}, proven list ≤ {MAX_PROVEN_LIST_BYTES} B, \
                  public key ≤ {MAX_PUBLIC_KEY_BYTES} B, client key ≤ {MAX_CLIENT_KEY_BYTES} B, \
                  compressed server key ≤ {MAX_SERVER_KEY_BYTES} B (servers may accept less)"

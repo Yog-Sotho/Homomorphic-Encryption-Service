@@ -4,8 +4,9 @@
 
 use crate::error::{Error, Result};
 use heaas_core::params::{
-    proof_metadata, tfhe_config, MAX_CIPHERTEXT_BYTES, MAX_CLIENT_KEY_BYTES, MAX_CRS_BYTES,
-    MAX_PROVEN_LIST_BYTES, MAX_PUBLIC_KEY_BYTES, MAX_SERVER_KEY_BYTES,
+    compressing_tfhe_config, proof_metadata, tfhe_config, MAX_CIPHERTEXT_BYTES,
+    MAX_CLIENT_KEY_BYTES, MAX_COMPRESSED_RESULT_BYTES, MAX_CRS_BYTES, MAX_PROVEN_LIST_BYTES,
+    MAX_PUBLIC_KEY_BYTES, MAX_SERVER_KEY_BYTES,
 };
 use heaas_core::{IntegerType, PlainValue, ValueType};
 use std::io::Write;
@@ -13,7 +14,10 @@ use std::path::Path;
 use tfhe::prelude::*;
 use tfhe::safe_serialization::{safe_deserialize, safe_deserialize_conformant, safe_serialize};
 use tfhe::zk::{CompactPkeCrs, ZkComputeLoad};
-use tfhe::{ClientKey, CompactCiphertextList, CompactPublicKey, CompressedServerKey};
+use tfhe::{
+    ClientKey, CompactCiphertextList, CompactPublicKey, CompressedCiphertextList,
+    CompressedServerKey, ServerKey,
+};
 
 pub use tfhe::ClientKey as SecretKey;
 
@@ -33,6 +37,22 @@ pub fn generate_keys() -> (ClientKey, CompressedServerKey) {
     let client = ClientKey::generate(tfhe_config());
     let server = CompressedServerKey::new(&client);
     (client, server)
+}
+
+/// A new key pair whose server key also holds compression keys, so jobs can
+/// ask for `compress_results` (results of ~2 KB instead of 130–530 KB each).
+/// The compressed server key is ~106 MB, and unpacking results needs it
+/// ([`decrypt_compressed`]).
+pub fn generate_compressing_keys() -> (ClientKey, CompressedServerKey) {
+    let client = ClientKey::generate(compressing_tfhe_config());
+    let server = CompressedServerKey::new(&client);
+    (client, server)
+}
+
+/// Parses a compressed server key, e.g. the file `heaas keygen` saved.
+pub fn server_key_from_bytes(bytes: &[u8]) -> Result<CompressedServerKey> {
+    safe_deserialize(bytes, MAX_SERVER_KEY_BYTES)
+        .map_err(|e| Error::Encoding(format!("not a TFHE-rs compressed server key: {e}")))
 }
 
 /// The bytes to upload with [`crate::Client::upload_key`].
@@ -116,6 +136,53 @@ pub fn decrypt_as(key: &ClientKey, ty: ValueType, bytes: &[u8]) -> Result<PlainV
         let clear: Clear = ciphertext.decrypt(key);
         Ok(PlainValue::Int(clear as i128))
     })
+}
+
+/// Decrypts a job's compressed results (`compressed_results`) as `types`, the
+/// job's `result_types`. Unpacking the list needs the decompression key, which
+/// is part of the (decompressed) server key: decompress it once with
+/// `CompressedServerKey::decompress` (~1 s, ~180 MB) and reuse it.
+pub fn decrypt_compressed(
+    key: &ClientKey,
+    server_key: &ServerKey,
+    bytes: &[u8],
+    types: &[ValueType],
+) -> Result<Vec<PlainValue>> {
+    let list: CompressedCiphertextList = safe_deserialize(bytes, MAX_COMPRESSED_RESULT_BYTES)
+        .map_err(|e| Error::Encoding(format!("not a compressed ciphertext list: {e}")))?;
+    if list.len() != types.len() {
+        return Err(Error::Encoding(format!(
+            "the list holds {} results, not {}",
+            list.len(),
+            types.len()
+        )));
+    }
+    tfhe::set_server_key(server_key.clone());
+    let unpack_failed = |i: usize, ty: ValueType| {
+        move |e: String| Error::Encoding(format!("result {} is not a {ty}: {e}", i + 1))
+    };
+    types
+        .iter()
+        .enumerate()
+        .map(|(i, &ty)| {
+            let failed = unpack_failed(i, ty);
+            let Some(int) = ty.integer() else {
+                let value: tfhe::FheBool = list
+                    .get(i)
+                    .map_err(|e| failed(e.to_string()))?
+                    .ok_or_else(|| failed("missing".into()))?;
+                return Ok(PlainValue::Bool(value.decrypt(key)));
+            };
+            per_type!(int, Fhe, Clear, _Conformance => {
+                let value: Fhe = list
+                    .get(i)
+                    .map_err(|e| failed(e.to_string()))?
+                    .ok_or_else(|| failed("missing".into()))?;
+                let clear: Clear = value.decrypt(key);
+                Ok(PlainValue::Int(clear as i128))
+            })
+        })
+        .collect()
 }
 
 /// Parses the CRS from `GET /api/v1/he/crs` (see [`crate::Client::crs`]).

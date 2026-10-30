@@ -33,8 +33,12 @@
 
   async function decrypt(job: JobSummary) {
     try {
-      const ciphertext = await compute.getJobResult(job.id);
-      decrypted[job.id] = await fheSession.decrypt(job.result_type, ciphertext);
+      const types = job.result_types?.length ? job.result_types : [job.result_type];
+      const values: string[] = [];
+      for (const [output, ty] of types.entries()) {
+        values.push(await fheSession.decrypt(ty, await compute.getJobResult(job.id, output)));
+      }
+      decrypted[job.id] = values.join(', ');
     } catch (e) {
       decrypted[job.id] = errorMessage(e, 'Could not decrypt');
     }
@@ -120,6 +124,8 @@
               <td>
                 {#if job.id in decrypted}
                   <span class="value" data-testid="job-value">{decrypted[job.id]}</span>
+                {:else if job.status === 'completed' && job.compressed_results}
+                  <span class="meta">{size(job.result_bytes)} · compressed, decrypt with the SDK</span>
                 {:else if job.status === 'completed' && job.key_id && job.key_id === fheSession.unlockedKeyId}
                   <button type="button" class="btn-secondary btn-sm" onclick={() => decrypt(job)}>Decrypt</button>
                   <span class="meta">{size(job.result_bytes)}</span>

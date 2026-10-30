@@ -6,7 +6,7 @@
 //!
 //! Submissions are queued durably (see [`crate::jobs`]) and answered with
 //! `202 Accepted`; clients poll `GET /jobs/{id}` and then fetch
-//! `GET /jobs/{id}/result`.
+//! `GET /jobs/{id}/result` (`?output=N` for a program's later results).
 
 use crate::config::Config;
 use crate::crypto::eval::proven_input_count;
@@ -45,9 +45,9 @@ pub const MAX_SUBMIT_BODY_BYTES: usize = b64_len(MAX_JOB_INPUT_BYTES) + MAX_INPU
 const IDEMPOTENCY_KEY: &str = "Idempotency-Key";
 const MAX_IDEMPOTENCY_KEY_LEN: usize = 255;
 
-const SUMMARY_COLUMNS: &str = "id, status, operation, integer_type, result_type, input_count, \
-     proven, scalar, program, key_id, attempts, error_message, input_bytes, result_bytes, created_at, \
-     started_at, finished_at";
+const SUMMARY_COLUMNS: &str = "id, status, operation, integer_type, result_type, result_types, \
+     compressed_results, input_count, proven, scalar, program, key_id, attempts, error_message, \
+     input_bytes, result_bytes, created_at, started_at, finished_at";
 
 /// How long a client should wait before retrying a submission refused for load.
 const RETRY_FULL_QUEUE_SECS: u64 = 10;
@@ -105,7 +105,8 @@ struct Checked {
     proven: bool,
     /// Normalized decimal scalar.
     scalar: Option<String>,
-    result_type: heaas_core::ValueType,
+    /// One per result, in order.
+    result_types: Vec<heaas_core::ValueType>,
     /// The program as JSON, for `operation = 'program'`.
     program_json: Option<String>,
 }
@@ -150,14 +151,14 @@ async fn check_request(req: &CreateJobRequest, crs: &web::Data<Crs>) -> Result<C
     req.operation
         .check_operands(input_count, scalar.is_some())
         .map_err(AppError::bad_request)?;
-    let (result_type, program_json) = match (req.operation, &req.program) {
+    let (result_types, program_json) = match (req.operation, &req.program) {
         (Operation::Program, Some(program)) => {
             let checked = program
                 .check(ty, input_count)
                 .map_err(|e| AppError::bad_request(format!("Invalid program: {e}")))?;
             let json = serde_json::to_string(program)
                 .map_err(|e| AppError::internal(format!("encoding the program: {e}")))?;
-            (checked.result_type(), Some(json))
+            (checked.result_types(), Some(json))
         }
         (Operation::Program, None) => {
             return Err(AppError::bad_request(
@@ -169,14 +170,14 @@ async fn check_request(req: &CreateJobRequest, crs: &web::Data<Crs>) -> Result<C
                 "Only operation \"program\" takes a program, not {op}"
             )))
         }
-        (op, None) => (op.result_type(ty), None),
+        (op, None) => (vec![op.result_type(ty)], None),
     };
     Ok(Checked {
         files,
         input_count,
         proven,
         scalar,
-        result_type,
+        result_types,
         program_json,
     })
 }
@@ -252,17 +253,23 @@ async fn prepare(
     idempotency_key: Option<String>,
 ) -> Result<Prepared, AppError> {
     let checked = check_request(&request, crs).await?;
-    let key: Option<(bool, bool)> = sqlx::query_as(
-        "SELECT supports_proofs, public_key_sha256 IS NOT NULL FROM server_keys
-         WHERE id = ? AND user_id = ?",
+    let key: Option<(bool, bool, bool)> = sqlx::query_as(
+        "SELECT supports_proofs, public_key_sha256 IS NOT NULL, supports_compression
+         FROM server_keys WHERE id = ? AND user_id = ?",
     )
     .bind(&request.key_id)
     .bind(user_id)
     .fetch_optional(pool)
     .await?;
-    let Some((supports_proofs, has_public_key)) = key else {
+    let Some((supports_proofs, has_public_key, supports_compression)) = key else {
         return Err(AppError::not_found("Server key not found"));
     };
+    if request.compress_results && !supports_compression {
+        return Err(AppError::unprocessable(
+            "This server key has no compression keys, so its results cannot be compressed. \
+             Make a key with compression (heaas keygen --compression) to use compress_results.",
+        ));
+    }
     if checked.proven && !supports_proofs {
         return Err(AppError::unprocessable(
             "This server key cannot take proven inputs: it was made before HE Engine 0.5. \
@@ -274,21 +281,23 @@ async fn prepare(
             "Upload this key's public key (PUT /api/v1/keys/{id}/public-key) before sending proven inputs",
         ));
     }
-    let fingerprint = request_fingerprint(
-        &[
-            &request.key_id,
-            request.operation.as_str(),
-            request.integer_type.as_str(),
-            if checked.proven {
-                "proven"
-            } else {
-                "ciphertexts"
-            },
-            checked.scalar.as_deref().unwrap_or(""),
-            checked.program_json.as_deref().unwrap_or(""),
-        ],
-        &checked.files,
-    );
+    // `compressed` is only added when set, so earlier fingerprints still match.
+    let mut fields = vec![
+        request.key_id.as_str(),
+        request.operation.as_str(),
+        request.integer_type.as_str(),
+        if checked.proven {
+            "proven"
+        } else {
+            "ciphertexts"
+        },
+        checked.scalar.as_deref().unwrap_or(""),
+        checked.program_json.as_deref().unwrap_or(""),
+    ];
+    if request.compress_results {
+        fields.push("compressed");
+    }
+    let fingerprint = request_fingerprint(&fields, &checked.files);
     Ok(Prepared {
         request,
         checked,
@@ -368,11 +377,13 @@ async fn enqueue(
     p: &Prepared,
 ) -> Result<(), Refusal> {
     let input_bytes: usize = p.checked.files.iter().map(Vec::len).sum();
+    let result_types = serde_json::to_string(&p.checked.result_types)
+        .map_err(|e| Refusal::Database(sqlx::Error::Encode(Box::new(e))))?;
     let inserted: Option<(String,)> = sqlx::query_as(
         "INSERT INTO jobs (id, user_id, status, input_data_b64, operation, integer_type,
-                           result_type, input_count, proven, scalar, program, key_id,
-                           input_bytes, idempotency_key, request_sha256)
-         SELECT ?, ?, 'pending', '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                           result_type, result_types, compressed_results, input_count, proven,
+                           scalar, program, key_id, input_bytes, idempotency_key, request_sha256)
+         SELECT ?, ?, 'pending', '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
          WHERE (SELECT COUNT(*) FROM jobs WHERE status IN ('pending', 'processing')) < ?
            AND (SELECT COUNT(*) FROM jobs
                 WHERE user_id = ? AND status IN ('pending', 'processing')) < ?
@@ -382,7 +393,9 @@ async fn enqueue(
     .bind(user_id)
     .bind(p.request.operation.as_str())
     .bind(p.request.integer_type)
-    .bind(p.checked.result_type)
+    .bind(p.checked.result_types[0])
+    .bind(result_types)
+    .bind(p.request.compress_results)
     .bind(p.checked.input_count as i64)
     .bind(p.checked.proven)
     .bind(&p.checked.scalar)
@@ -642,34 +655,65 @@ pub async fn get_job_status(
         .ok_or_else(|| AppError::not_found("Job not found"))
 }
 
-/// `GET /api/v1/compute/jobs/{id}/result` — the encrypted result as
-/// `application/octet-stream`: a `safe_serialize`d ciphertext of the job's
-/// `result_type` (`FheBool` for comparisons).
-#[utoipa::path(get, path = "/compute/jobs/{id}/result", tag = "jobs", security(("bearer" = [])), params(("id" = String, Path, description = "Job id")), responses((status = 200, description = "The encrypted result: a `safe_serialize`d ciphertext of the job's `result_type` (e.g. `FheUint16`, or `FheBool` for comparisons)", body = inline(crate::api::openapi::Binary), content_type = "application/octet-stream"), (status = 404, description = "No such job", body = heaas_core::api::ErrorBody), (status = 409, description = "The job has not completed", body = heaas_core::api::ErrorBody)))]
+#[derive(Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct ResultQuery {
+    /// Which result (0-based; default 0), for a program with several outputs.
+    /// A compressed job has one list holding them all: output 0.
+    output: Option<usize>,
+}
+
+/// `GET /api/v1/compute/jobs/{id}/result` — an encrypted result as
+/// `application/octet-stream`: a `safe_serialize`d ciphertext of the type in
+/// `result_types[output]` (`FheBool` for comparisons), or, for a job with
+/// `compressed_results`, one `CompressedCiphertextList` of every result.
+#[utoipa::path(get, path = "/compute/jobs/{id}/result", tag = "jobs", security(("bearer" = [])), params(("id" = String, Path, description = "Job id"), ResultQuery), responses((status = 200, description = "The encrypted result: a `safe_serialize`d ciphertext of the type `result_types[output]` names (e.g. `FheUint16`, or `FheBool` for comparisons), or a `CompressedCiphertextList` of every result if the job has `compressed_results`", body = inline(crate::api::openapi::Binary), content_type = "application/octet-stream"), (status = 404, description = "No such job, or no such output", body = heaas_core::api::ErrorBody), (status = 409, description = "The job has not completed", body = heaas_core::api::ErrorBody)))]
 pub async fn get_job_result(
     pool: web::Data<SqlitePool>,
     jobs: web::Data<JobStore>,
     job_id: web::Path<String>,
+    query: web::Query<ResultQuery>,
     user_id: web::ReqData<String>,
 ) -> Result<impl Responder, AppError> {
     let job_id = job_id.into_inner();
+    let output = query.output.unwrap_or(0);
     // `result_b64` is only set on jobs finished before results moved to disk.
     #[derive(sqlx::FromRow)]
     struct ResultRow {
         status: JobStatus,
         result_b64: Option<String>,
+        #[sqlx(json)]
+        result_types: Vec<heaas_core::ValueType>,
+        compressed_results: bool,
     }
-    let row: Option<ResultRow> =
-        sqlx::query_as("SELECT status, result_b64 FROM jobs WHERE id = ? AND user_id = ?")
-            .bind(&job_id)
-            .bind(user_id.into_inner())
-            .fetch_optional(pool.get_ref())
-            .await?;
+    let row: Option<ResultRow> = sqlx::query_as(
+        "SELECT status, result_b64, result_types, compressed_results FROM jobs
+         WHERE id = ? AND user_id = ?",
+    )
+    .bind(&job_id)
+    .bind(user_id.into_inner())
+    .fetch_optional(pool.get_ref())
+    .await?;
     let row = row.ok_or_else(|| AppError::not_found("Job not found"))?;
     if row.status != JobStatus::Completed {
         return Err(AppError::conflict(format!(
             "Job is {}; its result is available once it has completed",
             row.status
+        )));
+    }
+    let outputs = if row.compressed_results {
+        1
+    } else {
+        row.result_types.len().max(1)
+    };
+    if output >= outputs {
+        return Err(AppError::not_found(format!(
+            "The job has no output {output}: {}",
+            if row.compressed_results {
+                "its results are one compressed list, output 0".to_string()
+            } else {
+                format!("its outputs are 0 to {}", outputs - 1)
+            }
         )));
     }
 
@@ -680,7 +724,7 @@ pub async fn get_job_result(
         None => {
             let jobs = jobs.clone();
             let id = job_id.clone();
-            match web::block(move || jobs.read_result(&id)).await {
+            match web::block(move || jobs.read_result(&id, output)).await {
                 Ok(Ok(bytes)) => bytes,
                 Ok(Err(e)) if e.kind() == std::io::ErrorKind::NotFound => {
                     return Err(AppError::not_found("Job result not found"))
@@ -860,6 +904,8 @@ mod tests {
             operation: heaas_core::Operation::Add,
             integer_type: heaas_core::IntegerType::U16,
             result_type: heaas_core::ValueType::U16,
+            result_types: vec![heaas_core::ValueType::U16],
+            compressed_results: false,
             input_count: 2,
             proven: false,
             scalar: None,

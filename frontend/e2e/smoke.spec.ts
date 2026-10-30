@@ -25,6 +25,8 @@ test('login page is served with a CSP header and hydrates without violations', a
   // 'wasm-unsafe-eval' only allows compiling WebAssembly; JS eval stays blocked.
   expect(scriptSrc).toContain("'wasm-unsafe-eval'");
   expect(scriptSrc).not.toMatch(/'unsafe-inline'|'unsafe-eval'/);
+  const styleSrc = csp.split(';').find((d) => d.trim().startsWith('style-src')) ?? '';
+  expect(styleSrc).not.toContain("'unsafe-inline'");
   // TFHE's WASM needs SharedArrayBuffer, which requires cross-origin isolation.
   expect(response?.headers()['cross-origin-opener-policy']).toBe('same-origin');
   expect(response?.headers()['cross-origin-embedder-policy']).toBe('require-corp');

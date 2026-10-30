@@ -110,6 +110,12 @@ pub struct HeParams {
     /// Most steps in one program.
     #[serde(default)]
     pub max_program_steps: usize,
+    /// Most results one program returns.
+    #[serde(default)]
+    pub max_program_outputs: usize,
+    /// Most entries in one lookup table.
+    #[serde(default)]
+    pub max_table_entries: usize,
     pub max_server_key_bytes: u64,
     pub max_keys_per_user: i64,
     /// Absent on servers before HE Engine 0.5, which take no proven inputs.
@@ -183,6 +189,10 @@ pub struct ServerKeyInfo {
     /// (`PUT /api/v1/keys/{id}/public-key`).
     #[serde(default)]
     pub has_public_key: bool,
+    /// The key holds compression keys (it was made with the SDK's compressing
+    /// configuration), so jobs can ask for `compress_results`.
+    #[serde(default)]
+    pub supports_compression: bool,
 }
 
 // ── Jobs ────────────────────────────────────────────────────────────────────
@@ -248,6 +258,10 @@ pub struct CreateJobRequest {
     /// The steps to run, for `operation: "program"` (and only then).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub program: Option<Program>,
+    /// Return the results as one TFHE-rs `CompressedCiphertextList` (~2 KB)
+    /// instead of one ciphertext each. Needs a key that `supports_compression`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub compress_results: bool,
 }
 
 /// `POST /api/v1/compute/jobs/batch`: several jobs, queued together or not at all.
@@ -276,9 +290,17 @@ pub struct JobSummary {
     // The defaults describe jobs from servers before HE Engine 0.5.
     #[serde(default)]
     pub integer_type: IntegerType,
-    /// The type to decrypt the result as: `bool` for comparisons.
+    /// The type to decrypt the (first) result as: `bool` for comparisons.
     #[serde(default = "default_result_type")]
     pub result_type: ValueType,
+    /// The type of every result, in order: one for operations, one per output
+    /// for programs. Empty from servers before HE Engine 0.6 (read `result_type`).
+    #[serde(default)]
+    #[cfg_attr(feature = "sqlx", sqlx(json))]
+    pub result_types: Vec<ValueType>,
+    /// The results are one compressed list (`GET …/result` returns it whole).
+    #[serde(default)]
+    pub compressed_results: bool,
     /// Number of encrypted inputs.
     #[serde(default = "default_input_count")]
     pub input_count: i64,
@@ -300,11 +322,24 @@ pub struct JobSummary {
     pub error_message: Option<String>,
     /// Total size of the submitted ciphertexts.
     pub input_bytes: Option<i64>,
-    /// Size of the encrypted result (`GET /api/v1/compute/jobs/{id}/result`).
+    /// Size of the encrypted results together
+    /// (`GET /api/v1/compute/jobs/{id}/result?output=N`).
     pub result_bytes: Option<i64>,
     pub created_at: NaiveDateTime,
     pub started_at: Option<NaiveDateTime>,
     pub finished_at: Option<NaiveDateTime>,
+}
+
+impl JobSummary {
+    /// The type of every result: `result_types`, or `result_type` alone from
+    /// servers that do not report them.
+    pub fn output_types(&self) -> Vec<ValueType> {
+        if self.result_types.is_empty() {
+            vec![self.result_type]
+        } else {
+            self.result_types.clone()
+        }
+    }
 }
 
 fn default_result_type() -> ValueType {
@@ -332,8 +367,8 @@ mod tests {
     fn job_summaries_use_the_wire_names_clients_expect() {
         let json = serde_json::json!({
             "id": "j", "status": "completed", "operation": "multiply",
-            "integer_type": "u16", "result_type": "u16", "input_count": 2,
-            "proven": false, "scalar": null, "program": null, "key_id": null,
+            "integer_type": "u16", "result_type": "u16", "result_types": ["u16"],
+            "compressed_results": false, "input_count": 2, "proven": false, "scalar": null, "program": null, "key_id": null,
             "attempts": 1, "error_message": null, "input_bytes": 264000,
             "result_bytes": 132000, "created_at": "2026-10-27T10:00:00",
             "started_at": null, "finished_at": "2026-10-27T10:00:02"
@@ -357,6 +392,7 @@ mod tests {
         assert!(req.proven_inputs.is_none() && req.scalar.is_none());
         let json = serde_json::to_value(&req).unwrap();
         assert!(json.get("scalar").is_none() && json.get("proven_inputs").is_none());
+        assert!(!req.compress_results && json.get("compress_results").is_none());
     }
 
     #[test]
