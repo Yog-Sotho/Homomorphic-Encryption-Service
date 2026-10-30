@@ -4,7 +4,7 @@ site_url: https://yog-sotho.github.io/Homomorphic-Encryption-Service/
 repo_url: https://github.com/Yog-Sotho/Homomorphic-Encryption-Service
 repo_name: Homomorphic-Encryption-Service
 edit_uri: edit/master/docs/
-copyright: Copyright &copy; 2026 Yog-Sotho · MIT licence
+copyright: Copyright &copy; 2026 <a href="https://github.com/Yog-Sotho">Yog-Sotho</a> · MIT licence
 strict: true
 
 theme:
@@ -49,6 +49,9 @@ extra:
   social:
     - icon: fontawesome/brands/github
       link: https://github.com/Yog-Sotho/Homomorphic-Encryption-Service
+    - icon: fontawesome/solid/heart
+      link: https://github.com/sponsors/Yog-Sotho
+      name: Sponsor the HE Engine
 
 nav:
   - Home: index.md

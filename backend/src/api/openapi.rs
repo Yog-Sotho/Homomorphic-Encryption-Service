@@ -94,6 +94,14 @@ struct Conventions;
 
 impl Modify for Conventions {
     fn modify(&self, openapi: &mut utoipa::openapi::OpenApi) {
+        openapi.info.contact = Some(
+            utoipa::openapi::info::ContactBuilder::new()
+                .name(Some("Yog-Sotho"))
+                .url(Some(
+                    "https://github.com/Yog-Sotho/Homomorphic-Encryption-Service",
+                ))
+                .build(),
+        );
         // The SPDX identifier, which OpenAPI 3.1 prefers to a URL.
         openapi.info.license = Some(
             utoipa::openapi::info::LicenseBuilder::new()

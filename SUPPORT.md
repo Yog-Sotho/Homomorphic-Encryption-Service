@@ -27,6 +27,11 @@ Never paste secrets: `JWT_SECRET`, tokens, client keys or key files.
 Do **not** open a public issue. Report it privately as described in
 [SECURITY.md](SECURITY.md).
 
+## Support the project
+
+To support the HE Engine's development, see
+[Support the project](README.md#support-the-project): GitHub Sponsors or crypto tips.
+
 ## What to expect
 
 The HE Engine is maintained on a best-effort basis by its author; there is no paid

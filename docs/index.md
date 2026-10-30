@@ -82,6 +82,14 @@ heaas run --key-id <id> --op multiply 300 300    # 24464 (300 × 300 mod 65536)
 heaas run --key-id <id> --type u8 --expr "lookup(a, [1, 4, 9, 16]), a + b" 2 5   # 9, then 7
 ```
 
+## Author and support
+
+Written and maintained by [Yog-Sotho](https://github.com/Yog-Sotho). If the HE Engine
+is useful to you, [sponsor it on GitHub](https://github.com/sponsors/Yog-Sotho) or send
+a crypto tip: BTC and ETH to `yogsotho.blockchain` (an Unstoppable Domains name; check
+the address your wallet resolves before sending), TRX to
+`TBSVzUsQcof9f84aZGbn3wPGVAg3j4ttPv`.
+
 ## Licence
 
 The HE Engine is released under the
