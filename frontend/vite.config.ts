@@ -43,7 +43,13 @@ export default defineConfig({
           // WebAssembly compilation needs 'wasm-unsafe-eval' (not 'unsafe-eval').
           'script-src': ['self', 'wasm-unsafe-eval'],
           'worker-src': ['self'],
-          'style-src': ['self', 'unsafe-inline'],
+          // No 'unsafe-inline'. The app's own inline style (the quota bar) is set
+          // with a style directive, through the CSSOM, which CSP does not cover.
+          'style-src': ['self'],
+          // SvelteKit's route announcer has a fixed style attribute: exactly that
+          // value is allowed. The e2e tests fail on any CSP violation, so a
+          // SvelteKit release that changes it is caught.
+          'style-src-attr': ['unsafe-hashes', 'sha256-S8qMpvofolR8Mpjy4kQvEm7m1q8clzU4dfDH0AmvZjo='],
           'img-src': ['self', 'data:'],
           'font-src': ['self'],
           'connect-src': ['self'],

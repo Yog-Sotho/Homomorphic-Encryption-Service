@@ -151,7 +151,7 @@
       </div>
       <p class="section-desc">Homomorphic compute operations used today</p>
       <div class="progress-track" role="progressbar" aria-label="Daily compute quota used" aria-valuenow={profile.daily_usage.count} aria-valuemin={0} aria-valuemax={profile.daily_usage.quota}>
-        <div class="progress-fill" style="width: {usagePercent}%" class:progress-warn={usagePercent >= 80} class:progress-full={usagePercent >= 100}></div>
+        <div class="progress-fill" style:width="{usagePercent}%" class:progress-warn={usagePercent >= 80} class:progress-full={usagePercent >= 100}></div>
       </div>
       <p class="progress-label">{usagePercent}% of daily quota used</p>
     </div>

@@ -1,6 +1,6 @@
 import AxeBuilder from '@axe-core/playwright';
 import { expect, test, type Page } from '@playwright/test';
-import { mockLogin, mockPublicAuthApi, signIn } from './helpers.js';
+import { cspViolations, mockLogin, mockPublicAuthApi, recordCspViolations, signIn } from './helpers.js';
 
 // Every page is scanned with axe-core against WCAG 2.2 A/AA; no violations allowed.
 
@@ -92,6 +92,7 @@ test('sign-in, registration and password pages', async ({ page }) => {
 });
 
 test('signed-in pages', async ({ page }) => {
+  await recordCspViolations(page);
   await mockSignedInApi(page);
   await signIn(page);
 
@@ -134,5 +135,8 @@ test('signed-in pages', async ({ page }) => {
 
   await page.getByRole('link', { name: 'Account' }).click();
   await expect(page.getByRole('heading', { name: 'Profile' })).toBeVisible();
+  // The quota bar's width is set without an inline style the CSP would block.
+  await expect(page.locator('.progress-fill')).not.toHaveCSS('width', '0px');
   await scan(page);
+  expect(await cspViolations(page)).toEqual([]);
 });

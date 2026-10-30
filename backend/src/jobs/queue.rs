@@ -25,6 +25,8 @@ pub struct ClaimedJob {
     /// For `operation = 'program'`: the steps, as submitted (and checked).
     #[sqlx(json(nullable))]
     pub program: Option<heaas_core::program::Program>,
+    /// Return the results as one compressed list.
+    pub compressed_results: bool,
     /// Including the attempt just started.
     pub attempts: i64,
     pub created_at: chrono::NaiveDateTime,
@@ -54,7 +56,7 @@ pub async fn claim_next(pool: &SqlitePool) -> sqlx::Result<Option<ClaimedJob>> {
              LIMIT 1
          )
          RETURNING id, key_id, operation, integer_type, input_count, proven, scalar,
-                   program, attempts, created_at",
+                   program, compressed_results, attempts, created_at",
     )
     .fetch_optional(pool)
     .await

@@ -10,10 +10,11 @@
 //! stored beside it as `<id>.pk`, to check the proofs against.
 
 use crate::crypto::params::{
-    legacy_server_key_conformance, server_key_conformance, MAX_PUBLIC_KEY_BYTES,
-    PUBLIC_KEY_PARAMETERS,
+    compressing_server_key_conformance, legacy_server_key_conformance, server_key_conformance,
+    MAX_PUBLIC_KEY_BYTES, PUBLIC_KEY_PARAMETERS,
 };
 use crate::storage::write_atomic;
+use std::collections::HashMap;
 use std::fs;
 use std::io;
 use std::path::PathBuf;
@@ -27,21 +28,25 @@ pub struct UserServerKey {
     /// Made with the compact-public-key parameters (it holds the casting key
     /// proven inputs need).
     pub supports_proofs: bool,
+    /// Holds compression keys, so results can be returned as a compressed list.
+    pub supports_compression: bool,
 }
 
 impl UserServerKey {
-    fn from_compressed(compressed: &CompressedServerKey, supports_proofs: bool) -> Self {
+    fn from_valid(valid: &ValidKey) -> Self {
         UserServerKey {
-            server_key: compressed.decompress(),
-            supports_proofs,
+            server_key: valid.key.decompress(),
+            supports_proofs: valid.supports_proofs,
+            supports_compression: valid.supports_compression,
         }
     }
 }
 
-/// A checked upload: the key, and whether it can take proven inputs.
+/// A checked upload: the key, and what it can do.
 pub struct ValidKey {
     pub key: CompressedServerKey,
     pub supports_proofs: bool,
+    pub supports_compression: bool,
 }
 
 #[derive(Debug)]
@@ -74,22 +79,27 @@ impl From<io::Error> for KeyStoreError {
     }
 }
 
-/// Parses and checks an uploaded compressed server key: the current parameters,
-/// or the ones keys from before HE Engine 0.5 were made with. CPU-bound: call
-/// from a blocking thread.
+/// Parses and checks an uploaded compressed server key: the current parameters
+/// (with or without compression keys), or the ones keys from before HE Engine
+/// 0.5 were made with. CPU-bound: call from a blocking thread.
 pub fn validate_compressed_key(bytes: &[u8], limit: u64) -> Result<ValidKey, KeyStoreError> {
-    if let Ok(key) = safe_deserialize_conformant(bytes, limit, &server_key_conformance()) {
-        return Ok(ValidKey {
-            key,
-            supports_proofs: true,
-        });
-    }
-    safe_deserialize_conformant(bytes, limit, &legacy_server_key_conformance())
-        .map(|key| ValidKey {
-            key,
-            supports_proofs: false,
+    let configurations = [
+        (server_key_conformance(), true, false),
+        (compressing_server_key_conformance(), true, true),
+        (legacy_server_key_conformance(), false, false),
+    ];
+    configurations
+        .into_iter()
+        .find_map(|(conformance, supports_proofs, supports_compression)| {
+            safe_deserialize_conformant(bytes, limit, &conformance)
+                .ok()
+                .map(|key| ValidKey {
+                    key,
+                    supports_proofs,
+                    supports_compression,
+                })
         })
-        .map_err(|_| {
+        .ok_or_else(|| {
             KeyStoreError::Invalid(
                 "Not a compressed server key for this service's parameters \
                  (see GET /api/v1/he/params). Generate it with the same TFHE-rs release."
@@ -111,6 +121,9 @@ pub struct KeyStore {
     capacity: usize,
     /// Most recently used last. Small (a handful of entries), so a Vec is fine.
     cache: Mutex<Vec<(String, Arc<UserServerKey>)>>,
+    /// One lock per key being decompressed, so jobs that miss the cache for the
+    /// same key at once decompress it once (~0.5 s, ~180 MB) and share it.
+    loading: Mutex<HashMap<String, Arc<Mutex<()>>>>,
 }
 
 impl KeyStore {
@@ -122,6 +135,7 @@ impl KeyStore {
             max_key_bytes,
             capacity: capacity.max(1),
             cache: Mutex::new(Vec::new()),
+            loading: Mutex::new(HashMap::new()),
         })
     }
 
@@ -167,14 +181,41 @@ impl KeyStore {
             crate::telemetry::METRICS.key_cache_lookup(true);
             return Ok(key);
         }
-        crate::telemetry::METRICS.key_cache_lookup(false);
+        let lock = self
+            .loading
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entry(key_id.to_string())
+            .or_default()
+            .clone();
+        let loaded = {
+            let _loading = lock.lock().unwrap_or_else(|e| e.into_inner());
+            // Another job may have decompressed it while this one waited.
+            match self.cached(key_id) {
+                Some(key) => {
+                    crate::telemetry::METRICS.key_cache_lookup(true);
+                    Ok(key)
+                }
+                None => {
+                    crate::telemetry::METRICS.key_cache_lookup(false);
+                    self.decompress(key_id)
+                }
+            }
+        };
+        let mut loading = self.loading.lock().unwrap_or_else(|e| e.into_inner());
+        // The map and this call hold the lock: no one else is waiting on it.
+        if Arc::strong_count(&lock) == 2 {
+            loading.remove(key_id);
+        }
+        loaded
+    }
+
+    /// Reads, validates and decompresses a key, and caches it.
+    fn decompress(&self, key_id: &str) -> Result<Arc<UserServerKey>, KeyStoreError> {
         let bytes = fs::read(self.path_for(key_id)?)?;
         // Re-validated on load as well: the file is the only copy of the key.
         let valid = validate_compressed_key(&bytes, self.max_key_bytes)?;
-        let key = Arc::new(UserServerKey::from_compressed(
-            &valid.key,
-            valid.supports_proofs,
-        ));
+        let key = Arc::new(UserServerKey::from_valid(&valid));
 
         let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
         cache.retain(|(id, _)| id != key_id);
@@ -219,7 +260,7 @@ impl KeyStore {
 #[cfg(test)]
 pub mod test_support {
     use super::*;
-    use crate::crypto::params::tfhe_config;
+    use crate::crypto::params::{compressing_tfhe_config, tfhe_config};
     use std::sync::OnceLock;
     use tfhe::safe_serialization::safe_serialize;
     use tfhe::ClientKey;
@@ -232,25 +273,45 @@ pub mod test_support {
         server_key: Arc<UserServerKey>,
     }
 
+    fn make_fixture(config: tfhe::Config) -> Fixture {
+        let client_key = ClientKey::generate(config);
+        let compressed = CompressedServerKey::new(&client_key);
+        let mut compressed_bytes = Vec::new();
+        safe_serialize(&compressed, &mut compressed_bytes, 1 << 30).unwrap();
+        let public_key = CompactPublicKey::new(&client_key);
+        let mut public_key_bytes = Vec::new();
+        safe_serialize(&public_key, &mut public_key_bytes, MAX_PUBLIC_KEY_BYTES).unwrap();
+        let valid = validate_compressed_key(&compressed_bytes, 1 << 30).unwrap();
+        let server_key = Arc::new(UserServerKey::from_valid(&valid));
+        Fixture {
+            client_key,
+            compressed_bytes,
+            public_key,
+            public_key_bytes,
+            server_key,
+        }
+    }
+
     fn fixture() -> &'static Fixture {
         static FIXTURE: OnceLock<Fixture> = OnceLock::new();
-        FIXTURE.get_or_init(|| {
-            let client_key = ClientKey::generate(tfhe_config());
-            let compressed = CompressedServerKey::new(&client_key);
-            let mut compressed_bytes = Vec::new();
-            safe_serialize(&compressed, &mut compressed_bytes, 1 << 30).unwrap();
-            let public_key = CompactPublicKey::new(&client_key);
-            let mut public_key_bytes = Vec::new();
-            safe_serialize(&public_key, &mut public_key_bytes, MAX_PUBLIC_KEY_BYTES).unwrap();
-            let server_key = Arc::new(UserServerKey::from_compressed(&compressed, true));
-            Fixture {
-                client_key,
-                compressed_bytes,
-                public_key,
-                public_key_bytes,
-                server_key,
-            }
-        })
+        FIXTURE.get_or_init(|| make_fixture(tfhe_config()))
+    }
+
+    /// A second key pair, made with compression keys.
+    fn compressing_fixture() -> &'static Fixture {
+        static FIXTURE: OnceLock<Fixture> = OnceLock::new();
+        FIXTURE.get_or_init(|| make_fixture(compressing_tfhe_config()))
+    }
+
+    /// The client key and server key of the pair with compression keys.
+    pub fn compressing_keys() -> (&'static ClientKey, Arc<UserServerKey>) {
+        let f = compressing_fixture();
+        (&f.client_key, f.server_key.clone())
+    }
+
+    /// What a client with compression keys uploads to `POST /api/v1/keys`.
+    pub fn compressing_server_key_bytes() -> &'static [u8] {
+        &compressing_fixture().compressed_bytes
     }
 
     /// The client's compact public key, which proven inputs are encrypted under.
@@ -293,11 +354,10 @@ mod tests {
     #[test]
     fn accepts_a_conforming_key_and_rejects_others() {
         let bytes = compressed_server_key_bytes();
-        assert!(
-            validate_compressed_key(bytes, 1 << 30)
-                .unwrap()
-                .supports_proofs
-        );
+        let valid = validate_compressed_key(bytes, 1 << 30).unwrap();
+        assert!(valid.supports_proofs && !valid.supports_compression);
+        let compressing = validate_compressed_key(compressing_server_key_bytes(), 1 << 30).unwrap();
+        assert!(compressing.supports_proofs && compressing.supports_compression);
 
         // Keys from before 0.5 (no compact-public-key parameters) still work.
         let mut legacy = Vec::new();
@@ -373,6 +433,27 @@ mod tests {
             Err(KeyStoreError::NotFound)
         ));
         store.remove(&id).unwrap(); // idempotent
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn concurrent_cache_misses_decompress_a_key_once() {
+        let dir = temp_store_dir();
+        let store = Arc::new(KeyStore::new(&dir, 1 << 30, 2).unwrap());
+        let id = uuid::Uuid::new_v4().to_string();
+        store.save(&id, compressed_server_key_bytes()).unwrap();
+        let loads: Vec<_> = (0..3)
+            .map(|_| {
+                let (store, id) = (store.clone(), id.clone());
+                std::thread::spawn(move || store.load(&id).unwrap())
+            })
+            .collect();
+        let keys: Vec<_> = loads.into_iter().map(|t| t.join().unwrap()).collect();
+        assert!(
+            keys.iter().all(|k| Arc::ptr_eq(k, &keys[0])),
+            "every load shares one decompressed key"
+        );
+        assert!(store.loading.lock().unwrap().is_empty());
         fs::remove_dir_all(dir).unwrap();
     }
 

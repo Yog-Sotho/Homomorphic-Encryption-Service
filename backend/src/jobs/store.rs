@@ -1,4 +1,4 @@
-//! Job inputs and results on disk: `<dir>/<job id>/{in0,in1,out}`.
+//! Job inputs and results on disk: `<dir>/<job id>/{in0,in1,…,out,out1,…}`.
 //!
 //! Ciphertexts are ~132 KB each, so they live in files rather than in SQLite rows;
 //! the `jobs` table keeps only metadata and sizes.
@@ -8,10 +8,16 @@ use std::fs;
 use std::io;
 use std::path::PathBuf;
 
-const RESULT_FILE: &str = "out";
-
 fn input_file(index: usize) -> String {
     format!("in{index}")
+}
+
+/// `out` for the first result (as before programs had several), then `out1`, ….
+fn result_file(index: usize) -> String {
+    match index {
+        0 => "out".to_string(),
+        n => format!("out{n}"),
+    }
 }
 
 pub struct JobStore {
@@ -52,14 +58,20 @@ impl JobStore {
             .collect()
     }
 
-    pub fn write_result(&self, job_id: &str, bytes: &[u8]) -> io::Result<()> {
+    /// Writes the results; each file is written atomically, the first last, so
+    /// a job with an `out` file has every result.
+    pub fn write_results(&self, job_id: &str, results: &[Vec<u8>]) -> io::Result<()> {
         let dir = self.job_dir(job_id)?;
         fs::create_dir_all(&dir)?;
-        write_atomic(&dir.join(RESULT_FILE), bytes)
+        results
+            .iter()
+            .enumerate()
+            .rev()
+            .try_for_each(|(i, bytes)| write_atomic(&dir.join(result_file(i)), bytes))
     }
 
-    pub fn read_result(&self, job_id: &str) -> io::Result<Vec<u8>> {
-        fs::read(self.job_dir(job_id)?.join(RESULT_FILE))
+    pub fn read_result(&self, job_id: &str, index: usize) -> io::Result<Vec<u8>> {
+        fs::read(self.job_dir(job_id)?.join(result_file(index)))
     }
 
     /// Drops the inputs of a finished job; its result (if any) stays.
@@ -115,10 +127,14 @@ mod tests {
             store.read_inputs(&id, 2).unwrap(),
             [b"a".to_vec(), b"bb".to_vec()]
         );
-        store.write_result(&id, b"out").unwrap();
+        store
+            .write_results(&id, &[b"out".to_vec(), b"second".to_vec()])
+            .unwrap();
         store.remove_inputs(&id, 2).unwrap();
         assert!(store.read_inputs(&id, 2).is_err());
-        assert_eq!(store.read_result(&id).unwrap(), b"out");
+        assert_eq!(store.read_result(&id, 0).unwrap(), b"out");
+        assert_eq!(store.read_result(&id, 1).unwrap(), b"second");
+        assert!(store.read_result(&id, 2).is_err());
 
         store.remove(&id).unwrap();
         store.remove(&id).unwrap();
@@ -131,7 +147,7 @@ mod tests {
         let (store, dir) = temp_store();
         for id in ["../escape", "", "a/b"] {
             assert!(store.write_inputs(id, &[b"x".to_vec()]).is_err());
-            assert!(store.read_result(id).is_err());
+            assert!(store.read_result(id, 0).is_err());
             assert!(store.remove(id).is_err());
         }
         assert_eq!(fs::read_dir(&dir).unwrap().count(), 0);

@@ -5,17 +5,22 @@
 //! that their zero-knowledge proof verifies), computes, and returns an encrypted
 //! result only the caller can decrypt. A job is one operation or a
 //! [program](heaas_core::program) of several, whose intermediate values stay
-//! encrypted.
+//! encrypted and which may return several results. Results are serialized one
+//! ciphertext each or, on request, together as one TFHE-rs
+//! `CompressedCiphertextList` (about 2 KB instead of 130–530 KB per value).
 
 use crate::crypto::keys::UserServerKey;
-use crate::crypto::params::{proven_list_conformance, MAX_CIPHERTEXT_BYTES, MAX_PROVEN_LIST_BYTES};
+use crate::crypto::params::{
+    proven_list_conformance, MAX_CIPHERTEXT_BYTES, MAX_COMPRESSED_RESULT_BYTES,
+    MAX_PROVEN_LIST_BYTES,
+};
 use std::fmt;
 use tfhe::prelude::*;
 use tfhe::safe_serialization::{safe_deserialize_conformant, safe_serialize};
 use tfhe::zk::CompactPkeCrs;
 use tfhe::{
-    set_server_key, CompactPublicKey, FheBool, FheBoolConformanceParams, FheTypes,
-    ProvenCompactCiphertextList,
+    set_server_key, CompactPublicKey, CompressedCiphertextListBuilder, FheBool,
+    FheBoolConformanceParams, FheTypes, MatchValues, ProvenCompactCiphertextList,
 };
 
 use heaas_core::program::{CheckedProgram, Operand, ProgramOp, Ref};
@@ -70,6 +75,9 @@ pub struct Job<'a> {
     pub inputs: Inputs<'a>,
     /// For [`Operation::Program`]: the checked program.
     pub program: Option<&'a CheckedProgram>,
+    /// Return the results as one compressed list (the key must have compression
+    /// keys: [`UserServerKey::supports_compression`]).
+    pub compress: bool,
 }
 
 fn kind_of(ty: IntegerType) -> FheTypes {
@@ -120,6 +128,7 @@ pub fn proven_input_count(
 }
 
 /// A computed value: an integer of the job's type or a boolean.
+#[derive(Clone)]
 enum Output<T> {
     Int(T),
     Bool(FheBool),
@@ -155,6 +164,54 @@ macro_rules! signed_abs {
 
 signed_abs!(tfhe::FheInt8, tfhe::FheInt16, tfhe::FheInt32, tfhe::FheInt64;
             tfhe::FheUint8, tfhe::FheUint16, tfhe::FheUint32, tfhe::FheUint64);
+
+/// A lookup table on a ciphertext, with TFHE-rs's `match_value_or` (unsigned
+/// types only): a signed value is matched on its two's-complement bits, through
+/// the unsigned type of the same width.
+trait Lookup: Sized {
+    fn lookup(&self, table: &[(i128, i128)], default: i128) -> Result<Self, EvalError>;
+}
+
+/// The two's-complement bits of `value` in a `bits`-wide integer.
+fn bit_pattern(value: i128, bits: u32) -> u64 {
+    (value as u64) & (u64::MAX >> (64 - bits))
+}
+
+fn match_values(table: &[(i128, i128)], bits: u32) -> Result<MatchValues<u64>, EvalError> {
+    MatchValues::new(
+        table
+            .iter()
+            .map(|&(k, v)| (bit_pattern(k, bits), bit_pattern(v, bits)))
+            .collect(),
+    )
+    .map_err(|_| mismatch())
+}
+
+macro_rules! lookup {
+    ($($unsigned:ty),*; $($signed:ty => $same_width:ty),*) => {
+        $(impl Lookup for $unsigned {
+            fn lookup(&self, table: &[(i128, i128)], default: i128) -> Result<Self, EvalError> {
+                let bits = <$unsigned>::num_bits() as u32;
+                self.match_value_or(&match_values(table, bits)?, bit_pattern(default, bits))
+                    .map_err(|e| EvalError::Internal(format!("lookup: {e}")))
+            }
+        })*
+        $(impl Lookup for $signed {
+            fn lookup(&self, table: &[(i128, i128)], default: i128) -> Result<Self, EvalError> {
+                let bits = <$same_width>::num_bits() as u32;
+                let bits_of_self = <$same_width>::cast_from(self.clone());
+                let found: $same_width = bits_of_self
+                    .match_value_or(&match_values(table, bits)?, bit_pattern(default, bits))
+                    .map_err(|e| EvalError::Internal(format!("lookup: {e}")))?;
+                Ok(<$signed>::cast_from(found))
+            }
+        })*
+    };
+}
+
+lookup!(tfhe::FheUint8, tfhe::FheUint16, tfhe::FheUint32, tfhe::FheUint64;
+        tfhe::FheInt8 => tfhe::FheUint8, tfhe::FheInt16 => tfhe::FheUint16,
+        tfhe::FheInt32 => tfhe::FheUint32, tfhe::FheInt64 => tfhe::FheUint64);
 
 fn mismatch() -> EvalError {
     EvalError::Internal("the program does not match its checked types".into())
@@ -226,7 +283,7 @@ macro_rules! apply_step {
     };
 }
 
-/// Runs a checked program on `$inputs` (a `Vec<$fhe>`); the last step's value.
+/// Runs a checked program on `$inputs` (a `Vec<$fhe>`); the outputs' values.
 macro_rules! run_program {
     ($fhe:ty, $clear:ty, $program:expr, $inputs:expr) => {{
         let inputs: &[$fhe] = $inputs;
@@ -249,6 +306,10 @@ macro_rules! run_program {
                 (ProgramOp::Not, Val::Bool(b)) => Output::Bool(!b),
                 (ProgramOp::Neg, Val::Int(x)) => Output::Int(-x),
                 (ProgramOp::Abs, Val::Int(x)) => Output::Int(x.signed_abs().ok_or_else(mismatch)?),
+                (ProgramOp::Lookup, Val::Int(x)) => {
+                    let default = i128::from(constant(arg(1)?)?);
+                    Output::Int(x.lookup(&step.table, default)?)
+                }
                 (ProgramOp::Select, Val::Bool(c)) => {
                     Output::Int(c.if_then_else(int(arg(1)?)?, int(arg(2)?)?))
                 }
@@ -285,7 +346,11 @@ macro_rules! run_program {
             };
             results.push(out);
         }
-        results.pop().ok_or_else(mismatch)?
+        $program
+            .outputs
+            .iter()
+            .map(|&o| results.get(o).cloned().ok_or_else(mismatch))
+            .collect::<Result<Vec<_>, _>>()?
     }};
 }
 
@@ -346,7 +411,7 @@ macro_rules! evaluate_as {
         // threads are reused, so install this caller's key for every
         // evaluation. `ServerKey` is reference-counted: the clone is cheap.
         set_server_key(key.server_key.clone());
-        let output = match (job.operation, job.scalar) {
+        let outputs: Vec<Output<$fhe>> = match (job.operation, job.scalar) {
             (Operation::Program, _) => {
                 let program = job
                     .program
@@ -360,7 +425,7 @@ macro_rules! evaluate_as {
                 }
                 run_program!($fhe, $clear, program, &values)
             }
-            (Operation::Sum, _) => Output::Int(values.iter().sum::<$fhe>()),
+            (Operation::Sum, _) => vec![Output::Int(values.iter().sum::<$fhe>())],
             (op, Some(scalar)) => {
                 let scalar = <$clear>::try_from(scalar).map_err(|_| {
                     invalid(format!(
@@ -368,54 +433,83 @@ macro_rules! evaluate_as {
                         job.integer_type
                     ))
                 })?;
-                apply!(op, &values[0], scalar)
+                vec![apply!(op, &values[0], scalar)]
             }
-            (op, None) => apply!(op, &values[0], &values[1]),
+            (op, None) => vec![apply!(op, &values[0], &values[1])],
         };
 
         // Results must be ciphertexts clients (and later jobs) accept as
         // conformant. With a scalar, TFHE-rs leaves parts it can compute
         // without the inputs (e.g. `x * 0`, the low blocks of `x * 4`,
-        // `x < 0` unsigned) as trivial, unencrypted blocks; mixing in an
-        // encryption of zero (or false) derived from an input fixes them.
+        // `x < 0` unsigned) as trivial, unencrypted blocks (so can a lookup
+        // whose values are all equal); mixing in an encryption of zero (or
+        // false) derived from an input fixes them.
         let input = &values[0];
-        let mut out = Vec::new();
-        match output {
-            Output::Int(mut result) => {
-                let conformance = <$conformance>::from(&key.server_key);
-                if !result.is_conformant(&conformance) {
-                    let zero = input - input;
-                    result = &result + &zero;
+        let not_conformant = || EvalError::Internal("result is not conformant".into());
+        let serialize_failed = |e| EvalError::Internal(format!("serializing result: {e}"));
+        let mut list = CompressedCiphertextListBuilder::new();
+        let mut serialized = Vec::new();
+        for output in outputs {
+            let mut out = Vec::new();
+            match output {
+                Output::Int(mut result) => {
+                    let conformance = <$conformance>::from(&key.server_key);
+                    if !result.is_conformant(&conformance) {
+                        let zero = input - input;
+                        result = &result + &zero;
+                    }
+                    if !result.is_conformant(&conformance) {
+                        return Err(not_conformant());
+                    }
+                    if job.compress {
+                        list.push(result);
+                        continue;
+                    }
+                    safe_serialize(&result, &mut out, MAX_CIPHERTEXT_BYTES)
                 }
-                if !result.is_conformant(&conformance) {
-                    return Err(EvalError::Internal("result is not conformant".into()));
+                Output::Bool(mut result) => {
+                    let conformance = FheBoolConformanceParams::from(&key.server_key);
+                    if !result.is_conformant(&conformance) {
+                        let known = result.try_decrypt_trivial().map_err(|_| not_conformant())?;
+                        let fresh_false = input.ne(input);
+                        result = if known { !fresh_false } else { fresh_false };
+                    }
+                    if !result.is_conformant(&conformance) {
+                        return Err(not_conformant());
+                    }
+                    if job.compress {
+                        list.push(result);
+                        continue;
+                    }
+                    safe_serialize(&result, &mut out, MAX_CIPHERTEXT_BYTES)
                 }
-                safe_serialize(&result, &mut out, MAX_CIPHERTEXT_BYTES)
             }
-            Output::Bool(mut result) => {
-                let conformance = FheBoolConformanceParams::from(&key.server_key);
-                if !result.is_conformant(&conformance) {
-                    let known = result
-                        .try_decrypt_trivial()
-                        .map_err(|_| EvalError::Internal("non-conformant boolean result".into()))?;
-                    let fresh_false = input.ne(input);
-                    result = if known { !fresh_false } else { fresh_false };
-                }
-                if !result.is_conformant(&conformance) {
-                    return Err(EvalError::Internal("result is not conformant".into()));
-                }
-                safe_serialize(&result, &mut out, MAX_CIPHERTEXT_BYTES)
-            }
+            .map_err(serialize_failed)?;
+            serialized.push(out);
         }
-        .map_err(|e| EvalError::Internal(format!("serializing result: {e}")))?;
-        Ok(out)
+        if job.compress {
+            let list = list
+                .build()
+                .map_err(|e| EvalError::Internal(format!("compressing results: {e}")))?;
+            let mut out = Vec::new();
+            safe_serialize(&list, &mut out, MAX_COMPRESSED_RESULT_BYTES)
+                .map_err(serialize_failed)?;
+            serialized.push(out);
+        }
+        Ok(serialized)
     }};
 }
 
-/// Evaluates a job and returns the serialized encrypted result: a ciphertext of
-/// the input type, or an `FheBool` for comparisons. CPU-heavy: call from a
+/// Evaluates a job and returns its serialized encrypted results: one ciphertext
+/// per output (of the input type, or an `FheBool` for comparisons), or a single
+/// compressed list of them all if the job asks for it. CPU-heavy: call from a
 /// blocking thread.
-pub fn evaluate(key: &UserServerKey, job: &Job) -> Result<Vec<u8>, EvalError> {
+pub fn evaluate(key: &UserServerKey, job: &Job) -> Result<Vec<Vec<u8>>, EvalError> {
+    if job.compress && !key.supports_compression {
+        return Err(invalid(
+            "This server key was made without compression keys and cannot compress results",
+        ));
+    }
     heaas_core::with_fhe_type!(job.integer_type, Fhe, Clear, Conformance => {
         evaluate_as!(Fhe, Clear, Conformance, key, job)
     })
@@ -424,13 +518,23 @@ pub fn evaluate(key: &UserServerKey, job: &Job) -> Result<Vec<u8>, EvalError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::crypto::keys::test_support::{client_key, public_key, user_server_key};
+    use crate::crypto::keys::test_support::{
+        client_key, compressing_keys, public_key, user_server_key,
+    };
     use crate::crypto::params::proof_metadata;
     use crate::crypto::proofs::{test_support::crs, Crs};
-    use heaas_core::PlainValue;
+    use heaas_core::{PlainValue, ValueType};
     use heaas_sdk::fhe;
     use tfhe::ClientKey;
     use IntegerType::*;
+
+    /// [`evaluate`] for jobs with one result.
+    fn evaluate1(key: &UserServerKey, job: &Job) -> Result<Vec<u8>, EvalError> {
+        evaluate(key, job).map(|mut results| {
+            assert_eq!(results.len(), 1, "one result");
+            results.remove(0)
+        })
+    }
 
     // The tests play the client, with the SDK's encryption.
     fn encrypt(ck: &ClientKey, ty: IntegerType, value: i128) -> Vec<u8> {
@@ -461,8 +565,9 @@ mod tests {
             scalar: scalar_value,
             inputs: Inputs::Ciphertexts(&inputs),
             program: None,
+            compress: false,
         };
-        let out = evaluate(&user_server_key(), &job).unwrap();
+        let out = evaluate1(&user_server_key(), &job).unwrap();
         assert_eq!(
             decrypt(ck, op.result_type(ty), &out),
             op.apply_plain(ty, operands),
@@ -503,8 +608,9 @@ mod tests {
                 scalar: Some(scalar),
                 inputs: Inputs::Ciphertexts(&inputs),
                 program: None,
+                compress: false,
             };
-            let out = evaluate(&user_server_key(), &job).unwrap();
+            let out = evaluate1(&user_server_key(), &job).unwrap();
             assert_eq!(
                 decrypt(ck, op.result_type(ty), &out),
                 op.apply_plain(ty, &[a, scalar]),
@@ -520,7 +626,7 @@ mod tests {
 
     fn check_feeds_back(ty: IntegerType, ciphertext: Vec<u8>) {
         let inputs = [ciphertext, encrypt(client_key(), ty, 1)];
-        evaluate(&user_server_key(), &ciphertext_job(ty, &inputs)).unwrap();
+        evaluate1(&user_server_key(), &ciphertext_job(ty, &inputs)).unwrap();
     }
 
     #[test]
@@ -549,7 +655,7 @@ mod tests {
     #[test]
     fn programs_cover_every_operation() {
         let ck = client_key();
-        let cases: [(&str, IntegerType, &[i128]); 6] = [
+        let cases: [(&str, IntegerType, &[i128]); 7] = [
             ("(a + b) * 3 - a / b + a % 7", I8, &[-100, 7]),
             ("min(a, b) ^ max(a, -3) | (a & 12)", I8, &[-5, 9]),
             ("abs(-a) + ~b", I8, &[-128, 3]),
@@ -559,6 +665,7 @@ mod tests {
                 &[-75, 90],
             ),
             ("a / b + a % b", U8, &[200, 0]),
+            ("lookup(a - b, [0: 1, 1: 2, -1: 3], -5)", I8, &[3, 4]),
             (
                 "(a == b || a != 3) && !(a < b) ^ (a <= b) ? (a > b ? a : b) : (a >= 0 ? b : a)",
                 I8,
@@ -575,11 +682,12 @@ mod tests {
                 scalar: None,
                 inputs: Inputs::Ciphertexts(&inputs),
                 program: Some(&checked),
+                compress: false,
             };
-            let out = evaluate(&user_server_key(), &job).unwrap();
+            let out = evaluate1(&user_server_key(), &job).unwrap();
             assert_eq!(
                 decrypt(ck, checked.result_type(), &out),
-                checked.eval_plain(values),
+                checked.eval_plain(values)[0],
                 "{expression}"
             );
         }
@@ -591,6 +699,107 @@ mod tests {
         for op in heaas_core::program::ProgramOp::ALL {
             assert!(used.contains(&op), "{op} is not covered");
         }
+    }
+
+    fn program_job<'a>(checked: &'a CheckedProgram, inputs: &'a [Vec<u8>]) -> Job<'a> {
+        Job {
+            operation: Operation::Program,
+            integer_type: checked.integer_type,
+            scalar: None,
+            inputs: Inputs::Ciphertexts(inputs),
+            program: Some(checked),
+            compress: false,
+        }
+    }
+
+    fn compile(expression: &str, ty: IntegerType) -> CheckedProgram {
+        let compiled = heaas_core::parse_expression(expression).unwrap();
+        compiled.program.check(ty, compiled.input_count).unwrap()
+    }
+
+    #[test]
+    fn lookups_work_on_signed_and_unsigned_types() {
+        let ck = client_key();
+        let cases: [(&str, IntegerType, i128); 6] = [
+            ("lookup(a, [1, 4, 9, 16], 255)", U8, 3),
+            ("lookup(a, [1, 4, 9, 16], 255)", U8, 200),
+            ("lookup(a, [-1: 100, -128: -1, 5: -128], 7)", I8, -128),
+            ("lookup(a, [-1: 100, -128: -1, 5: -128], 7)", I8, 5),
+            ("lookup(a, [-1: 100, -128: -1, 5: -128], 7)", I8, 0),
+            ("lookup(a, [65535: 1, 0: 65535])", U16, 65_535),
+        ];
+        for (expression, ty, value) in cases {
+            let checked = compile(expression, ty);
+            let inputs = [encrypt(ck, ty, value)];
+            let out = evaluate1(&user_server_key(), &program_job(&checked, &inputs)).unwrap();
+            assert_eq!(
+                decrypt(ck, ty.into(), &out),
+                checked.eval_plain(&[value])[0],
+                "{expression} on {value}"
+            );
+        }
+        // Every value the same: the result is known without the input, and must
+        // still come back encrypted (`decrypt` refuses trivial ciphertexts).
+        let checked = compile("lookup(a, [3: 9], 9)", U8);
+        let inputs = [encrypt(ck, U8, 1)];
+        let out = evaluate1(&user_server_key(), &program_job(&checked, &inputs)).unwrap();
+        assert_eq!(decrypt(ck, ValueType::U8, &out), PlainValue::Int(9));
+    }
+
+    #[test]
+    fn programs_return_several_results() {
+        let ck = client_key();
+        let checked = compile("a + b, a < b, a, lookup(b, [0: 1], 2) * a", I16);
+        let values = [-300, 7];
+        let inputs: Vec<_> = values.iter().map(|&v| encrypt(ck, I16, v)).collect();
+        let outputs = evaluate(&user_server_key(), &program_job(&checked, &inputs)).unwrap();
+        let types = checked.result_types();
+        assert_eq!(outputs.len(), 4);
+        let decrypted: Vec<_> = outputs
+            .iter()
+            .zip(&types)
+            .map(|(bytes, &ty)| decrypt(ck, ty, bytes))
+            .collect();
+        assert_eq!(decrypted, checked.eval_plain(&values));
+    }
+
+    #[test]
+    fn results_come_back_compressed_for_keys_with_compression_keys() {
+        let (ck, key) = compressing_keys();
+        let checked = compile("a * b, a >= b, -a", I32);
+        let values = [-70_000, 3];
+        let inputs: Vec<_> = values.iter().map(|&v| encrypt(ck, I32, v)).collect();
+        let mut job = program_job(&checked, &inputs);
+        job.compress = true;
+        let outputs = evaluate(&key, &job).unwrap();
+        assert_eq!(outputs.len(), 1, "one list");
+        assert!(outputs[0].len() < 20_000, "{} bytes", outputs[0].len());
+        let values_back =
+            fhe::decrypt_compressed(ck, &key.server_key, &outputs[0], &checked.result_types())
+                .unwrap();
+        assert_eq!(values_back, checked.eval_plain(&values));
+
+        // A one-operation job, too.
+        let pair = [encrypt(ck, U8, 200), encrypt(ck, U8, 100)];
+        let mut add = ciphertext_job(U8, &pair);
+        add.compress = true;
+        let list = evaluate(&key, &add).unwrap();
+        assert_eq!(
+            fhe::decrypt_compressed(ck, &key.server_key, &list[0], &[ValueType::U8]).unwrap(),
+            [PlainValue::Int(44)]
+        );
+        // The list holds what it holds.
+        assert!(fhe::decrypt_compressed(ck, &key.server_key, &list[0], &[ValueType::U16]).is_err());
+        assert!(fhe::decrypt_compressed(ck, &key.server_key, &list[0], &[]).is_err());
+
+        // A key without compression keys refuses.
+        let plain = [encrypt(client_key(), U8, 1), encrypt(client_key(), U8, 2)];
+        let mut refused = ciphertext_job(U8, &plain);
+        refused.compress = true;
+        assert!(matches!(
+            evaluate(&user_server_key(), &refused),
+            Err(EvalError::InvalidInput(_))
+        ));
     }
 
     #[test]
@@ -605,9 +814,10 @@ mod tests {
             scalar: None,
             inputs: Inputs::Ciphertexts(&inputs),
             program: Some(&checked),
+            compress: false,
         };
         assert!(matches!(
-            evaluate(&user_server_key(), &job),
+            evaluate1(&user_server_key(), &job),
             Err(EvalError::InvalidInput(_))
         ));
     }
@@ -623,25 +833,27 @@ mod tests {
         let ck = client_key();
         let key = user_server_key();
         let first = [encrypt(ck, U16, 1_000), encrypt(ck, U16, 2_000)];
-        let sum = evaluate(
+        let sum = evaluate1(
             &key,
             &Job {
                 operation: Operation::Add,
                 integer_type: U16,
                 scalar: None,
                 program: None,
+                compress: false,
                 inputs: Inputs::Ciphertexts(&first),
             },
         )
         .unwrap();
         let second = [sum, encrypt(ck, U16, 3)];
-        let product = evaluate(
+        let product = evaluate1(
             &key,
             &Job {
                 operation: Operation::Multiply,
                 integer_type: U16,
                 scalar: None,
                 program: None,
+                compress: false,
                 inputs: Inputs::Ciphertexts(&second),
             },
         )
@@ -655,6 +867,7 @@ mod tests {
             integer_type: ty,
             scalar: None,
             program: None,
+            compress: false,
             inputs: Inputs::Ciphertexts(inputs),
         }
     }
@@ -668,20 +881,20 @@ mod tests {
         let truncated = good[..good.len() / 2].to_vec();
         for bad in [b"not a ciphertext".to_vec(), truncated, Vec::new()] {
             let inputs = [bad, good.clone()];
-            let err = evaluate(&key, &ciphertext_job(U16, &inputs)).unwrap_err();
+            let err = evaluate1(&key, &ciphertext_job(U16, &inputs)).unwrap_err();
             assert!(matches!(err, EvalError::InvalidInput(_)), "{err}");
         }
 
         // A well-formed ciphertext of another type.
         let inputs = [good.clone(), encrypt(ck, U8, 1)];
         assert!(matches!(
-            evaluate(&key, &ciphertext_job(U16, &inputs)),
+            evaluate1(&key, &ciphertext_job(U16, &inputs)),
             Err(EvalError::InvalidInput(_))
         ));
         // The wrong number of inputs.
         let inputs = [good.clone(), good.clone(), good];
         assert!(matches!(
-            evaluate(&key, &ciphertext_job(U16, &inputs)),
+            evaluate1(&key, &ciphertext_job(U16, &inputs)),
             Err(EvalError::InvalidInput(_))
         ));
     }
@@ -701,6 +914,7 @@ mod tests {
                 integer_type: I32,
                 scalar: None,
                 program: None,
+                compress: false,
                 inputs: Inputs::Proven {
                     list,
                     proof: ProofContext {
@@ -711,13 +925,13 @@ mod tests {
                 },
             }
         }
-        let out = evaluate(&key, &job(&list, &crs, &metadata, Operation::Multiply)).unwrap();
+        let out = evaluate1(&key, &job(&list, &crs, &metadata, Operation::Multiply)).unwrap();
         assert_eq!(decrypt(ck, I32.into(), &out), PlainValue::Int(-7_000_000));
 
         // A proof made for another key does not verify.
         let other = proof_metadata("key-2");
         assert!(matches!(
-            evaluate(&key, &job(&list, &crs, &other, Operation::Add)),
+            evaluate1(&key, &job(&list, &crs, &other, Operation::Add)),
             Err(EvalError::InvalidInput(_))
         ));
     }
@@ -734,6 +948,7 @@ mod tests {
             integer_type: U8,
             scalar: None,
             program: None,
+            compress: false,
             inputs: Inputs::Proven {
                 list: &three,
                 proof: ProofContext {
@@ -744,7 +959,7 @@ mod tests {
             },
         };
         assert!(matches!(
-            evaluate(&user_server_key(), &job),
+            evaluate1(&user_server_key(), &job),
             Err(EvalError::InvalidInput(_))
         ));
         for bad in [&b"garbage"[..], &three[..three.len() / 2], &[]] {

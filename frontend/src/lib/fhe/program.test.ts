@@ -8,7 +8,8 @@ import {
   inputNames,
   parseExpression,
   parseInputs,
-  programResultType
+  programResultType,
+  programResultTypes
 } from './program.js';
 
 interface Vector {
@@ -40,7 +41,8 @@ describe('programs shared with the server', () => {
       if (v.error) {
         expect(run).toThrow(v.error);
       } else {
-        expect(String(run())).toBe(v.result);
+        // Several results are written "r1, r2".
+        expect(run().map(String).join(', ')).toBe(v.result);
       }
     });
   }
@@ -60,6 +62,30 @@ describe('programs', () => {
     expect(programResultType(checkProgram(parseExpression('a < b').program, 'u8', 2))).toBe('bool');
   });
 
+  it('compiles lookups and several results', () => {
+    const { program } = parseExpression('lookup(a, [2, 3], 9), a < b');
+    expect(program).toEqual({
+      steps: [
+        {
+          op: 'lookup',
+          args: [{ input: 0 }, { const: '9' }],
+          table: [
+            { key: '0', value: '2' },
+            { key: '1', value: '3' }
+          ]
+        },
+        { op: 'lt', args: [{ input: 0 }, { input: 1 }] }
+      ],
+      outputs: [0, 1]
+    });
+    expect(programResultTypes(checkProgram(program, 'i8', 2))).toEqual(['i8', 'bool']);
+    expect(formatProgram(program)).toBe('lookup(a, [0: 2, 1: 3], 9), a < b');
+    expect(() => checkProgram({ ...program, outputs: [5] }, 'u8', 2)).toThrow('Output step 6');
+    expect(() =>
+      checkProgram({ steps: [{ op: 'add', args: [{ input: 0 }, { input: 0 }], table: [] }] }, 'u8', 1)
+    ).toThrow('only lookup');
+  });
+
   it('formats programs back into expressions that compute the same', () => {
     expect(formatProgram(parseExpression('(a + b) * 3 < c ? a : b').program)).toBe(
       '(((a + b) * 3) < c) ? a : b'
@@ -73,7 +99,9 @@ describe('programs', () => {
       const count = Math.max(original.inputCount, inputs.length);
       const again = parseExpression(formatProgram(original.program));
       const result = evalProgram(checkProgram(again.program, v.type, count), inputs);
-      expect(String(result), `${v.expr} → ${formatProgram(original.program)}`).toBe(v.result);
+      expect(result.map(String).join(', '), `${v.expr} → ${formatProgram(original.program)}`).toBe(
+        v.result
+      );
     }
   });
 

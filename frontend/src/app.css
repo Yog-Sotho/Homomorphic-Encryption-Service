@@ -185,3 +185,8 @@ button { cursor: pointer; font-family: var(--font-sans); border: none; }
   transition: color 0.15s;
 }
 .toggle-password:hover { color: var(--accent-hover); }
+
+/* The element app.html wraps the app in (no inline style: the CSP forbids it). */
+.app-root {
+  display: contents;
+}

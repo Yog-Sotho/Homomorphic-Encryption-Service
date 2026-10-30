@@ -1,4 +1,4 @@
-//! Rate limits keyed on the real client IP and on email addresses.
+//! Rate limits keyed on the real client IP, on email addresses and on accounts.
 //!
 //! The client IP is the TCP peer, unless that peer is one of `TRUSTED_PROXIES`:
 //! then it is the rightmost `X-Forwarded-For` hop that is not a trusted proxy.
@@ -11,7 +11,7 @@ use actix_web::body::{BoxBody, MessageBody};
 use actix_web::dev::{ServiceRequest, ServiceResponse};
 use actix_web::http::header::HeaderMap;
 use actix_web::middleware::Next;
-use actix_web::{web, Error, HttpRequest, ResponseError};
+use actix_web::{web, Error, HttpMessage, HttpRequest, ResponseError};
 use governor::clock::Clock;
 use governor::{DefaultKeyedRateLimiter, Quota};
 use ipnet::IpNet;
@@ -90,6 +90,7 @@ pub struct RateLimits {
     logins: DefaultKeyedRateLimiter<String>,
     emails_by_ip: DefaultKeyedRateLimiter<IpAddr>,
     emails_by_address: DefaultKeyedRateLimiter<String>,
+    users: DefaultKeyedRateLimiter<String>,
 }
 
 impl RateLimits {
@@ -99,6 +100,7 @@ impl RateLimits {
             logins_per_email,
             emails_per_ip_per_hour,
             emails_per_address_per_hour,
+            user_per_minute,
         } = config.rate_limits;
         RateLimits {
             trusted_proxies: config.trusted_proxies.clone(),
@@ -109,6 +111,7 @@ impl RateLimits {
                 emails_per_address_per_hour,
                 HOUR,
             )),
+            users: DefaultKeyedRateLimiter::keyed(quota(user_per_minute, Duration::from_secs(60))),
         }
     }
 
@@ -149,7 +152,7 @@ impl RateLimits {
             limiter.retain_recent();
             limiter.shrink_to_fit();
         }
-        for limiter in [&self.logins, &self.emails_by_address] {
+        for limiter in [&self.logins, &self.emails_by_address, &self.users] {
             limiter.retain_recent();
             limiter.shrink_to_fit();
         }
@@ -173,6 +176,34 @@ pub async fn limit_per_client_ip(
             Ok(req.into_response(response))
         }
         _ => next
+            .call(req)
+            .await
+            .map(ServiceResponse::map_into_boxed_body),
+    }
+}
+
+/// `from_fn` middleware limiting signed-in requests per account
+/// (`RATE_LIMIT_USER_PER_MINUTE`). Wrap it inside `jwt_validator`, which puts
+/// the account id in the request.
+pub async fn limit_per_user(
+    req: ServiceRequest,
+    next: Next<impl MessageBody + 'static>,
+) -> Result<ServiceResponse<BoxBody>, Error> {
+    let user = req.extensions().get::<String>().cloned();
+    let limited = match (req.app_data::<web::Data<RateLimits>>(), user) {
+        (Some(limits), Some(user)) => check(
+            &limits.users,
+            &user,
+            "Too many requests for this account. Try again later.",
+        ),
+        _ => Ok(()),
+    };
+    match limited {
+        Err(error) => {
+            let response = error.error_response();
+            Ok(req.into_response(response))
+        }
+        Ok(()) => next
             .call(req)
             .await
             .map(ServiceResponse::map_into_boxed_body),
@@ -247,6 +278,7 @@ mod tests {
             logins_per_email: 2,
             emails_per_ip_per_hour: 1,
             emails_per_address_per_hour: 1,
+            user_per_minute: 1,
         });
         limits.check_login("a@example.com").unwrap();
         limits.check_login("a@example.com").unwrap();

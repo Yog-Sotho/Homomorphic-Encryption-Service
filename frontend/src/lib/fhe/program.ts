@@ -32,23 +32,36 @@ export type ProgramOp =
   | 'shr'
   | 'rotl'
   | 'rotr'
-  | 'select';
+  | 'select'
+  | 'lookup';
 
 /** A step argument as the API takes it. */
 export type Arg = { input: number } | { step: number } | { const: string };
 
+/** One entry of a lookup table (decimal constants). */
+export interface TableEntry {
+  key: string;
+  value: string;
+}
+
 export interface Step {
   op: ProgramOp;
   args: Arg[];
+  /** For `lookup` only. */
+  table?: TableEntry[];
 }
 
 export interface Program {
   steps: Step[];
+  /** The steps whose values are the results; absent: the last step. */
+  outputs?: number[];
 }
 
-/** heaas-core `MAX_PROGRAM_STEPS` and `MAX_INPUTS`. */
+/** heaas-core `MAX_PROGRAM_STEPS`, `MAX_INPUTS`, `MAX_PROGRAM_OUTPUTS` and `MAX_TABLE_ENTRIES`. */
 export const MAX_PROGRAM_STEPS = 64;
 export const MAX_PROGRAM_INPUTS = 16;
+export const MAX_PROGRAM_OUTPUTS = 16;
+export const MAX_TABLE_ENTRIES = 256;
 const MAX_EXPRESSION_LEN = 4096;
 const MAX_DEPTH = 64;
 const INPUT_NAMES = 'abcdefghijklmnop';
@@ -61,7 +74,8 @@ type Operand = { ref: { input: number } | { step: number } } | { value: bigint }
 export interface CheckedProgram {
   type: IntegerType;
   inputCount: number;
-  steps: { op: ProgramOp; args: Operand[]; kind: Kind }[];
+  steps: { op: ProgramOp; args: Operand[]; kind: Kind; table: [bigint, bigint][] }[];
+  outputs: number[];
 }
 
 // ── Type check and plaintext evaluation ─────────────────────────────────────
@@ -92,6 +106,10 @@ function stepKind(op: ProgramOp, type: IntegerType, args: Operand[], kinds: (Kin
     case 'abs':
       if (first !== 'int') throw new Error('needs an integer');
       if (op === 'abs' && !typeInfo(type).signed) throw new Error(`needs a signed type, not ${type}`);
+      return 'int';
+    case 'lookup':
+      if (first !== 'int') throw new Error('needs an integer');
+      if (!('value' in args[1])) throw new Error('the default must be a constant');
       return 'int';
     case 'select':
       if (first !== 'bool') throw new Error('the condition must be a boolean (a comparison)');
@@ -151,16 +169,50 @@ export function checkProgram(program: Program, type: IntegerType, inputCount: nu
       const kinds = args.map((a): Kind | null =>
         'value' in a ? null : 'input' in a.ref ? 'int' : steps[a.ref.step].kind
       );
-      steps.push({ op: step.op, args, kind: stepKind(step.op, type, args, kinds) });
+      const kind = stepKind(step.op, type, args, kinds);
+      steps.push({ op: step.op, args, kind, table: checkTable(step, type) });
     } catch (e) {
       throw new Error(`Step ${index + 1} (${step.op}): ${(e as Error).message}`);
     }
   });
-  return { type, inputCount, steps };
+  const outputs = program.outputs ?? [steps.length - 1];
+  if (outputs.length === 0 || outputs.length > MAX_PROGRAM_OUTPUTS) {
+    throw new Error(`A program has 1 to ${MAX_PROGRAM_OUTPUTS} outputs, not ${outputs.length}`);
+  }
+  const missing = outputs.find((o) => o >= steps.length);
+  if (missing !== undefined) {
+    throw new Error(`Output step ${missing + 1} does not exist (the program has ${steps.length} steps)`);
+  }
+  return { type, inputCount, steps, outputs: [...outputs] };
 }
 
+/** The parsed table of a `lookup` step; other steps must not have one. */
+function checkTable(step: Step, type: IntegerType): [bigint, bigint][] {
+  if (step.op !== 'lookup') {
+    if (step.table) throw new Error('only lookup takes a table');
+    return [];
+  }
+  if (!step.table) throw new Error('needs a table');
+  if (step.table.length === 0 || step.table.length > MAX_TABLE_ENTRIES) {
+    throw new Error(`a table has 1 to ${MAX_TABLE_ENTRIES} entries, not ${step.table.length}`);
+  }
+  const table: [bigint, bigint][] = [];
+  for (const entry of step.table) {
+    const key = constant(type, entry.key);
+    if (table.some(([k]) => k === key)) throw new Error(`the table has the key ${key} twice`);
+    table.push([key, constant(type, entry.value)]);
+  }
+  return table;
+}
+
+/** The types to decrypt the results as, one per output. */
+export function programResultTypes(program: CheckedProgram): ValueType[] {
+  return program.outputs.map((o) => (program.steps[o].kind === 'bool' ? 'bool' : program.type));
+}
+
+/** The type of the first result. */
 export function programResultType(program: CheckedProgram): ValueType {
-  return program.steps.at(-1)?.kind === 'bool' ? 'bool' : program.type;
+  return programResultTypes(program)[0];
 }
 
 /** One step on plaintexts, with exactly the encrypted semantics. */
@@ -238,16 +290,21 @@ function applyPlain(op: ProgramOp, type: IntegerType, args: PlainValue[]): Plain
   throw new Error(`unknown operation ${op}`);
 }
 
-/** The plaintext result of a checked program on `inputs` (in the type's range). */
-export function evalProgram(program: CheckedProgram, inputs: bigint[]): PlainValue {
+/** The plaintext results of a checked program on `inputs` (in the type's range), one per output. */
+export function evalProgram(program: CheckedProgram, inputs: bigint[]): PlainValue[] {
   const values: PlainValue[] = [];
   for (const step of program.steps) {
     const args = step.args.map((a) =>
       'value' in a ? a.value : 'input' in a.ref ? inputs[a.ref.input] : values[a.ref.step]
     );
-    values.push(applyPlain(step.op, program.type, args));
+    if (step.op === 'lookup') {
+      const found = step.table.find(([k]) => k === args[0]);
+      values.push(found ? found[1] : args[1]);
+    } else {
+      values.push(applyPlain(step.op, program.type, args));
+    }
   }
-  return values[values.length - 1];
+  return program.outputs.map((o) => values[o]);
 }
 
 // ── Expressions ─────────────────────────────────────────────────────────────
@@ -256,7 +313,7 @@ type Token = { pos: number } & ({ number: string } | { name: string } | { op: st
 
 const OPERATORS = [
   '<<', '>>', '<=', '>=', '==', '!=', '&&', '||',
-  '+', '-', '*', '/', '%', '&', '|', '^', '!', '~', '<', '>', '?', ':', '(', ')', ','
+  '+', '-', '*', '/', '%', '&', '|', '^', '!', '~', '<', '>', '?', ':', '(', ')', '[', ']', ','
 ];
 
 function tokenize(text: string): Token[] {
@@ -291,7 +348,9 @@ type Expr =
   | { not: Expr }
   | { binary: string; left: Expr; right: Expr }
   | { ternary: [Expr, Expr, Expr] }
-  | { call: string; args: Expr[] };
+  | { call: string; args: Expr[] }
+  /** A lookup table literal: entries with an explicit key, or none. */
+  | { table: [Expr | null, Expr][] };
 
 /** Binary operator levels, loosest first. */
 const LEVELS = [
@@ -421,6 +480,22 @@ class Parser {
       this.expect(')');
       return expr;
     }
+    if (token.op === '[') {
+      this.pos++;
+      this.nest();
+      const entries: [Expr | null, Expr][] = [];
+      if (!this.eat(']')) {
+        for (;;) {
+          // `binary`, not `ternary`: the `:` belongs to the entry.
+          const first = this.binary(0);
+          entries.push(this.eat(':') ? [first, this.binary(0)] : [null, first]);
+          if (this.eat(']')) break;
+          this.expect(',');
+        }
+      }
+      this.depth--;
+      return { table: entries };
+    }
     throw new Error(`Unexpected symbol at position ${position}`);
   }
 }
@@ -502,9 +577,37 @@ class Lowering {
   steps: Step[] = [];
   inputCount = 0;
 
-  emit(op: ProgramOp, args: Arg[]): Arg {
-    this.steps.push({ op, args });
+  emit(op: ProgramOp, args: Arg[], table?: TableEntry[]): Arg {
+    this.steps.push(table ? { op, args, table } : { op, args });
     return { step: this.steps.length - 1 };
+  }
+
+  /** A constant, for table entries and defaults. */
+  constant(expr: Expr, what: string): string {
+    const arg = this.lower(expr);
+    if (!('const' in arg)) throw new Error(`${what} must be a constant`);
+    return arg.const;
+  }
+
+  /** `lookup(x, [table])` or `lookup(x, [table], default)`. */
+  lookup(args: Expr[]): Arg {
+    if (args.length !== 2 && args.length !== 3) {
+      throw new Error(`lookup() takes 2 or 3 arguments, not ${args.length}`);
+    }
+    const [x, tableExpr, defaultExpr] = args;
+    if (!('table' in tableExpr)) throw new Error('The second argument of lookup() must be a table [...]');
+    const entries = tableExpr.table;
+    const keyed = entries.filter(([k]) => k !== null).length;
+    if (keyed !== 0 && keyed !== entries.length) {
+      throw new Error('A table gives a key for every entry (k: v) or for none');
+    }
+    const table = entries.map(([key, value], i) => ({
+      key: key === null ? String(i) : this.constant(key, 'A table key'),
+      value: this.constant(value, 'A table value')
+    }));
+    const fallback = defaultExpr ? this.constant(defaultExpr, 'The default of lookup()') : '0';
+    const value = this.value(x, 'The first argument of lookup()');
+    return this.emit('lookup', [value, { const: fallback }], table);
   }
 
   value(expr: Expr, what: string): Arg {
@@ -531,6 +634,8 @@ class Lowering {
     if ('binary' in expr) {
       return this.binary(expr.binary, this.lower(expr.left), this.lower(expr.right));
     }
+    if ('table' in expr) throw new Error('A table [...] can only be the second argument of lookup()');
+    if (expr.call === 'lookup') return this.lookup(expr.args);
     const args = expr.args.map((a) => this.lower(a));
     const name = expr.call;
     if ((name === 'min' || name === 'max') && args.length === 2) return this.binary(name, args[0], args[1]);
@@ -541,7 +646,7 @@ class Lowering {
     else if (['min', 'max', 'rotl', 'rotr'].includes(name)) {
       throw new Error(`${name}() takes 2 arguments, not ${args.length}`);
     } else if (name === 'abs') throw new Error(`abs() takes 1 argument, not ${args.length}`);
-    else throw new Error(`Unknown function ${name}(): use min, max, abs, rotl or rotr`);
+    else throw new Error(`Unknown function ${name}(): use min, max, abs, rotl, rotr or lookup`);
     if ('const' in args[0]) throw new Error(`The first argument of ${name}() must be encrypted`);
     return this.emit(op, args);
   }
@@ -574,15 +679,28 @@ export function parseExpression(text: string): CompiledExpression {
     throw new Error(`The expression is longer than ${MAX_EXPRESSION_LEN} characters`);
   }
   const parser = new Parser(tokenize(text), text.length);
-  const expr = parser.ternary();
+  const results = [parser.ternary()];
+  while (parser.eat(',')) results.push(parser.ternary());
   if (parser.pos !== parser.tokens.length) {
     throw new Error(`Unexpected symbol at position ${parser.position()}`);
   }
   const lowering = new Lowering();
-  const result = lowering.lower(expr);
-  if ('const' in result) throw new Error('The expression must use at least one input (a to p)');
-  if ('input' in result) lowering.emit('add', [result, { const: '0' }]);
-  return { program: { steps: lowering.steps }, inputCount: lowering.inputCount };
+  const outputs = results.map((expr, i) => {
+    let result = lowering.lower(expr);
+    if ('const' in result) {
+      throw new Error(
+        results.length === 1
+          ? 'The expression must use at least one input (a to p)'
+          : `Result ${i + 1} must use at least one input (a to p)`
+      );
+    }
+    // A bare input: the identity, as `x + 0`.
+    if ('input' in result) result = lowering.emit('add', [result, { const: '0' }]);
+    return (result as { step: number }).step;
+  });
+  const program: Program = { steps: lowering.steps };
+  if (outputs.length > 1) program.outputs = outputs;
+  return { program, inputCount: lowering.inputCount };
 }
 
 /** The input letters an expression reads: `["a", "b", "c"]`. */
@@ -633,12 +751,16 @@ export function formatProgram(program: Program): string {
     const [a, b, c] = step.args;
     const symbol = SYMBOLS[step.op];
     let text: string;
-    if (symbol) text = `${arg(a, true)} ${symbol} ${arg(b, true)}`;
+    if (step.op === 'lookup') {
+      const entries = (step.table ?? []).map((e) => `${e.key}: ${e.value}`).join(', ');
+      text = `lookup(${arg(a, false)}, [${entries}], ${arg(b, false)})`;
+    } else if (symbol) text = `${arg(a, true)} ${symbol} ${arg(b, true)}`;
     else if (step.op === 'neg') text = `-${arg(a, true)}`;
     else if (step.op === 'not') text = `!${arg(a, true)}`;
     else if (step.op === 'select') text = `${arg(a, true)} ? ${arg(b, true)} : ${arg(c, true)}`;
     else text = `${step.op}(${step.args.map((x) => arg(x, false)).join(', ')})`;
     texts.push(text);
   }
-  return texts.at(-1) ?? '';
+  const outputs = program.outputs ?? [program.steps.length - 1];
+  return outputs.map((o) => texts[o] ?? '').join(', ');
 }

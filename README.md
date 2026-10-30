@@ -35,7 +35,9 @@ accounts on it. It is not a hosted product: there is nothing to subscribe to.
   operations, comparisons and sums on signed and unsigned integers from 8 to 64
   bits, using TFHE-rs's default parameters (128-bit security according to Zama).
 - **Programs.** Write an expression such as `(a + b) * 3 < c ? a : b`: the server
-  evaluates every step on ciphertexts, including the encrypted if-then-else.
+  evaluates every step on ciphertexts, including the encrypted if-then-else and
+  lookup tables, and returns one or several encrypted results. With the SDK,
+  results can come back compressed, about 2 KB instead of 130 to 530 KB each.
 - **Proven inputs.** Clients can attach a zero-knowledge proof that their inputs are
   well-formed encryptions; the server checks it before computing.
 - **Use it your way.** A web dashboard, a Rust SDK and command-line tool, or a

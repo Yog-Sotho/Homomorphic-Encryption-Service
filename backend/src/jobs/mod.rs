@@ -70,6 +70,7 @@ pub fn evaluator(keys: Arc<KeyStore>, crs: Arc<Crs>) -> Processor {
                 scalar,
                 inputs,
                 program: program.as_ref(),
+                compress: job.compressed_results,
             },
         )
     })

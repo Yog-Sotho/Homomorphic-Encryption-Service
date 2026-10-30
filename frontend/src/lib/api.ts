@@ -258,6 +258,8 @@ export interface HeParams {
   max_job_input_bytes: number;
   max_batch_jobs: number;
   max_program_steps: number;
+  max_program_outputs: number;
+  max_table_entries: number;
   max_server_key_bytes: number;
   max_keys_per_user: number;
   proofs: ProofParams | null;
@@ -272,6 +274,8 @@ export interface ServerKeyInfo {
   supports_proofs: boolean;
   /** Its public key has been uploaded, so proofs can be checked. */
   has_public_key: boolean;
+  /** Holds compression keys (made with the SDK); the browser cannot make these. */
+  supports_compression: boolean;
 }
 
 export type JobStatus = 'pending' | 'processing' | 'completed' | 'failed';
@@ -282,7 +286,12 @@ export interface JobSummary {
   status: JobStatus;
   operation: Operation;
   integer_type: IntegerType;
+  /** The type of the first result. */
   result_type: ValueType;
+  /** The type of every result, in order (several for some programs). */
+  result_types: ValueType[];
+  /** The results are one compressed list (only the SDK can unpack it). */
+  compressed_results: boolean;
   input_count: number;
   proven: boolean;
   /** The plaintext right-hand operand, if any. */
@@ -396,8 +405,9 @@ export const compute = {
     }
   },
   getJobStatus: (jobId: string) => request<JobSummary>('GET', jobPath(jobId)),
-  /** The encrypted result of a completed job, a ciphertext of its `result_type`. */
-  getJobResult: (jobId: string) => requestBytes(`${jobPath(jobId)}/result`),
+  /** Encrypted result `output` (0-based) of a completed job, a ciphertext of `result_types[output]`. */
+  getJobResult: (jobId: string, output = 0) =>
+    requestBytes(`${jobPath(jobId)}/result${output ? `?output=${output}` : ''}`),
   listJobs: (cursor?: string, limit?: number) => {
     const query = new URLSearchParams();
     if (cursor) query.set('cursor', cursor);

@@ -48,6 +48,8 @@ pub struct RateLimitSettings {
     pub emails_per_ip_per_hour: u32,
     /// Emails sent to one address, per hour.
     pub emails_per_address_per_hour: u32,
+    /// Signed-in requests (`/user`, `/keys`, `/compute`), per account, per minute.
+    pub user_per_minute: u32,
 }
 
 /// Where the OAuth providers live; overridden in tests by a mock server.
@@ -98,7 +100,7 @@ pub fn parse_trusted_proxies(value: &str) -> Result<Vec<IpNet>, String> {
 }
 
 /// Compressed TFHE server keys are ~60 MB with the default parameters.
-const DEFAULT_MAX_SERVER_KEY_BYTES: u64 = 80 * 1024 * 1024;
+const DEFAULT_MAX_SERVER_KEY_BYTES: u64 = 128 * 1024 * 1024;
 
 /// How long the credentials the server hands out stay valid.
 #[derive(Clone)]
@@ -407,6 +409,8 @@ impl Config {
                 3,
                 1..=1_000,
             ),
+            // The dashboard polls a running job every 0.75 s (80 a minute).
+            user_per_minute: vars.number("RATE_LIMIT_USER_PER_MINUTE", 600, 1..=1_000_000),
         };
         let defaults = TokenLifetimes::default();
         let ttl = TokenLifetimes {
@@ -579,6 +583,7 @@ impl Config {
                 logins_per_email: 10_000,
                 emails_per_ip_per_hour: 10_000,
                 emails_per_address_per_hour: 10_000,
+                user_per_minute: 100_000,
             },
             ttl: TokenLifetimes::default(),
             oauth: OAuthEndpoints::default(),

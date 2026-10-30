@@ -56,18 +56,21 @@ let request = CreateJobRequest {
     inputs: vec![],
     proven_inputs: Some(encode(&list)),
     scalar: None,
+    program: None,
+    compress_results: false,
 };
 let (job, result) = client.compute_job(&request, timeout).await?;
 println!("{}", fhe::decrypt_as(&secret, job.result_type, &result)?); // 37
 ```
 
 Programs come from expressions with `parse_expression` (the same parser the CLI uses);
-`submit_batch` queues several requests at once:
+`results` fetches every result of a job, and `submit_batch` queues several requests
+at once:
 
 ```rust
 use heaas_sdk::parse_expression;
 
-let compiled = parse_expression("(a + b) * 3 < c ? a : b")?;
+let compiled = parse_expression("(a + b) * 3 < c ? a : b, lookup(a, [5: 50])")?;
 let request = CreateJobRequest {
     key_id: key.id.clone(),
     operation: Operation::Program,
@@ -76,8 +79,22 @@ let request = CreateJobRequest {
     proven_inputs: None,
     scalar: None,
     program: Some(compiled.program),
+    compress_results: false,
 };
+let job = client.submit_job(&request).await?;
+let job = client.wait(&job.id, timeout).await?;
+for (bytes, ty) in client.results(&job).await?.iter().zip(job.output_types()) {
+    println!("{}", fhe::decrypt_as(&secret, ty, bytes)?); // 5, then 50
+}
 let jobs = client.submit_batch(&[request.clone(), request]).await?; // both, or neither
+```
+
+With a key from `fhe::generate_compressing_keys` (see
+[Compressed results](how-it-works.md#compressed-results)), set `compress_results: true`;
+`results` then returns one list of every result:
+
+```rust
+let values = fhe::decrypt_compressed(&secret, &server.decompress(), &results[0], &job.output_types())?;
 ```
 
 Submissions carry an `Idempotency-Key` and are retried with it after a network error
@@ -95,11 +112,16 @@ heaas run --key-id <id> --op lt --type i32 -- -5 3           # true
 heaas run --key-id <id> --op add --type u64 --scalar 10 5    # 15 (10 is sent unencrypted)
 heaas run --key-id <id> --op sum --type u8 --prove 200 100 1 # 45, with proven inputs
 heaas run --key-id <id> --type i16 --expr "(a + b) * 3 < c ? a - b : b - a" 5 7 100   # -2
+heaas run --key-id <id> --type u8 --expr "lookup(a, [1, 4, 9, 16]), a + b" 2 5        # 9, then 7
+heaas keygen --compression --force && heaas upload-key   # a key whose results can be compressed
+heaas run --key-id <id> --compress --op add 2 3                                         # 5, from a 2 KB list
 # Step by step:
 heaas encrypt 300 -o a.ct && heaas encrypt 7 -o b.ct
 job=$(heaas submit --key-id <id> --op subtract a.ct b.ct)
 heaas wait "$job" && heaas result "$job" -o r.ct && heaas decrypt r.ct   # 293
 # A comparison's result is a boolean: heaas decrypt --type bool r.ct
+# Result 1 of a program: heaas result "$job" --output 1 -o r1.ct
+# A compressed list: heaas decrypt --compressed --type u8,bool r.ct
 # Proven inputs: heaas prove --key-id <id> --type u8 -o list.bin 1 2 3
 #                heaas submit --key-id <id> --op sum --type u8 --proven list.bin
 ```
@@ -117,10 +139,10 @@ heaas wait "$job" && heaas result "$job" -o r.ct && heaas decrypt r.ct   # 293
 | `POST /keys` | Bearer | Body: `safe_serialize`d `CompressedServerKey` (`application/octet-stream`). Returns `201 {id, sha256, size_bytes, created_at, supports_proofs, has_public_key}`. `409` when you already have the maximum number of keys |
 | `PUT /keys/{id}/public-key` | Bearer | Body: `safe_serialize`d `CompactPublicKey` made from the same client key. Needed for proven inputs; `422` for keys made before 0.5 |
 | `GET /keys`, `DELETE /keys/{id}` | Bearer | List or remove your keys |
-| `POST /compute/jobs` | Bearer | `{"key_id", "operation", "integer_type", "inputs": [b64, …]}`, or `"proven_inputs": b64` instead of `inputs`, optionally `"scalar"`, and `"program"` for `operation: "program"` (see [Submit a job](#submit-a-job) and [Programs](#programs)). Optional `Idempotency-Key` header. Returns `202` + `Location` and the job |
+| `POST /compute/jobs` | Bearer | `{"key_id", "operation", "integer_type", "inputs": [b64, …]}`, or `"proven_inputs": b64` instead of `inputs`, optionally `"scalar"`, `"program"` for `operation: "program"` and `"compress_results": true` (see [Submit a job](#submit-a-job) and [Programs](#programs)). Optional `Idempotency-Key` header. Returns `202` + `Location` and the job |
 | `POST /compute/jobs/batch` | Bearer | `{"jobs": [job, …]}`: 1 to `max_batch_jobs` (16) jobs as above, queued together or not at all (`202 {"jobs": [...]}`, in order). One bad job refuses the batch (`400 "Job 2: …"`); not enough quota or room refuses it too, charging nothing. An `Idempotency-Key` covers the whole batch |
 | `GET /compute/jobs/{id}` | Bearer | Job metadata. `status` is `pending`, `processing`, `completed` or `failed` (`error_message` set); `result_type` says how to decrypt the result |
-| `GET /compute/jobs/{id}/result` | Bearer | The encrypted result (`application/octet-stream`, a `safe_serialize`d ciphertext of the job's `result_type`). `409` until the job has completed |
+| `GET /compute/jobs/{id}/result` | Bearer | The encrypted result (`application/octet-stream`, a `safe_serialize`d ciphertext of the job's `result_type`); `?output=N` for result N of a program with several, and one compressed list of every result for a job with `compressed_results`. `409` until the job has completed |
 | `GET /compute/jobs?limit=&cursor=` | Bearer | Your jobs, newest first: `{data, next_cursor}` (metadata only, `limit` 1–100, default 20) |
 | `DELETE /compute/jobs/{id}` | Bearer | Deletes a job that is not running, with its ciphertexts (`204`; `409` while it runs) |
 
@@ -136,7 +158,9 @@ results are free. Resending a submission with the same `Idempotency-Key` returns
 the original job (`Idempotent-Replayed: true`) and is not charged again; the same
 key with a different request is rejected with `422`. When you already have
 `MAX_ACTIVE_JOBS_PER_USER` jobs waiting or running you get `429`, and when the
-whole queue is full `503`; both carry `Retry-After` and are not charged.
+whole queue is full `503`; both carry `Retry-After` and are not charged. Signed-in
+requests of any kind are also limited per account (`RATE_LIMIT_USER_PER_MINUTE`,
+600 a minute by default): `429` with `Retry-After`.
 
 ---
 
@@ -235,8 +259,9 @@ a second job, and you are not charged twice.
 
 `"operation": "program"` runs the request's `program`: a list of steps, each an
 operation on job inputs (`{"input": 0}`), results of earlier steps (`{"step": 1}`)
-or plaintext constants (`{"const": "-3"}`). The last step is the result; its type is
-the job's `result_type`.
+or plaintext constants (`{"const": "-3"}`). The last step is the result, unless
+`outputs` lists the steps (0-based, 1 to `max_program_outputs` = 16) whose values
+are the results, in order. The job's `result_types` gives each result's type.
 
 ```
 { "key_id": "8e521fee-…", "operation": "program", "integer_type": "i16",
@@ -256,7 +281,15 @@ and the comparisons (`eq` … `ge`) take two arguments, the second encrypted or 
 constant; `and`, `or`, `xor` work on two integers (bitwise) or two booleans; `not`
 takes one of either; `neg` and `abs` (signed types) one integer; `shl`, `shr`,
 `rotl`, `rotr` an integer and a constant from 0 to bits − 1; `select` a boolean and
-two encrypted integers. The first argument is always encrypted. Programs have 1 to
+two encrypted integers; `lookup` an integer and a constant default, with a `table`
+of 1 to `max_table_entries` (256) `{"key", "value"}` constants with distinct keys:
+
+```
+{ "op": "lookup", "args": [{ "input": 0 }, { "const": "0" }],
+  "table": [{ "key": "1", "value": "10" }, { "key": "-1", "value": "20" }] }
+```
+
+The first argument is always encrypted. Programs have 1 to
 `max_program_steps` (64) steps; the server checks them before queuing and answers
 `400` with the step at fault. [How it works](how-it-works.md#programs) gives the
 semantics, and `heaas_core::parse_expression` (Rust) or
@@ -268,7 +301,11 @@ Poll `GET /api/v1/compute/jobs/{id}` until `status` is `completed` or `failed`. 
 `GET /api/v1/compute/jobs/{id}/result` returns the encrypted result as raw bytes
 (`application/octet-stream`): `safe_deserialize` it as the job's `result_type`
 (`FheUint16` for `u16`, `FheBool` for `bool`, …) and decrypt it with your client key.
-If `status` is `failed`, `error_message` says why.
+A program with several results has one per entry of `result_types`:
+`…/result?output=1` is the second. A job with `compressed_results` has a single
+TFHE-rs `CompressedCiphertextList` of them all at `…/result` (`output` 0); unpack it
+with the decompressed server key set (`fhe::decrypt_compressed`). If `status` is
+`failed`, `error_message` says why.
 
 Jobs survive server restarts, and the server retries a job itself if it hits an
 internal error. `attempts` shows how many times it has been started.
@@ -285,6 +322,7 @@ so fetch results before then.
 
 Each accepted job counts against a daily quota (100 by default, reset at midnight
 UTC). Checking status, listing jobs and fetching results do not count. You can have
-up to 10 jobs waiting or running at once. Responses that ask you to slow down carry a
+up to 10 jobs waiting or running at once, and make up to 600 signed-in requests a
+minute (polling included). Responses that ask you to slow down carry a
 `Retry-After` header with the number of seconds to wait, and refused submissions are
 not charged.

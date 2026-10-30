@@ -32,7 +32,7 @@ docker compose ps      # both "healthy"
 nginx (`nginx-heaas.conf`) is the only public entry point. It terminates TLS (set
 your certificate paths and `server_name`), sends HSTS, redirects HTTP to HTTPS,
 serves the app under `/heaas/` and the API under `/api/`, and accepts request bodies
-up to 96 MB for key uploads. Sessions use `Secure` cookies, so the site must be
+up to 136 MB for key uploads. Sessions use `Secure` cookies, so the site must be
 served over HTTPS. Compose sets `TRUSTED_PROXIES` to cover nginx on the host and
 the Docker networks; adjust it if your proxies live elsewhere.
 
@@ -55,7 +55,7 @@ counts as unset.
 | `DATABASE_URL` | `sqlite://./he_saas.db` | SQLite database |
 | `KEY_STORE_DIR` | `./data/keys` | Uploaded server keys (~60 MB each), their public keys, and the proof CRS (`crs.bin`, made on first start) |
 | `SERVER_ADDR` | `127.0.0.1:8080` | Listen address (`host:port`) |
-| `MAX_SERVER_KEY_BYTES` | 80 MiB | Largest accepted key upload (1 MiB – 1 GiB) |
+| `MAX_SERVER_KEY_BYTES` | 128 MiB | Largest accepted key upload (1 MiB – 1 GiB): keys are ~60 MB, ~106 MB with compression keys |
 | `MAX_KEYS_PER_USER` | 2 | Server keys per account (1–100) |
 | `KEY_CACHE_CAPACITY` | 2 | Decompressed keys kept in RAM, ~180 MB each (1–64) |
 | `DAILY_COMPUTE_QUOTA` | 100 | Jobs per user per UTC day |
@@ -78,6 +78,7 @@ counts as unset.
 | `VERIFY_LINK_TTL_HOURS` | 24 | Email verification links (1–168) |
 | `RESET_LINK_TTL_MINUTES` | 60 | Password reset links (5–1440) |
 | `RATE_LIMIT_AUTH_PER_MINUTE` | 30 | `/api/v1/auth` requests per client IP |
+| `RATE_LIMIT_USER_PER_MINUTE` | 600 | Signed-in requests (`/user`, `/keys`, `/compute`) per account |
 | `RATE_LIMIT_LOGINS_PER_EMAIL` | 5 | Sign-in attempts per address per 15 minutes |
 | `RATE_LIMIT_EMAILS_PER_IP_PER_HOUR` | 10 | Register / resend / forgot-password requests per client IP |
 | `RATE_LIMIT_EMAILS_PER_ADDRESS_PER_HOUR` | 3 | Emails sent to one address (further ones are skipped silently) |

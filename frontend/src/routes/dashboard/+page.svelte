@@ -30,7 +30,7 @@
     evalProgram,
     inputNames,
     parseExpression,
-    programResultType
+    programResultTypes
   } from '#lib/fhe/program.js';
   import {
     canProve,
@@ -62,9 +62,10 @@
   let prove = $state(false);
   let step = $state<Step | null>(null);
   let result = $state<{
-    value: PlainValue;
-    expected: PlainValue;
+    values: PlainValue[];
+    expected: PlainValue[];
     jobId: string;
+    ciphertexts: number;
     ciphertextBytes: number;
     sent: string;
   } | null>(null);
@@ -103,13 +104,18 @@
       (kind !== 'sum' || (operands.length >= 2 && operands.length <= MAX_SUM_INPUTS)) &&
       (kind !== 'program' || operands.length === compiled?.checked?.inputCount)
   );
+  /** One expected value per result (several for some programs). */
   const expected = $derived(
     !valid
       ? null
       : kind === 'program' && compiled?.checked
         ? evalProgram(compiled.checked, operands as bigint[])
-        : expectedResult(operation, integerType, operands as bigint[])
+        : [expectedResult(operation, integerType, operands as bigint[])]
   );
+  const expectedText = $derived(expected ? expected.map(String).join(', ') : '—');
+  const resultTypes = $derived(compiled?.checked ? programResultTypes(compiled.checked) : []);
+  const sameValues = (a: PlainValue[], b: PlainValue[]) =>
+    a.length === b.length && a.every((v, i) => v === b[i]);
   const usesScalar = $derived(scalarB && kind !== 'sum' && kind !== 'program');
 
   onMount(async () => {
@@ -174,14 +180,25 @@
       if (done.status === 'failed') {
         throw new Error(done.error_message ?? 'The computation failed');
       }
-      const ciphertext = await compute.getJobResult(job.id);
+      const types = done.result_types?.length ? done.result_types : [done.result_type];
+      const ciphertexts = [];
+      for (let output = 0; output < types.length; output++) {
+        ciphertexts.push(await compute.getJobResult(job.id, output));
+      }
 
       step = 'decrypting';
-      const value = parsePlainValue(
-        done.result_type,
-        await fheSession.decrypt(done.result_type, ciphertext)
-      );
-      result = { value, expected: want, jobId: job.id, ciphertextBytes: ciphertext.length, sent };
+      const values: PlainValue[] = [];
+      for (const [i, ty] of types.entries()) {
+        values.push(parsePlainValue(ty, await fheSession.decrypt(ty, ciphertexts[i])));
+      }
+      result = {
+        values,
+        expected: want,
+        jobId: job.id,
+        ciphertexts: ciphertexts.length,
+        ciphertextBytes: ciphertexts.reduce((n, c) => n + c.length, 0),
+        sent
+      };
     } catch (e) {
       computeError = errorMessage(e, 'Computation failed');
     } finally {
@@ -340,13 +357,18 @@
             {:else if compiled?.checked}
               <p class="field-hint" id="expression-help">
                 {compiled.checked.steps.length} step{compiled.checked.steps.length === 1 ? '' : 's'}
-                on {inputNames(compiled.checked.inputCount).join(', ')}; the result is
-                {programResultType(compiled.checked) === 'bool' ? 'true or false' : `a ${integerType}`}.
+                on {inputNames(compiled.checked.inputCount).join(', ')};
+                {#if resultTypes.length === 1}
+                  the result is {resultTypes[0] === 'bool' ? 'true or false' : `a ${integerType}`}.
+                {:else}
+                  {resultTypes.length} results ({resultTypes.join(', ')}).
+                {/if}
               </p>
             {/if}
             <p class="field-hint syntax-hint">
               Inputs a to p; + − * / % · & | ^ ! · &lt;&lt; &gt;&gt; (by a number) · == != &lt; &lt;= &gt; &gt;= ·
-              && || · c ? x : y · min max abs rotl rotr. Numbers in the expression are sent unencrypted.
+              && || · c ? x : y · min max abs rotl rotr · lookup(x, [v0, v1, …]) or lookup(x, [k: v, …], default)
+              · x, y for several results. Numbers and tables in the expression are sent unencrypted.
             </p>
           </div>
           <div class="inputs-row sum-row">
@@ -360,7 +382,7 @@
             <div class="op-glyph" aria-hidden="true">=</div>
             <div class="field-block expected-block">
               <div class="label-like">Expected</div>
-              <div class="expected-val">{expected ?? '—'}</div>
+              <div class="expected-val">{expectedText}</div>
             </div>
           </div>
         {:else if kind === 'sum'}
@@ -372,7 +394,7 @@
             <div class="op-glyph" aria-hidden="true">=</div>
             <div class="field-block expected-block">
               <div class="label-like">Expected</div>
-              <div class="expected-val">{expected ?? '—'}</div>
+              <div class="expected-val">{expectedText}</div>
             </div>
           </div>
         {:else}
@@ -389,7 +411,7 @@
             <div class="op-glyph" aria-hidden="true">=</div>
             <div class="field-block expected-block">
               <div class="label-like">Expected</div>
-              <div class="expected-val">{expected ?? '—'}</div>
+              <div class="expected-val">{expectedText}</div>
             </div>
           </div>
           <label class="check">
@@ -432,10 +454,10 @@
       <div class="result-header">
         <div class="badge-group">
           <span class="badge badge-green">Decrypted locally</span>
-          {#if result.value === result.expected}
+          {#if sameValues(result.values, result.expected)}
             <span class="badge badge-green badge-match">Matches expected</span>
           {:else}
-            <span class="badge badge-red">Does not match {String(result.expected)}</span>
+            <span class="badge badge-red">Does not match {result.expected.map(String).join(', ')}</span>
           {/if}
         </div>
         <button class="btn-ghost dismiss-btn" onclick={() => (result = null)} type="button">Clear</button>
@@ -443,16 +465,22 @@
 
       <div class="result-plaintext">
         <div class="result-label-row">
-          <span class="result-label">Result</span>
+          <span class="result-label">{result.values.length === 1 ? 'Result' : 'Results'}</span>
         </div>
-        <span class="result-number" data-testid="result-value">{String(result.value)}</span>
+        <span class="result-number" data-testid="result-value">{result.values.map(String).join(', ')}</span>
       </div>
 
       <div class="divider"></div>
 
       <dl class="result-facts">
         <div><dt>Sent to the server</dt><dd>{result.sent}</dd></div>
-        <div><dt>Received</dt><dd>1 ciphertext, {formatBytes(result.ciphertextBytes)}</dd></div>
+        <div>
+          <dt>Received</dt>
+          <dd>
+            {result.ciphertexts} ciphertext{result.ciphertexts === 1 ? '' : 's'},
+            {formatBytes(result.ciphertextBytes)}
+          </dd>
+        </div>
         <div><dt>Job</dt><dd><code>{result.jobId}</code> · <a href={resolve('/jobs')}>all jobs</a></dd></div>
       </dl>
     </div>

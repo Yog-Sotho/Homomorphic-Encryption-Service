@@ -9,6 +9,21 @@ compatibility).
 ## [Unreleased]
 
 ### Added
+- **Lookup tables.** A `lookup` program step (TFHE-rs `match_value_or`) maps an
+  encrypted value through a plaintext table of up to 256 entries, with a default:
+  `lookup(a, [1, 4, 9, 16])` or `lookup(a, [-1: 10, 5: 50], 0)` in expressions.
+  Signed types too.
+- **Several results.** A program's `outputs` names up to 16 steps whose values are
+  its results; expressions separated by commas (`a + b, a < b`) compile to them.
+  Jobs report `result_types`, and `GET …/result?output=N` returns result N. The
+  dashboard, the jobs page, the SDK (`Client::results`) and the CLI (`run` prints
+  one per line, `result --output`) handle them.
+- **Compressed results.** Keys made with `heaas keygen --compression`
+  (`fhe::generate_compressing_keys`) hold TFHE-rs compression keys; a job sent with
+  `compress_results` returns all its results as one `CompressedCiphertextList` of
+  about 2 KB instead of 130–530 KB per value (`fhe::decrypt_compressed`,
+  `heaas decrypt --compressed`). Key info reports `supports_compression`. TFHE-rs's
+  browser build cannot make or unpack these, so the dashboard does not offer it.
 - **Programs.** `operation: "program"` runs several operations in one job, every
   intermediate value encrypted: a list of steps over the inputs, earlier steps and
   plaintext constants. New step operations: `divide`, `remainder`, bitwise and
@@ -44,6 +59,8 @@ compatibility).
 - A submission refused for the daily quota no longer counts against it, and a
   batch that does not fit leaves what is left of it.
 - `GET /api/v1/he/crs` is rate-limited per client IP.
+- The default `MAX_SERVER_KEY_BYTES` is 128 MiB (was 80 MiB), and the sample nginx
+  configuration accepts 136 MB, so keys with compression keys (~106 MB) fit.
 - New keys are made with Zama's dedicated compact-public-key parameters on top of
   `ConfigBuilder::default()`. Keys made before are still accepted, but cannot take
   proven inputs.

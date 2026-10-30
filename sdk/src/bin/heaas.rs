@@ -9,7 +9,11 @@
 //! heaas run --key-id <id> --op add --scalar 10 5               # 5 + 10 (10 sent in clear)
 //! heaas run --key-id <id> --op sum --type u8 --prove 1 2 3     # proven inputs
 //! heaas run --key-id <id> --expr "(a + b) * 3 < c ? a : b" 1 2 10   # a program
+//! heaas run --key-id <id> --type u8 --expr "lookup(a, [1, 4, 9]), a + b" 2 5   # 9 and 7
 //! ```
+//!
+//! With `heaas keygen --compression`, `run --compress` gets the results back as
+//! one compressed list of ~2 KB instead of ~130–530 KB per value.
 //!
 //! Step by step: `encrypt` (or `prove`), `submit`, `wait`, `result`, `decrypt`.
 
@@ -66,6 +70,10 @@ struct Operands {
     /// A plaintext right-hand operand (the server sees it).
     #[arg(long, allow_hyphen_values = true)]
     scalar: Option<String>,
+    /// Return the results as one compressed list (the key must be made with
+    /// `keygen --compression`).
+    #[arg(long)]
+    compress: bool,
 }
 
 #[derive(Subcommand)]
@@ -78,6 +86,10 @@ enum Command {
         server_key: PathBuf,
         #[arg(long, default_value = "heaas-public.key")]
         public_key: PathBuf,
+        /// Also make compression keys, so jobs can return compressed results
+        /// (the server key grows from ~60 MB to ~106 MB).
+        #[arg(long)]
+        compression: bool,
         /// Replace existing key files.
         #[arg(long)]
         force: bool,
@@ -140,17 +152,28 @@ enum Command {
     /// Save a completed job's encrypted result.
     Result {
         job_id: String,
+        /// Which result, for a program with several (0-based).
+        #[arg(long, default_value_t = 0)]
+        output: usize,
         #[arg(long, short)]
         out: PathBuf,
     },
-    /// Decrypt a ciphertext file; prints the value.
+    /// Decrypt a ciphertext file; prints the value (one per line for a
+    /// compressed list).
     Decrypt {
         ciphertext: PathBuf,
-        /// The ciphertext's type: a job's `result_type` (`bool` for comparisons).
-        #[arg(long = "type", default_value = "u16")]
-        value_type: ValueType,
+        /// The ciphertext's type: a job's `result_type` (`bool` for
+        /// comparisons). For a compressed list, its `result_types`, e.g. `u8,bool`.
+        #[arg(long = "type", value_delimiter = ',', default_value = "u16")]
+        value_types: Vec<ValueType>,
+        /// The file is a compressed list of results (`compressed_results`).
+        #[arg(long)]
+        compressed: bool,
         #[arg(long, default_value = "heaas-client.key")]
         client_key: PathBuf,
+        /// Needed to unpack a compressed list.
+        #[arg(long, default_value = "heaas-server.key")]
+        server_key: PathBuf,
     },
     /// Encrypt values, compute on the server and decrypt the result.
     Run {
@@ -165,6 +188,9 @@ enum Command {
         values: Vec<String>,
         #[arg(long, default_value = "heaas-client.key")]
         client_key: PathBuf,
+        /// Needed with --compress, to unpack the results.
+        #[arg(long, default_value = "heaas-server.key")]
+        server_key: PathBuf,
         /// Seconds.
         #[arg(long, default_value_t = 600)]
         timeout: u64,
@@ -284,7 +310,25 @@ impl Operands {
             proven_inputs,
             scalar: self.scalar.clone(),
             program: plan.program.as_ref().map(|(program, _)| program.clone()),
+            compress_results: self.compress,
         }
+    }
+}
+
+/// The decompressed server key in `path`, for unpacking compressed results.
+fn load_server_key(path: &Path) -> Result<tfhe::ServerKey, Box<dyn std::error::Error>> {
+    let bytes = std::fs::read(path).map_err(|e| {
+        format!(
+            "{}: {e} (compressed results need the server key)",
+            path.display()
+        )
+    })?;
+    Ok(fhe::server_key_from_bytes(&bytes)?.decompress())
+}
+
+fn print_values(values: &[PlainValue]) {
+    for value in values {
+        println!("{value}");
     }
 }
 
@@ -294,13 +338,18 @@ async fn run(cli: Cli) -> Outcome {
             client_key,
             server_key,
             public_key,
+            compression,
             force,
         } => {
             for path in [client_key, server_key, public_key] {
                 refuse_overwrite(path, *force)?;
             }
             eprintln!("Generating keys (this takes a while)…");
-            let (secret, server) = fhe::generate_keys();
+            let (secret, server) = if *compression {
+                fhe::generate_compressing_keys()
+            } else {
+                fhe::generate_keys()
+            };
             fhe::save_client_key(client_key, &secret)?;
             fhe::write_private(server_key, &fhe::server_key_bytes(&server)?)?;
             fhe::write_private(
@@ -391,20 +440,40 @@ async fn run(cli: Cli) -> Outcome {
                 .await?;
             println!("{}", job.status);
         }
-        Command::Result { job_id, out } => {
-            let bytes = signed_in(&cli).await?.result(job_id).await?;
+        Command::Result {
+            job_id,
+            output,
+            out,
+        } => {
+            let bytes = signed_in(&cli)
+                .await?
+                .result_output(job_id, *output)
+                .await?;
             std::fs::write(out, bytes)?;
         }
         Command::Decrypt {
             ciphertext,
-            value_type,
+            value_types,
+            compressed,
             client_key,
+            server_key,
         } => {
             let secret = fhe::load_client_key(client_key)?;
-            println!(
-                "{}",
-                fhe::decrypt_as(&secret, *value_type, &std::fs::read(ciphertext)?)?
-            );
+            let bytes = std::fs::read(ciphertext)?;
+            if *compressed {
+                let server = load_server_key(server_key)?;
+                print_values(&fhe::decrypt_compressed(
+                    &secret,
+                    &server,
+                    &bytes,
+                    value_types,
+                )?);
+            } else {
+                let [value_type] = value_types.as_slice() else {
+                    return Err("give one --type (several only with --compressed)".into());
+                };
+                println!("{}", fhe::decrypt_as(&secret, *value_type, &bytes)?);
+            }
         }
         Command::Run {
             operands,
@@ -412,6 +481,7 @@ async fn run(cli: Cli) -> Outcome {
             public_key,
             values,
             client_key,
+            server_key,
             timeout,
         } => {
             let ty = operands.integer_type;
@@ -423,6 +493,11 @@ async fn run(cli: Cli) -> Outcome {
                 .transpose()?;
             let plan = operands.plan(Some(values.len()))?;
             let secret = fhe::load_client_key(client_key)?;
+            // Loaded first, so a missing file fails before anything is queued.
+            let server = operands
+                .compress
+                .then(|| load_server_key(server_key))
+                .transpose()?;
             let client = signed_in(&cli).await?;
             client.check_compatible().await?;
             let request = if *prove {
@@ -437,28 +512,41 @@ async fn run(cli: Cli) -> Outcome {
                     .collect::<Result<_, _>>()?;
                 operands.request(&plan, inputs, None)
             };
-            let (job, result) = client
-                .compute_job(&request, Duration::from_secs(*timeout))
-                .await?;
-            let value = fhe::decrypt_as(&secret, job.result_type, &result)?;
+            let job = client.submit_job(&request).await?;
+            let job = client.wait(&job.id, Duration::from_secs(*timeout)).await?;
+            let results = client.results(&job).await?;
+            let types = job.output_types();
+            let decrypted = match &server {
+                Some(server) => fhe::decrypt_compressed(&secret, server, &results[0], &types)?,
+                None => results
+                    .iter()
+                    .zip(&types)
+                    .map(|(bytes, &ty)| fhe::decrypt_as(&secret, ty, bytes))
+                    .collect::<Result<_, _>>()?,
+            };
             let expected = match &plan.program {
                 Some((_, checked)) => checked.eval_plain(&values),
                 None => {
                     let operands_plain: Vec<i128> = values.iter().copied().chain(scalar).collect();
-                    plan.operation.apply_plain(ty, &operands_plain)
+                    vec![plan.operation.apply_plain(ty, &operands_plain)]
                 }
             };
-            if value != expected {
+            if decrypted != expected {
+                let show = |v: &[PlainValue]| {
+                    v.iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                };
                 return Err(format!(
-                    "decrypted {value}, but the expected result is {expected}: the key id may not belong to {}",
+                    "decrypted {}, but the expected result is {}: the key id may not belong to {}",
+                    show(&decrypted),
+                    show(&expected),
                     client_key.display()
                 )
                 .into());
             }
-            match value {
-                PlainValue::Bool(b) => println!("{b}"),
-                PlainValue::Int(v) => println!("{v}"),
-            }
+            print_values(&decrypted);
         }
         Command::Jobs { limit, cursor } => {
             let page = signed_in(&cli)

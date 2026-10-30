@@ -6,7 +6,8 @@ use crate::api::{self, auth::make_jwt};
 use crate::config::Config;
 use crate::crypto::eval::Operation;
 use crate::crypto::keys::test_support::{
-    client_key, compressed_server_key_bytes, public_key_bytes, temp_store_dir,
+    client_key, compressed_server_key_bytes, compressing_keys, compressing_server_key_bytes,
+    public_key_bytes, temp_store_dir,
 };
 use crate::crypto::keys::KeyStore;
 use crate::crypto::params::{MAX_CIPHERTEXT_BYTES, TFHE_VERSION};
@@ -542,7 +543,7 @@ async fn deleting_a_key_or_the_account_removes_key_files() {
     let second_id = second["id"].as_str().unwrap().to_string();
     let job_id = queue_job(&app, &alice, add_request(&second_id, 1, 2)).await;
     wait_for_job(&app, &alice, &job_id).await;
-    assert!(env.jobs.read_result(&job_id).is_ok());
+    assert!(env.jobs.read_result(&job_id, 0).is_ok());
     let req = test::TestRequest::delete()
         .uri("/api/v1/user/account")
         .insert_header(("Authorization", alice.as_str()))
@@ -1013,6 +1014,99 @@ async fn program_jobs_run_several_operations_on_encrypted_values() {
     );
 }
 
+#[actix_web::test]
+async fn programs_return_several_results_and_compressed_lists() {
+    let env = TestEnv::new().await;
+    let app = env.app().await;
+    let alice = env.user("alice").await;
+    let key_id = register_key(&app, &alice).await;
+
+    let compiled = heaas_core::parse_expression("lookup(a, [2: 20], 9), a + b, a < b").unwrap();
+    let body = json!({
+        "key_id": key_id, "operation": "program", "integer_type": "u8",
+        "inputs": ciphertexts(IntegerType::U8, &[2, 5]), "program": compiled.program,
+    });
+    let id = queue_job(&app, &alice, body.clone()).await;
+    let done = wait_for_job(&app, &alice, &id).await;
+    assert_eq!(done["status"], "completed", "{done}");
+    assert_eq!(done["result_types"], json!(["u8", "u8", "bool"]));
+    assert_eq!(done["compressed_results"], false);
+    let mut values = Vec::new();
+    for (output, ty) in [ValueType::U8, ValueType::U8, ValueType::Bool]
+        .into_iter()
+        .enumerate()
+    {
+        let resp = get(
+            &app,
+            &alice,
+            &format!("/api/v1/compute/jobs/{id}/result?output={output}"),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = test::read_body(resp).await;
+        values.push(heaas_sdk::fhe::decrypt_as(client_key(), ty, &bytes).unwrap());
+    }
+    assert_eq!(
+        values,
+        [
+            PlainValue::Int(20),
+            PlainValue::Int(7),
+            PlainValue::Bool(true)
+        ]
+    );
+    let missing = get(
+        &app,
+        &alice,
+        &format!("/api/v1/compute/jobs/{id}/result?output=3"),
+    )
+    .await;
+    assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+
+    // Compression needs a key with compression keys.
+    let mut compressed = body.clone();
+    compressed["compress_results"] = json!(true);
+    let resp = submit_job(&app, &alice, compressed).await;
+    assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+    let (secret, server) = compressing_keys();
+    let resp = upload_key(&app, &alice, compressing_server_key_bytes()).await;
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let info: Value = test::read_body_json(resp).await;
+    assert_eq!(
+        (&info["supports_compression"], &info["supports_proofs"]),
+        (&json!(true), &json!(true))
+    );
+    let inputs: Vec<String> = [2, 5]
+        .iter()
+        .map(|&v| STANDARD.encode(heaas_sdk::fhe::encrypt_as(secret, IntegerType::U8, v).unwrap()))
+        .collect();
+    let body = json!({
+        "key_id": info["id"], "operation": "program", "integer_type": "u8",
+        "inputs": inputs, "program": compiled.program, "compress_results": true,
+    });
+    let id = queue_job(&app, &alice, body).await;
+    let done = wait_for_job(&app, &alice, &id).await;
+    assert_eq!(done["status"], "completed", "{done}");
+    assert_eq!(done["compressed_results"], true);
+    let list =
+        test::read_body(get(&app, &alice, &format!("/api/v1/compute/jobs/{id}/result")).await)
+            .await;
+    assert!(list.len() < 20_000, "{} bytes", list.len());
+    assert_eq!(done["result_bytes"], json!(list.len()));
+    let types: Vec<ValueType> = serde_json::from_value(done["result_types"].clone()).unwrap();
+    assert_eq!(
+        heaas_sdk::fhe::decrypt_compressed(secret, &server.server_key, &list, &types).unwrap(),
+        values
+    );
+    let one_list = get(
+        &app,
+        &alice,
+        &format!("/api/v1/compute/jobs/{id}/result?output=1"),
+    )
+    .await;
+    assert_eq!(one_list.status(), StatusCode::NOT_FOUND);
+}
+
 async fn submit_batch(
     app: &impl Service<actix_http::Request, Response = ServiceResponse, Error = actix_web::Error>,
     token: &str,
@@ -1105,6 +1199,32 @@ async fn batches_queue_every_job_or_none() {
     let page: Value = test::read_body_json(get(&app, &alice, "/api/v1/compute/jobs").await).await;
     assert_eq!(page["data"].as_array().unwrap().len(), 3);
     assert_eq!(usage_count(&env.pool, "alice").await, 3);
+}
+
+#[actix_web::test]
+async fn signed_in_requests_are_limited_per_account() {
+    let env = TestEnv::without_workers(|c| c.rate_limits.user_per_minute = 2).await;
+    let app = env.app().await;
+    let (alice, bob) = (env.user("alice").await, env.user("bob").await);
+    for _ in 0..2 {
+        assert_eq!(
+            get(&app, &alice, "/api/v1/keys").await.status(),
+            StatusCode::OK
+        );
+    }
+    let limited = get(&app, &alice, "/api/v1/compute/jobs").await;
+    assert_eq!(limited.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert!(limited.headers().contains_key("Retry-After"));
+    // Each account has its own budget, and requests without a valid token are
+    // refused before they spend any.
+    assert_eq!(
+        get(&app, &bob, "/api/v1/user/me").await.status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        get(&app, "Bearer nope", "/api/v1/keys").await.status(),
+        StatusCode::UNAUTHORIZED
+    );
 }
 
 #[actix_web::test]
@@ -1411,6 +1531,7 @@ async fn the_sdk_runs_the_whole_flow_against_a_live_server() {
             proven_inputs: None,
             scalar: None,
             program: None,
+            compress_results: false,
         };
         let (job, result) = client
             .compute_job(&request, Duration::from_secs(300))
@@ -1452,6 +1573,7 @@ async fn the_sdk_runs_the_whole_flow_against_a_live_server() {
         proven_inputs: Some(heaas_sdk::encode(&list)),
         scalar: None,
         program: None,
+        compress_results: false,
     };
     let (job, result) = client
         .compute_job(&request, Duration::from_secs(300))
@@ -1475,6 +1597,7 @@ async fn the_sdk_runs_the_whole_flow_against_a_live_server() {
         proven_inputs: None,
         scalar: None,
         program: None,
+        compress_results: false,
     };
     let batch = client
         .submit_batch(&[make(Operation::Max, 3, 9), make(Operation::Subtract, 3, 9)])
@@ -1491,8 +1614,10 @@ async fn the_sdk_runs_the_whole_flow_against_a_live_server() {
     }
     assert_eq!(decrypted, [9, 65530]);
 
-    // A program, compiled from an expression by the SDK's parser.
-    let compiled = heaas_sdk::parse_expression("a * a - b > 80 ? a : b").unwrap();
+    // A program with two results, compiled from an expression by the SDK's
+    // parser; `results` fetches both.
+    let compiled =
+        heaas_sdk::parse_expression("a * a - b > 80 ? a : b, lookup(b, [-4: 40])").unwrap();
     let request = heaas_core::api::CreateJobRequest {
         key_id: key.id.clone(),
         operation: Operation::Program,
@@ -1504,15 +1629,20 @@ async fn the_sdk_runs_the_whole_flow_against_a_live_server() {
         proven_inputs: None,
         scalar: None,
         program: Some(compiled.program),
+        compress_results: false,
     };
-    let (job, result) = client
-        .compute_job(&request, Duration::from_secs(300))
+    let job = client.submit_job(&request).await.unwrap();
+    let job = client
+        .wait(&job.id, Duration::from_secs(300))
         .await
         .unwrap();
-    assert_eq!(
-        fhe::decrypt_as(secret, job.result_type, &result).unwrap(),
-        PlainValue::Int(9)
-    );
+    let results = client.results(&job).await.unwrap();
+    let values: Vec<_> = results
+        .iter()
+        .zip(job.output_types())
+        .map(|(bytes, ty)| fhe::decrypt_as(secret, ty, bytes).unwrap())
+        .collect();
+    assert_eq!(values, [PlainValue::Int(9), PlainValue::Int(40)]);
 
     // A resubmission with the same idempotency key is the same job.
     let first = client
