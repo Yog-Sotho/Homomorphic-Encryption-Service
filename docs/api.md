@@ -20,7 +20,7 @@ an unknown route):
 
 ## Rust SDK and `heaas` CLI
 
-[`sdk/`](../sdk) is a Rust client (`heaas-sdk`) built on the same `heaas-core` crate as
+[`sdk/`](https://github.com/Yog-Sotho/Homomorphic-Encryption-Service/tree/master/sdk) is a Rust client (`heaas-sdk`) built on the same `heaas-core` crate as
 the server, so parameters and request types cannot drift apart. Keys are generated
 and kept locally; only the evaluation key and ciphertexts are sent.
 

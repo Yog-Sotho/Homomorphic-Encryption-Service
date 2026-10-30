@@ -1,0 +1,56 @@
+name: Bug report
+description: Something does not work as documented.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Security problems go to a private report instead (see SECURITY.md).
+        Never paste secrets: JWT_SECRET, tokens, client keys or key files.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: The release, or the commit if you build from source (`heaas params` shows the server's TFHE-rs release).
+      placeholder: 0.5.0
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Where
+      options:
+        - Web dashboard
+        - HTTP API
+        - Rust SDK
+        - heaas CLI
+        - Deployment (Docker, nginx, configuration)
+        - Documentation
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. heaas keygen && heaas upload-key
+        2. heaas run --key-id … --op add 1 2
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected and actual behaviour
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Server log lines around the problem (search for the response's X-Request-Id), or the browser console.
+      render: text
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      placeholder: Docker compose on Ubuntu 24.04, Chrome 140

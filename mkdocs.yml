@@ -1,0 +1,70 @@
+site_name: HE Engine
+site_description: Compute on encrypted data with keys that never leave your device. A self-hosted server built on TFHE-rs.
+site_url: https://yog-sotho.github.io/Homomorphic-Encryption-Service/
+repo_url: https://github.com/Yog-Sotho/Homomorphic-Encryption-Service
+repo_name: Homomorphic-Encryption-Service
+edit_uri: edit/master/docs/
+copyright: Copyright &copy; 2026 Yog-Sotho · MIT licence
+strict: true
+
+theme:
+  name: material
+  logo: images/logo.svg
+  favicon: images/logo.svg
+  icon:
+    repo: fontawesome/brands/github
+  features:
+    - content.code.copy
+    - content.action.edit
+    - navigation.sections
+    - navigation.top
+    - navigation.footer
+    - search.highlight
+  palette:
+    - scheme: slate
+      primary: indigo
+      accent: purple
+      toggle: {icon: material/brightness-4, name: Light mode}
+    - scheme: default
+      primary: indigo
+      accent: purple
+      toggle: {icon: material/brightness-7, name: Dark mode}
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+      # GitHub-style anchors, so in-page links work the same on GitHub and on the site.
+      slugify: !!python/object/apply:pymdownx.slugs.slugify {kwds: {case: lower}}
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - pymdownx.highlight
+  - pymdownx.superfences
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/Yog-Sotho/Homomorphic-Encryption-Service
+
+nav:
+  - Home: index.md
+  - Using it:
+      - User guide: user-guide.md
+      - How it works: how-it-works.md
+  - Developers:
+      - Using the API: api.md
+      - API reference: api-reference.md
+      - Cryptographic parameters: parameters.md
+  - Operators:
+      - Self-hosting: self-hosting.md
+  - Project:
+      - Changelog: https://github.com/Yog-Sotho/Homomorphic-Encryption-Service/blob/master/CHANGELOG.md
+      - Contributing: https://github.com/Yog-Sotho/Homomorphic-Encryption-Service/blob/master/CONTRIBUTING.md
+      - Security policy: https://github.com/Yog-Sotho/Homomorphic-Encryption-Service/blob/master/SECURITY.md
+      - Getting help: https://github.com/Yog-Sotho/Homomorphic-Encryption-Service/blob/master/SUPPORT.md
+      - Codebase audit: project/codebase_audit.md
+      - Remediation plan: project/remediation_plan.md

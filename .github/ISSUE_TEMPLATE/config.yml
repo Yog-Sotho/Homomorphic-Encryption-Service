@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Question or help with a deployment
+    url: https://github.com/Yog-Sotho/Homomorphic-Encryption-Service/discussions
+    about: Ask in GitHub Discussions; issues are for bugs and feature requests.
+  - name: Security vulnerability
+    url: https://github.com/Yog-Sotho/Homomorphic-Encryption-Service/security/advisories/new
+    about: Report it privately, never in a public issue (see SECURITY.md).
+  - name: Documentation
+    url: https://yog-sotho.github.io/Homomorphic-Encryption-Service/
+    about: Guides for users, developers and operators.

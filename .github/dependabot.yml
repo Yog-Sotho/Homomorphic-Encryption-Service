@@ -25,3 +25,13 @@ updates:
     directory: /
     schedule:
       interval: weekly
+
+  # The documentation site's MkDocs and Material (requirements-docs.txt).
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+    ignore:
+      # MkDocs 2 drops the plugin and theme system Material needs.
+      - dependency-name: mkdocs
+        update-types: ["version-update:semver-major"]

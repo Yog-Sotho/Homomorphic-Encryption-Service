@@ -1,7 +1,7 @@
 # Codebase Audit Report
 
 **Date:** 2026-10-30
-**Project:** Homomorphic Encryption Engine (HE Engine; workspace 0.4.0 + Phases 8 to 10: `he-backend`, `heaas-core`, `heaas-sdk`; `he-frontend` 0.4.0)
+**Project:** Homomorphic Encryption Engine (HE Engine 0.5.0: `he-backend`, `heaas-core`, `heaas-sdk`, `he-frontend`)
 **Language / Framework:** Rust 2021, MSRV 1.91.1 (actix-web 4.18, sqlx 0.8 / SQLite, TFHE-rs 1.8.2, utoipa 6, tracing, prometheus 0.14) · SvelteKit 3.1 / Svelte 5 / Vite 8 (TypeScript, strict), TFHE-rs 1.8.2 WebAssembly
 **Project Type:** Web Service with a worker pool (all 9 dimensions applicable)
 **Audit Mode:** Domain-aware (`backend/`, `core/`, `sdk/`, `frontend/`, deployment files)

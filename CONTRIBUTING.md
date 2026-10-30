@@ -1,5 +1,21 @@
 # Contributing
 
+Thanks for helping. Everyone taking part follows the [code of conduct](CODE_OF_CONDUCT.md).
+
+## Ways to contribute
+
+- **Questions and ideas:** [GitHub Discussions](https://github.com/Yog-Sotho/Homomorphic-Encryption-Service/discussions).
+- **Bugs and feature requests:** an [issue](https://github.com/Yog-Sotho/Homomorphic-Encryption-Service/issues/new/choose), with the matching form.
+  For anything larger than a small fix, open an issue first so the approach can be
+  agreed before you write the code.
+- **Security problems:** never in public; see [SECURITY.md](SECURITY.md).
+- **Pull requests:** fork, branch from `master`, and open the pull request against
+  `master`. Its template lists the checks below. CI must be green and the
+  maintainer reviews every change (see `.github/CODEOWNERS`).
+
+By contributing you agree that your contribution is licensed under the project's
+[MIT licence](LICENSE).
+
 ## Layout
 
 | Path | What |
@@ -69,4 +85,29 @@ Generated files are regenerated, never edited by hand:
   applied migration.
 - Tests come with the change. Never skip or disable a test to get CI green.
 - Commit messages say what changed and why. Add user-visible changes to
-  `CHANGELOG.md` under a new version heading.
+  `CHANGELOG.md` under `## [Unreleased]`.
+
+## Documentation site
+
+The guides in `docs/` are published at
+<https://yog-sotho.github.io/Homomorphic-Encryption-Service/> by
+`.github/workflows/docs.yml` on every push to `master`. Preview it locally:
+
+```sh
+pip install -r requirements-docs.txt
+npx @redocly/cli@1.34.5 build-docs docs/api/openapi.json -o docs/api/reference.html
+mkdocs serve            # http://127.0.0.1:8000; CI builds with --strict, so broken links fail
+```
+
+Links from `docs/` to files outside it (`SECURITY.md`, `sdk/`) must be full GitHub
+URLs, so they work both on GitHub and on the site.
+
+## Releases
+
+1. Move the `## [Unreleased]` notes in `CHANGELOG.md` under `## [X.Y.Z] - YYYY-MM-DD`.
+2. Set `version` in `Cargo.toml` (`[workspace.package]`) and `frontend/package.json`
+   to `X.Y.Z`, then regenerate `docs/api/openapi.json`.
+3. Merge to `master`, then tag that commit `vX.Y.Z` and push the tag.
+   `.github/workflows/release.yml` checks the versions, builds the binaries and container
+   images, signs them, and publishes the GitHub release with the changelog section as
+   its notes.

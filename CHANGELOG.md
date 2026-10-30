@@ -8,7 +8,25 @@ compatibility).
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-30
+
+The rename (PRs #133 and #134) and Phases 8 to 10 (PRs #135 to #137): more types
+and operations, proven inputs, programs with lookup tables and several results,
+batches and compressed results, and the project published as open source.
+
 ### Added
+- **MIT licence.** The project is open source under the MIT licence (`LICENSE`);
+  the packages and the OpenAPI document declare it. TFHE-rs's own licence and
+  Zama's patent terms for commercial use still apply.
+- **Documentation site** at <https://yog-sotho.github.io/Homomorphic-Encryption-Service/>,
+  built from `docs/` with MkDocs Material, with a rendered API reference, and
+  checked for broken links on every pull request.
+- **Signed releases.** Tagging `vX.Y.Z` publishes the `heaas` CLI (Linux x86_64 and
+  arm64, macOS on Apple silicon) and the `he-backend` server (Linux) with Sigstore
+  signatures and checksums, and multi-arch container images on GHCR signed with
+  cosign and carrying build provenance.
+- **Community files:** a support guide, a code of conduct, issue forms, a pull
+  request template and code owners.
 - **Lookup tables.** A `lookup` program step (TFHE-rs `match_value_or`) maps an
   encrypted value through a plaintext table of up to 256 entries, with a default:
   `lookup(a, [1, 4, 9, 16])` or `lookup(a, [-1: 10, 5: 50], 0)` in expressions.
@@ -154,3 +172,6 @@ history is in git.
 - Docker: copy `./data` into the `heaas-data` volume once (docs/self-hosting.md, "Backups").
 - Server-generated keys from before the rebuild cannot be used; users create
   a key in the dashboard or with `heaas keygen`.
+
+[Unreleased]: https://github.com/Yog-Sotho/Homomorphic-Encryption-Service/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/Yog-Sotho/Homomorphic-Encryption-Service/releases/tag/v0.5.0

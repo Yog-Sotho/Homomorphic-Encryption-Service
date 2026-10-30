@@ -1619,7 +1619,7 @@ dependencies = [
 
 [[package]]
 name = "he-backend"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "actix-cors",
  "actix-http",
@@ -1658,7 +1658,7 @@ dependencies = [
 
 [[package]]
 name = "heaas-core"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "chrono",
  "proptest",
@@ -1672,7 +1672,7 @@ dependencies = [
 
 [[package]]
 name = "heaas-sdk"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "base64 0.23.1",
  "clap",
