@@ -195,17 +195,17 @@ No findings.
   jobs, scalars, sums and proven inputs; wiremock OAuth and SDK tests; CLI binary
   tests; an SDK run against a live server with proofs, a program and a batch.
   `#[ignore]`d heavy property tests run in `.github/workflows/heavy.yml`.
-- TypeScript: 109 Vitest (64 of them the shared program vectors), 13 Playwright
+- TypeScript: 138 Vitest (93 of them the shared program vectors), 13 Playwright
   (including axe WCAG 2.2 AA scans), and 1 full-stack test that proves inputs in the
-  browser and runs a program on the real server.
+  browser and runs a program with a lookup and two results on the real server.
 - Coverage, measured in CI with floors: Rust 91.2% of lines workspace-wide
-  (`cargo llvm-cov`, floor 88%); frontend library code 92.2% (`vitest --coverage`,
+  (`cargo llvm-cov`, floor 88%); frontend library code 93.0% (`vitest --coverage`,
   floor 88%; pages and the worker are covered by the Playwright suites).
 - No TODO, FIXME or HACK markers.
 
 | Severity | Location | Issue | Recommendation |
 |---|---|---|---|
-| LOW | `backend/src/main.rs` (38% of lines), `sdk/src/bin/heaas.rs` (42%) | Startup wiring and the networked CLI commands are exercised only by the full-stack and Docker jobs, which coverage does not measure. | Drive the CLI's networked commands against the live test server, as the SDK test does. |
+| LOW | `backend/src/main.rs` (38% of lines), `sdk/src/bin/heaas.rs` (44%) | Startup wiring and the networked CLI commands are exercised only by the full-stack and Docker jobs, which coverage does not measure. | Drive the CLI's networked commands against the live test server, as the SDK test does. |
 
 ### Dependencies [9/10]
 
