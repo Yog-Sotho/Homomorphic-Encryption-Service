@@ -3,7 +3,7 @@
 # are cached in their own layer, run as a non-root user on a distroless image.
 
 # tfhe 1.8 requires Rust >= 1.91.1 (see rust-version in Cargo.toml).
-FROM rust:1.99.1-bookworm AS chef
+FROM rust:1.100.0-bookworm AS chef
 RUN cargo install cargo-chef --version 0.1.78 --locked
 WORKDIR /usr/src/heaas
 
