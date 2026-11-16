@@ -23,7 +23,7 @@ chrono.workspace = true
 # jsonwebtoken 10+ needs exactly one crypto backend; without one every sign/verify
 # panics. aws-lc-rs has no open advisories (rust_crypto pulls in `rsa`, RUSTSEC-2023-0071).
 # PEM support is not needed: tokens are HS256 with a shared secret.
-jsonwebtoken = { version = "11", default-features = false, features = ["aws_lc_rs"] }
+jsonwebtoken = { version = "12", default-features = false, features = ["aws_lc_rs"] }
 bcrypt = "0.19"
 uuid.workspace = true
 # Structured logs (JSON in production); `log` records from libraries are bridged in.
